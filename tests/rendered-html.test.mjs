@@ -144,6 +144,22 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
     ),
     { x: -400, y: -200 },
   );
+  assert.deepEqual(
+    geometry.centeredPortPoint(
+      { x: 100, y: 200 },
+      { width: 264, height: 156 },
+      "output",
+    ),
+    { x: 364, y: 278 },
+  );
+  assert.deepEqual(
+    geometry.centeredPortPoint(
+      { x: 100, y: 200 },
+      { width: 264, height: 382 },
+      "input",
+    ),
+    { x: 100, y: 391 },
+  );
 
   assert.match(canvasView, /translate3d\(/);
   assert.match(canvasView, /Ctrl\/⌘ \+ 滚轮缩放/);
@@ -157,4 +173,7 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.is-canvas-view \.minimap[\s\S]*bottom:\s*24px;[\s\S]*left:\s*24px;/);
   assert.match(styles, /\.is-canvas-view \.open-console-button[\s\S]*right:\s*24px;[\s\S]*bottom:\s*24px;/);
   assert.match(controller, /useState\(false\)/);
+  assert.match(nodeCard, /ResizeObserver/);
+  assert.match(canvasView, /nodeHeights\[source\.id\]/);
+  assert.match(styles, /\.port\s*\{[\s\S]*top:\s*50%;[\s\S]*transform:\s*translateY\(-50%\);/);
 });

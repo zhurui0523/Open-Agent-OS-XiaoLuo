@@ -21,6 +21,8 @@ export interface WorldBounds {
   maxY: number;
 }
 
+export type PortSide = "input" | "output";
+
 export const MIN_CANVAS_ZOOM = 15;
 export const MAX_CANVAS_ZOOM = 300;
 
@@ -47,6 +49,17 @@ export function worldToScreen(
   return {
     x: point.x * scale + viewport.x,
     y: point.y * scale + viewport.y,
+  };
+}
+
+export function centeredPortPoint(
+  position: Point,
+  size: Size,
+  side: PortSide,
+): Point {
+  return {
+    x: position.x + (side === "output" ? size.width : 0),
+    y: position.y + size.height / 2,
   };
 }
 

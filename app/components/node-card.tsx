@@ -13,7 +13,7 @@ import {
   Video,
   XCircle,
 } from "lucide-react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { CanvasNode, Capability, ModelConnection, NodeStatus } from "../types";
 import { IconButton } from "./icon-button";
 import { SchemaFields } from "./schema-fields";
@@ -48,6 +48,7 @@ interface NodeCardProps {
   onSelect: () => void;
   onMove: (x: number, y: number) => void;
   onUpdate: (patch: Partial<CanvasNode>) => void;
+  onSizeChange: (nodeId: string, height: number) => void;
 }
 
 export function NodeCard({
@@ -60,7 +61,9 @@ export function NodeCard({
   onSelect,
   onMove,
   onUpdate,
+  onSizeChange,
 }: NodeCardProps) {
+  const cardRef = useRef<HTMLElement>(null);
   const drag = useRef<{
     pointerId: number;
     startX: number;
@@ -80,6 +83,16 @@ export function NodeCard({
   const activeCapability = capabilities.find(
     (capability) => capability.id === node.capabilityId,
   );
+
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const reportSize = () => onSizeChange(node.id, card.offsetHeight);
+    reportSize();
+    const observer = new ResizeObserver(reportSize);
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [node.id, onSizeChange]);
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (panMode || event.button !== 0) return;
@@ -110,6 +123,7 @@ export function NodeCard({
 
   return (
     <article
+      ref={cardRef}
       className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""}`}
       style={{ left: node.x, top: node.y }}
       onClick={panMode ? undefined : onSelect}

@@ -20,6 +20,7 @@ import {
 import { canvasList } from "../data";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import {
+  centeredPortPoint,
   fitWorldBounds,
   screenToWorld,
   unionBounds,
@@ -49,11 +50,23 @@ interface CanvasViewProps {
 function edgeStyle(
   source: { x: number; y: number },
   target: { x: number; y: number },
+  sourceHeight: number,
+  targetHeight: number,
 ): CSSProperties {
-  const startX = source.x + NODE_WIDTH;
-  const startY = source.y + 78;
-  const endX = target.x;
-  const endY = target.y + 78;
+  const start = centeredPortPoint(
+    source,
+    { width: NODE_WIDTH, height: sourceHeight },
+    "output",
+  );
+  const end = centeredPortPoint(
+    target,
+    { width: NODE_WIDTH, height: targetHeight },
+    "input",
+  );
+  const startX = start.x;
+  const startY = start.y;
+  const endX = end.x;
+  const endY = end.y;
   const distance = Math.hypot(endX - startX, endY - startY);
   const angle = Math.atan2(endY - startY, endX - startX) * (180 / Math.PI);
   return {
@@ -80,6 +93,7 @@ export function CanvasView({ os }: CanvasViewProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
+  const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
   const [isPanning, setIsPanning] = useState(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const initialFitDone = useRef(false);
@@ -106,9 +120,25 @@ export function CanvasView({ os }: CanvasViewProps) {
       minX: Math.min(...os.nodes.map((node) => node.x)),
       minY: Math.min(...os.nodes.map((node) => node.y)),
       maxX: Math.max(...os.nodes.map((node) => node.x + NODE_WIDTH)),
-      maxY: Math.max(...os.nodes.map((node) => node.y + NODE_FIT_HEIGHT)),
+      maxY: Math.max(
+        ...os.nodes.map(
+          (node) => node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT),
+        ),
+      ),
     };
-  }, [os.nodes]);
+  }, [nodeHeights, os.nodes]);
+
+  const handleNodeSizeChange = useCallback(
+    (nodeId: string, height: number) => {
+      const roundedHeight = Math.max(1, Math.round(height));
+      setNodeHeights((current) =>
+        current[nodeId] === roundedHeight
+          ? current
+          : { ...current, [nodeId]: roundedHeight },
+      );
+    },
+    [],
+  );
 
   const commitViewport = useCallback(
     (next: ViewportTransform) => {
@@ -442,7 +472,12 @@ export function CanvasView({ os }: CanvasViewProps) {
                 <div
                   key={edge.id}
                   className={`edge-line ${flowing ? "is-flowing" : ""}`}
-                  style={edgeStyle(source, target)}
+                  style={edgeStyle(
+                    source,
+                    target,
+                    nodeHeights[source.id] ?? 156,
+                    nodeHeights[target.id] ?? 156,
+                  )}
                   aria-hidden="true"
                 >
                   <span />
@@ -462,6 +497,7 @@ export function CanvasView({ os }: CanvasViewProps) {
                 onSelect={() => os.setSelectedNodeId(node.id)}
                 onMove={(x, y) => os.moveNode(node.id, x, y)}
                 onUpdate={(patch) => os.updateNode(node.id, patch)}
+                onSizeChange={handleNodeSizeChange}
               />
             ))}
           </div>
@@ -518,7 +554,10 @@ export function CanvasView({ os }: CanvasViewProps) {
                   left: minimapX(node.x),
                   top: minimapY(node.y),
                   width: Math.max(5, NODE_WIDTH * minimapScale),
-                  height: Math.max(4, 156 * minimapScale),
+                  height: Math.max(
+                    4,
+                    (nodeHeights[node.id] ?? 156) * minimapScale,
+                  ),
                 }}
                 className={`mini-${node.kind}`}
               />
