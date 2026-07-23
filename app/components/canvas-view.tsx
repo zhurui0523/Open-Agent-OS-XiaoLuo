@@ -761,6 +761,7 @@ export function CanvasView({ os }: CanvasViewProps) {
                         edge.target === node.id,
                     ),
                 )}
+                onRun={() => void os.startRun(node.id)}
               />
             ))}
           </div>

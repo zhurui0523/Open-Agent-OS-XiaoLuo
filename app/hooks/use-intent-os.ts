@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   InstalledPackage,
   IntentPlan,
+  KernelExecuteResult,
   ModelConnectionDraft,
   NodeKind,
   RegistryEvent,
@@ -22,6 +23,10 @@ import type {
   RunState,
 } from "../types";
 import { createIntentPlan, messageTime } from "../lib/intent-plan";
+import {
+  compileWorkflow,
+  type CompiledWorkflow,
+} from "../lib/workflow-kernel";
 
 interface CanvasHistoryEntry {
   nodes: CanvasNode[];
@@ -36,6 +41,15 @@ type NodePreset = Partial<
     "title" | "prompt" | "capabilityId" | "modelId" | "result" | "parameters"
   >
 >;
+
+interface ActiveKernelRun {
+  id: string;
+  paused: boolean;
+  canceled: boolean;
+  resume?: () => void;
+  controllers: Map<string, AbortController>;
+  workflow: CompiledWorkflow;
+}
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -86,7 +100,7 @@ export function useIntentOS() {
     "free",
   );
   const [zoom, setZoom] = useState(92);
-  const [runState, setRunState] = useState<RunState>("running");
+  const [runState, setRunState] = useState<RunState>("ready");
   const [isPlanning, setIsPlanning] = useState(false);
   const [plan, setPlan] = useState<IntentPlan | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -99,6 +113,7 @@ export function useIntentOS() {
     },
   ]);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const activeRun = useRef<ActiveKernelRun | null>(null);
   const canvasHistory = useRef<CanvasHistoryEntry[]>([]);
   const [historyDepth, setHistoryDepth] = useState(0);
 
@@ -127,6 +142,9 @@ export function useIntentOS() {
   useEffect(
     () => () => {
       timers.current.forEach(clearTimeout);
+      activeRun.current?.controllers.forEach((controller) =>
+        controller.abort(),
+      );
     },
     [],
   );
@@ -391,7 +409,7 @@ export function useIntentOS() {
     setRunState("ready");
   }
 
-  function startRun() {
+  function startSimulatedRun() {
     if (!nodes.length) return;
     timers.current.forEach(clearTimeout);
     timers.current = [];
@@ -435,7 +453,7 @@ export function useIntentOS() {
     );
   }
 
-  function pauseRun() {
+  function pauseSimulatedRun() {
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setRunState("paused");
@@ -446,7 +464,7 @@ export function useIntentOS() {
     );
   }
 
-  function cancelRun() {
+  function cancelSimulatedRun() {
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setRunState("canceled");
@@ -457,6 +475,263 @@ export function useIntentOS() {
           : node,
       ),
     );
+  }
+
+  async function updateKernelRun(
+    runId: string,
+    status: RunState | "queued",
+    error?: string,
+  ) {
+    try {
+      await requestJson("/api/v2/kernel/runs", {
+        method: "PATCH",
+        body: JSON.stringify({ runId, status, error }),
+      });
+    } catch {
+      // The node execution result remains visible even if an audit update fails.
+    }
+  }
+
+  async function waitForKernelResume(run: ActiveKernelRun) {
+    if (!run.paused) return;
+    await new Promise<void>((resolve) => {
+      run.resume = resolve;
+    });
+    run.resume = undefined;
+  }
+
+  function graphForTarget(targetNodeId?: string) {
+    if (!targetNodeId) return { nodes, edges };
+    const included = new Set([targetNodeId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      edges.forEach((edge) => {
+        if (included.has(edge.target) && !included.has(edge.source)) {
+          included.add(edge.source);
+          changed = true;
+        }
+      });
+    }
+    return {
+      nodes: nodes.filter((node) => included.has(node.id)),
+      edges: edges.filter(
+        (edge) => included.has(edge.source) && included.has(edge.target),
+      ),
+    };
+  }
+
+  async function startRun(targetNodeId?: string) {
+    const currentRun = activeRun.current;
+    if (currentRun?.paused) {
+      currentRun.paused = false;
+      currentRun.resume?.();
+      setRunState("running");
+      setNodes((current) =>
+        current.map((node) =>
+          node.status === "paused"
+            ? { ...node, status: "running", progress: Math.max(18, node.progress ?? 0) }
+            : node,
+        ),
+      );
+      void updateKernelRun(currentRun.id, "running");
+      return;
+    }
+    if (currentRun || !nodes.length) return;
+
+    const graph = graphForTarget(targetNodeId);
+    let workflow: CompiledWorkflow;
+    try {
+      workflow = compileWorkflow(graph.nodes, graph.edges);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "工作流编译失败";
+      setRunState("failed");
+      setMessages((current) => [
+        ...current,
+        {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: `微内核拒绝执行：${message}`,
+          time: messageTime(),
+        },
+      ]);
+      return;
+    }
+
+    try {
+      const created = await requestJson<{
+        runId: string;
+        levels: string[][];
+      }>("/api/v2/kernel/runs", {
+        method: "POST",
+        body: JSON.stringify(graph),
+      });
+      const run: ActiveKernelRun = {
+        id: created.runId,
+        paused: false,
+        canceled: false,
+        controllers: new Map(),
+        workflow,
+      };
+      activeRun.current = run;
+      const includedIds = new Set(graph.nodes.map((node) => node.id));
+      setRunState("running");
+      setNodes((current) =>
+        current.map((node) =>
+          includedIds.has(node.id)
+            ? { ...node, status: "queued", progress: 0 }
+            : node,
+        ),
+      );
+      await updateKernelRun(run.id, "running");
+
+      for (const level of workflow.levels) {
+        await waitForKernelResume(run);
+        if (run.canceled) return;
+        const levelIds = new Set(level);
+        setNodes((current) =>
+          current.map((node) =>
+            levelIds.has(node.id)
+              ? { ...node, status: "running", progress: 24 }
+              : node,
+          ),
+        );
+
+        const settled = await Promise.allSettled(
+          level.map(async (nodeId) => {
+            const controller = new AbortController();
+            run.controllers.set(nodeId, controller);
+            try {
+              const response = await requestJson<KernelExecuteResult>(
+                "/api/v2/kernel/execute",
+                {
+                  method: "POST",
+                  body: JSON.stringify({ runId: run.id, nodeId }),
+                  signal: controller.signal,
+                },
+              );
+              setNodes((current) =>
+                current.map((node) =>
+                  node.id === nodeId
+                    ? {
+                        ...node,
+                        status: "succeeded",
+                        progress: 100,
+                        result: response.result,
+                        parameters: {
+                          ...node.parameters,
+                          kernelOutput: response.output,
+                          kernelExecutor: response.executor,
+                          kernelRunId: run.id,
+                        },
+                      }
+                    : node,
+                ),
+              );
+              return response;
+            } catch (error) {
+              if (run.canceled) throw error;
+              const message =
+                error instanceof Error ? error.message : "节点执行失败";
+              setNodes((current) =>
+                current.map((node) =>
+                  node.id === nodeId
+                    ? {
+                        ...node,
+                        status: "failed",
+                        progress: 100,
+                        result: `执行失败：${message}`,
+                      }
+                    : node,
+                ),
+              );
+              throw error;
+            } finally {
+              run.controllers.delete(nodeId);
+            }
+          }),
+        );
+        const failed = settled.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        );
+        if (failed) throw failed.reason;
+      }
+
+      if (!run.canceled) {
+        setRunState("succeeded");
+        await updateKernelRun(run.id, "succeeded");
+        setMessages((current) => [
+          ...current,
+          {
+            id: `msg_${Date.now()}`,
+            role: "assistant",
+            content: targetNodeId
+              ? "目标节点及其上游依赖已由 AI 微内核执行完成。"
+              : `工作流执行完成：${graph.nodes.length} 个节点已按依赖关系运行，上游结果已传递给下游。`,
+            time: messageTime(),
+          },
+        ]);
+      }
+    } catch (error) {
+      const run = activeRun.current;
+      if (run?.canceled) return;
+      const message = error instanceof Error ? error.message : "工作流执行失败";
+      setRunState("failed");
+      if (run) await updateKernelRun(run.id, "failed", message);
+      setNodes((current) =>
+        current.map((node) =>
+          node.status === "queued"
+            ? { ...node, status: "canceled", progress: 0 }
+            : node,
+        ),
+      );
+      setMessages((current) => [
+        ...current,
+        {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: `工作流已停止：${message}`,
+          time: messageTime(),
+        },
+      ]);
+    } finally {
+      const run = activeRun.current;
+      run?.controllers.forEach((controller) => controller.abort());
+      activeRun.current = null;
+    }
+  }
+
+  function pauseRun() {
+    const run = activeRun.current;
+    if (!run || run.paused || run.canceled) return;
+    run.paused = true;
+    setRunState("paused");
+    setNodes((current) =>
+      current.map((node) =>
+        node.status === "running" ? { ...node, status: "paused" } : node,
+      ),
+    );
+    void updateKernelRun(run.id, "paused");
+  }
+
+  function cancelRun() {
+    const run = activeRun.current;
+    if (!run) return;
+    run.canceled = true;
+    run.controllers.forEach((controller) => controller.abort());
+    run.resume?.();
+    setRunState("canceled");
+    setNodes((current) =>
+      current.map((node) =>
+        node.status === "running" ||
+        node.status === "queued" ||
+        node.status === "paused"
+          ? { ...node, status: "canceled" }
+          : node,
+      ),
+    );
+    void updateKernelRun(run.id, "canceled");
   }
 
   function toggleCapability(id: string) {

@@ -253,3 +253,57 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.edge-line\.is-selected/);
   assert.match(styles, /\.canvas-stage\.is-connecting \.port-input\.is-available/);
 });
+
+test("compiles and executes workflows through the AI microkernel contract", async () => {
+  const { compileWorkflow, WorkflowCompileError } = await import(
+    "../app/lib/workflow-kernel.ts"
+  );
+  const nodes = [{ id: "brief" }, { id: "script" }, { id: "image" }, { id: "video" }];
+  const edges = [
+    { id: "e1", source: "brief", target: "script" },
+    { id: "e2", source: "brief", target: "image" },
+    { id: "e3", source: "script", target: "video" },
+    { id: "e4", source: "image", target: "video" },
+  ];
+  const workflow = compileWorkflow(nodes, edges);
+  assert.deepEqual(workflow.levels, [
+    ["brief"],
+    ["script", "image"],
+    ["video"],
+  ]);
+  assert.deepEqual(workflow.dependencies.video, ["script", "image"]);
+
+  assert.throws(
+    () =>
+      compileWorkflow(nodes, [
+        ...edges,
+        { id: "cycle", source: "video", target: "brief" },
+      ]),
+    (error) =>
+      error instanceof WorkflowCompileError &&
+      error.code === "CYCLE_DETECTED",
+  );
+
+  const [controller, runRoute, executeRoute, executors, schema, appShell] =
+    await Promise.all([
+      readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/api/v2/kernel/runs/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/api/v2/kernel/execute/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/lib/kernel-executors.ts", import.meta.url), "utf8"),
+      readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
+    ]);
+  assert.match(controller, /compileWorkflow/);
+  assert.match(controller, /Promise\.allSettled/);
+  assert.match(controller, /kernelOutput/);
+  assert.doesNotMatch(controller, /function startRun\(\)[\s\S]{0,500}setTimeout/);
+  assert.match(runRoute, /kernel\.run\.created/);
+  assert.match(executeRoute, /kernel\.node\.succeeded/);
+  assert.match(executeRoute, /dependency\.status !== "succeeded"/);
+  assert.match(executors, /executeRemotePackage/);
+  assert.match(executors, /executeModel/);
+  assert.match(executors, /kernel\.builtin-preview/);
+  assert.match(schema, /kernel_runs/);
+  assert.match(schema, /kernel_tasks/);
+  assert.match(appShell, /AI 微内核在线/);
+});

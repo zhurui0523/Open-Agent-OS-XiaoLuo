@@ -54,3 +54,31 @@ export const registryEvents = sqliteTable("registry_events", {
   detailJson: text("detail_json").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const kernelRuns = sqliteTable("kernel_runs", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull().default("queued"),
+  graphJson: text("graph_json").notNull(),
+  error: text("error"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  startedAt: text("started_at"),
+  completedAt: text("completed_at"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const kernelTasks = sqliteTable("kernel_tasks", {
+  id: text("id").primaryKey(),
+  runId: text("run_id")
+    .notNull()
+    .references(() => kernelRuns.id, { onDelete: "cascade" }),
+  nodeId: text("node_id").notNull(),
+  status: text("status").notNull().default("queued"),
+  dependenciesJson: text("dependencies_json").notNull().default("[]"),
+  inputJson: text("input_json"),
+  outputJson: text("output_json"),
+  executor: text("executor"),
+  error: text("error"),
+  startedAt: text("started_at"),
+  completedAt: text("completed_at"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

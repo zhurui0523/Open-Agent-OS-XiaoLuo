@@ -28,6 +28,30 @@ export interface CanvasNode {
   parameters?: Record<string, unknown>;
 }
 
+export interface KernelNodeOutput {
+  type: "text" | "image" | "video" | "json";
+  text?: string;
+  assetUrl?: string;
+  data?: unknown;
+  executor: string;
+  preview?: boolean;
+}
+
+export interface KernelUpstreamInput {
+  nodeId: string;
+  title?: string;
+  kind?: NodeKind;
+  output: unknown;
+}
+
+export interface KernelExecuteResult {
+  runId: string;
+  nodeId: string;
+  result: string;
+  output: KernelNodeOutput;
+  executor: string;
+}
+
 export interface CanvasEdge {
   id: string;
   source: string;
@@ -159,4 +183,5 @@ export type RunState =
   | "running"
   | "paused"
   | "succeeded"
+  | "failed"
   | "canceled";

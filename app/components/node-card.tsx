@@ -18,7 +18,13 @@ import {
   XCircle,
 } from "lucide-react";
 import { useEffect, useRef } from "react";
-import type { CanvasNode, Capability, ModelConnection, NodeStatus } from "../types";
+import type {
+  CanvasNode,
+  Capability,
+  KernelNodeOutput,
+  ModelConnection,
+  NodeStatus,
+} from "../types";
 import { IconButton } from "./icon-button";
 import { SchemaFields } from "./schema-fields";
 
@@ -57,6 +63,7 @@ interface NodeCardProps {
   onSizeChange: (nodeId: string, height: number) => void;
   onConnectionStart: (clientX: number, clientY: number) => void;
   connectionTargetAvailable: boolean;
+  onRun: () => void;
 }
 
 interface NodeWorkbenchProps {
@@ -70,6 +77,12 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
     typeof parameters[key] === "string" ? String(parameters[key]) : fallback;
   const updateParameter = (key: string, nextValue: string) =>
     onUpdate({ parameters: { ...parameters, [key]: nextValue } });
+  const kernelOutput =
+    parameters.kernelOutput &&
+    typeof parameters.kernelOutput === "object"
+      ? (parameters.kernelOutput as KernelNodeOutput)
+      : null;
+  const mediaUrl = kernelOutput?.assetUrl;
   const progressLabel =
     node.status === "running"
       ? `生成中 ${node.progress ?? 0}%`
@@ -122,11 +135,15 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
       {node.kind === "image" && (
         <>
           <div className="workbench-preview image-workbench-preview">
-            <div className="media-preview-art" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
+            {mediaUrl ? (
+              <img src={mediaUrl} alt={`${node.title} 生成结果`} />
+            ) : (
+              <div className="media-preview-art" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+            )}
             <span className="media-preview-badge">
               <Sparkles size={11} /> {progressLabel}
             </span>
@@ -168,14 +185,20 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
       {node.kind === "video" && (
         <>
           <div className="workbench-preview video-workbench-preview">
-            <Clapperboard size={18} />
-            <span className="video-preview-play" aria-hidden="true">
-              <Play size={14} fill="currentColor" />
-            </span>
-            <div className="video-preview-timeline">
-              <span style={{ width: `${node.progress ?? 0}%` }} />
-            </div>
-            <small>{value("duration", "6")}s</small>
+            {mediaUrl ? (
+              <video src={mediaUrl} controls aria-label={`${node.title} 生成结果`} />
+            ) : (
+              <>
+                <Clapperboard size={18} />
+                <span className="video-preview-play" aria-hidden="true">
+                  <Play size={14} fill="currentColor" />
+                </span>
+                <div className="video-preview-timeline">
+                  <span style={{ width: `${node.progress ?? 0}%` }} />
+                </div>
+                <small>{value("duration", "6")}s</small>
+              </>
+            )}
           </div>
           <label className="workbench-reference">
             <span>首帧素材</span>
@@ -229,6 +252,7 @@ export function NodeCard({
   onSizeChange,
   onConnectionStart,
   connectionTargetAvailable,
+  onRun,
 }: NodeCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const drag = useRef<{
@@ -417,10 +441,10 @@ export function NodeCard({
 
       {selected && (
         <div className="node-actions">
-          <IconButton label="运行节点">
+          <IconButton label="运行节点" onClick={onRun}>
             <Play size={15} />
           </IconButton>
-          <IconButton label="重试节点">
+          <IconButton label="重试节点" onClick={onRun}>
             <RotateCcw size={15} />
           </IconButton>
           <span className="saved-state">

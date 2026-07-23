@@ -186,6 +186,39 @@ export function IntentConsole({
             </div>
           </div>
         )}
+
+        {(runState === "succeeded" ||
+          runState === "failed" ||
+          runState === "canceled") && (
+          <div className={`run-ready-card run-result-${runState}`}>
+            <span className="run-ready-icon">
+              {runState === "succeeded" ? (
+                <Check size={18} />
+              ) : runState === "failed" ? (
+                <AlertTriangle size={18} />
+              ) : (
+                <CircleStop size={18} />
+              )}
+            </span>
+            <div>
+              <strong>
+                {runState === "succeeded"
+                  ? "AI 微内核执行完成"
+                  : runState === "failed"
+                    ? "工作流执行失败"
+                    : "工作流已取消"}
+              </strong>
+              <small>
+                {runState === "succeeded"
+                  ? "节点结果已按连线完成传递并记录"
+                  : "可检查失败节点后重新运行"}
+              </small>
+            </div>
+            <button type="button" className="secondary-button" onClick={onStart}>
+              <RotateCcw size={14} /> 重新运行
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="suggestion-row" aria-label="意图建议">
@@ -234,4 +267,3 @@ export function IntentConsole({
     </aside>
   );
 }
-

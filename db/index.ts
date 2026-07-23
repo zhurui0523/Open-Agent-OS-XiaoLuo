@@ -50,6 +50,32 @@ const registrySchema = [
     detail_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS kernel_runs (
+    id TEXT PRIMARY KEY NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    graph_json TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS kernel_tasks (
+    id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT NOT NULL REFERENCES kernel_runs(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    dependencies_json TEXT NOT NULL DEFAULT '[]',
+    input_json TEXT,
+    output_json TEXT,
+    executor TEXT,
+    error TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS kernel_tasks_run_id_idx
+    ON kernel_tasks (run_id)`,
 ] as const;
 
 let schemaReady: Promise<unknown> | undefined;

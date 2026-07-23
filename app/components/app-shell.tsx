@@ -37,7 +37,7 @@ export function AppShell() {
             <span><small>品牌内容实验室</small><b>团队空间</b></span>
             <ChevronDown size={14} />
           </button>
-          <button type="button" className="kernel-chip"><i /> 扩展内核就绪</button>
+          <button type="button" className="kernel-chip"><i /> AI 微内核在线</button>
         </div>
         <div className="top-actions">
           <IconButton label="帮助中心"><CircleHelp size={18} /></IconButton>

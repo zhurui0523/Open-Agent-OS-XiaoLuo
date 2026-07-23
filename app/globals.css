@@ -1106,6 +1106,15 @@ button:disabled {
     linear-gradient(145deg, #d9eee9 0%, #b7d5ce 46%, #f4d8ba 100%);
 }
 
+.image-workbench-preview > img,
+.video-workbench-preview > video {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: contain;
+  background: #0f172a;
+}
+
 .media-preview-art {
   position: absolute;
   inset: 0;
