@@ -82,7 +82,11 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
     typeof parameters.kernelOutput === "object"
       ? (parameters.kernelOutput as KernelNodeOutput)
       : null;
-  const mediaUrl = kernelOutput?.assetUrl;
+  const assetContentUrl =
+    typeof parameters.assetContentUrl === "string"
+      ? parameters.assetContentUrl
+      : undefined;
+  const mediaUrl = kernelOutput?.assetUrl ?? assetContentUrl;
   const progressLabel =
     node.status === "running"
       ? `生成中 ${node.progress ?? 0}%`

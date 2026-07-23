@@ -500,6 +500,17 @@ export function CanvasView({ os }: CanvasViewProps) {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
+    let asset;
+    try {
+      asset = await os.uploadAsset(file, {
+        sourceType: "canvas-upload",
+        sourceRef: os.activeCanvasId,
+        tags: ["画布上传"],
+      });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "文件上传失败");
+      return;
+    }
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     const kind: NodeKind = file.type.startsWith("image/")
       ? "image"
@@ -523,9 +534,12 @@ export function CanvasView({ os }: CanvasViewProps) {
     os.addNode(kind, uploadAnchorRef.current, {
       title: file.name,
       prompt,
-      result: `本地文件 · ${sizeLabel}`,
+      result: `已进入 AI 文件系统 · ${sizeLabel}`,
       parameters: {
-        source: "local-upload",
+        source: "asset-kernel",
+        assetId: asset.id,
+        assetUri: asset.uri,
+        assetContentUrl: asset.contentUrl,
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
         size: file.size,

@@ -13,6 +13,7 @@ import type {
   CanvasNode,
   Capability,
   ChatMessage,
+  FileSystemAsset,
   InstalledPackage,
   IntentPlan,
   KernelExecuteResult,
@@ -610,6 +611,51 @@ export function useIntentOS() {
                   signal: controller.signal,
                 },
               );
+              const graphNode = graph.nodes.find((node) => node.id === nodeId);
+              let persistedAsset: FileSystemAsset | null = null;
+              if (
+                graphNode &&
+                !response.output.preview &&
+                (response.output.assetUrl || response.output.text)
+              ) {
+                try {
+                  const persisted = await requestJson<{
+                    asset: FileSystemAsset;
+                  }>("/api/v2/files", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      title: graphNode.title,
+                      kind: graphNode.kind,
+                      result: response.output.text ?? response.result,
+                      assetUrl: response.output.assetUrl,
+                      sourceType: "kernel-output",
+                      sourceRef: `${run.id}:${nodeId}`,
+                      tags: [graphNode.kind, "AI 生成"],
+                      metadata: {
+                        executor: response.executor,
+                        runId: run.id,
+                        nodeId,
+                      },
+                    }),
+                  });
+                  persistedAsset = persisted.asset;
+                } catch {
+                  // The generated result remains usable even if asset persistence fails.
+                }
+              }
+              const kernelOutput = persistedAsset
+                ? {
+                    ...response.output,
+                    assetUrl:
+                      graphNode?.kind === "text"
+                        ? response.output.assetUrl
+                        : persistedAsset.contentUrl,
+                    data: {
+                      assetId: persistedAsset.id,
+                      assetUri: persistedAsset.uri,
+                    },
+                  }
+                : response.output;
               setNodes((current) =>
                 current.map((node) =>
                   node.id === nodeId
@@ -620,9 +666,16 @@ export function useIntentOS() {
                         result: response.result,
                         parameters: {
                           ...node.parameters,
-                          kernelOutput: response.output,
+                          kernelOutput,
                           kernelExecutor: response.executor,
                           kernelRunId: run.id,
+                          ...(persistedAsset
+                            ? {
+                                assetId: persistedAsset.id,
+                                assetUri: persistedAsset.uri,
+                                assetContentUrl: persistedAsset.contentUrl,
+                              }
+                            : {}),
                         },
                       }
                     : node,
@@ -821,6 +874,28 @@ export function useIntentOS() {
     return result.model;
   }
 
+  async function uploadAsset(
+    file: File,
+    metadata: {
+      folderId?: string | null;
+      sourceType?: string;
+      sourceRef?: string | null;
+      tags?: string[];
+    } = {},
+  ) {
+    const form = new FormData();
+    form.set("file", file);
+    if (metadata.folderId) form.set("folderId", metadata.folderId);
+    if (metadata.sourceType) form.set("sourceType", metadata.sourceType);
+    if (metadata.sourceRef) form.set("sourceRef", metadata.sourceRef);
+    if (metadata.tags?.length) form.set("tags", metadata.tags.join(","));
+    const result = await requestJson<{ asset: FileSystemAsset }>(
+      "/api/v2/files",
+      { method: "POST", body: form },
+    );
+    return result.asset;
+  }
+
   async function deleteModel(id: string) {
     await requestJson(`/api/v2/models?id=${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -883,6 +958,7 @@ export function useIntentOS() {
     testPlugin,
     createModel,
     deleteModel,
+    uploadAsset,
   };
 }
 

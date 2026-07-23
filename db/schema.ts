@@ -1,5 +1,11 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const packages = sqliteTable("packages", {
   id: text("id").primaryKey(),
@@ -82,3 +88,80 @@ export const kernelTasks = sqliteTable("kernel_tasks", {
   completedAt: text("completed_at"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const assetFolders = sqliteTable(
+  "asset_folders",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    parentId: text("parent_id"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("asset_folders_parent_id_idx").on(table.parentId)],
+);
+
+export const assets = sqliteTable("assets", {
+  id: text("id").primaryKey(),
+  uri: text("uri").notNull().unique(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(),
+  mimeType: text("mime_type").notNull(),
+  size: integer("size").notNull(),
+  folderId: text("folder_id"),
+  currentVersionId: text("current_version_id"),
+  currentVersion: integer("current_version").notNull().default(1),
+  versionCount: integer("version_count").notNull().default(1),
+  tagsJson: text("tags_json").notNull().default("[]"),
+  description: text("description").notNull().default(""),
+  searchText: text("search_text").notNull().default(""),
+  sourceType: text("source_type").notNull().default("upload"),
+  sourceRef: text("source_ref"),
+  contentHash: text("content_hash").notNull(),
+  status: text("status").notNull().default("ready"),
+  trashedAt: text("trashed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("assets_folder_id_idx").on(table.folderId),
+  index("assets_content_hash_idx").on(table.contentHash),
+]);
+
+export const assetVersions = sqliteTable("asset_versions", {
+  id: text("id").primaryKey(),
+  assetId: text("asset_id")
+    .notNull()
+    .references(() => assets.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  blobKey: text("blob_key").notNull(),
+  contentHash: text("content_hash").notNull(),
+  mimeType: text("mime_type").notNull(),
+  size: integer("size").notNull(),
+  sourceType: text("source_type").notNull().default("upload"),
+  sourceRef: text("source_ref"),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("asset_versions_asset_id_idx").on(table.assetId),
+  index("asset_versions_content_hash_idx").on(table.contentHash),
+  uniqueIndex("asset_versions_asset_version_unique").on(
+    table.assetId,
+    table.version,
+  ),
+]);
+
+export const assetRelations = sqliteTable("asset_relations", {
+  id: text("id").primaryKey(),
+  fromAssetId: text("from_asset_id")
+    .notNull()
+    .references(() => assets.id, { onDelete: "cascade" }),
+  toAssetId: text("to_asset_id")
+    .notNull()
+    .references(() => assets.id, { onDelete: "cascade" }),
+  relationType: text("relation_type").notNull(),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("asset_relations_from_idx").on(table.fromAssetId),
+  index("asset_relations_to_idx").on(table.toAssetId),
+]);

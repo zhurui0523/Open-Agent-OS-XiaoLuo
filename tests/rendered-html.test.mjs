@@ -307,3 +307,60 @@ test("compiles and executes workflows through the AI microkernel contract", asyn
   assert.match(schema, /kernel_tasks/);
   assert.match(appShell, /AI 微内核在线/);
 });
+
+test("ships a persistent AI file system with versioned asset URIs", async () => {
+  const [
+    hosting,
+    schema,
+    kernel,
+    filesRoute,
+    contentRoute,
+    versionsRoute,
+    assetsView,
+    canvasView,
+    controller,
+    runtimeConfig,
+    envExample,
+    gitignore,
+  ] = await Promise.all([
+    readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/asset-kernel.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/files/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/files/content/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/files/versions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/assets-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/server-runtime-config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal(JSON.parse(hosting).r2, "FILES");
+  assert.match(schema, /asset_folders/);
+  assert.match(schema, /asset_versions/);
+  assert.match(schema, /asset_relations/);
+  assert.match(kernel, /asset:\/\/workspace\//);
+  assert.match(kernel, /blobs\/sha256\//);
+  assert.match(kernel, /sha256Hex/);
+  assert.match(filesRoute, /asset\.created/);
+  assert.match(filesRoute, /action\?: "trash" \| "restore"/);
+  assert.match(contentRoute, /accept-ranges/);
+  assert.match(contentRoute, /content-range/);
+  assert.match(versionsRoute, /storeAssetVersion/);
+  assert.match(assetsView, /AI 文件系统/);
+  assert.match(assetsView, /\/api\/v2\/files/);
+  assert.match(assetsView, /版本历史/);
+  assert.doesNotMatch(assetsView, /initialAssets/);
+  assert.match(canvasView, /os\.uploadAsset/);
+  assert.match(canvasView, /source: "asset-kernel"/);
+  assert.match(controller, /sourceType: "kernel-output"/);
+  assert.match(controller, /async function uploadAsset/);
+  assert.match(runtimeConfig, /DATABASE_DRIVER/);
+  assert.match(runtimeConfig, /STORAGE_DRIVER/);
+  assert.match(envExample, /^DB_PASSWORD=$/m);
+  assert.match(envExample, /^OSS_ACCESS_KEY_SECRET=$/m);
+  assert.match(gitignore, /^\.env\*$/m);
+  assert.match(gitignore, /^!\.env\.example$/m);
+});

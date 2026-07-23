@@ -155,6 +155,46 @@ export interface AssetItem {
   description: string;
 }
 
+export type AssetKind =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "document"
+  | "archive"
+  | "other";
+
+export interface FileSystemAsset {
+  id: string;
+  uri: string;
+  name: string;
+  kind: AssetKind;
+  mimeType: string;
+  size: number;
+  folderId: string | null;
+  tags: string[];
+  description: string;
+  sourceType: string;
+  sourceRef: string | null;
+  contentHash: string;
+  currentVersion: number;
+  versionCount: number;
+  status: "ready" | "processing" | "failed";
+  trashedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  contentUrl: string;
+  downloadUrl: string;
+}
+
+export interface FileSystemFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";

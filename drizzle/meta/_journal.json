@@ -15,6 +15,20 @@
       "when": 1784834553748,
       "tag": "0001_plain_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784835872496,
+      "tag": "0002_light_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784835971635,
+      "tag": "0003_simple_guardian",
+      "breakpoints": true
     }
   ]
 }

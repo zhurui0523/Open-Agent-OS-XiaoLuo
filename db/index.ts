@@ -76,6 +76,70 @@ const registrySchema = [
   )`,
   `CREATE INDEX IF NOT EXISTS kernel_tasks_run_id_idx
     ON kernel_tasks (run_id)`,
+  `CREATE TABLE IF NOT EXISTS asset_folders (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    parent_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS assets (
+    id TEXT PRIMARY KEY NOT NULL,
+    uri TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    folder_id TEXT,
+    current_version_id TEXT,
+    current_version INTEGER NOT NULL DEFAULT 1,
+    version_count INTEGER NOT NULL DEFAULT 1,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    description TEXT NOT NULL DEFAULT '',
+    search_text TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT 'upload',
+    source_ref TEXT,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ready',
+    trashed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS asset_versions (
+    id TEXT PRIMARY KEY NOT NULL,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    blob_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'upload',
+    source_ref TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS asset_relations (
+    id TEXT PRIMARY KEY NOT NULL,
+    from_asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    to_asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS assets_folder_id_idx ON assets (folder_id)`,
+  `CREATE INDEX IF NOT EXISTS assets_content_hash_idx ON assets (content_hash)`,
+  `CREATE INDEX IF NOT EXISTS asset_folders_parent_id_idx
+    ON asset_folders (parent_id)`,
+  `CREATE INDEX IF NOT EXISTS asset_versions_asset_id_idx
+    ON asset_versions (asset_id)`,
+  `CREATE INDEX IF NOT EXISTS asset_versions_content_hash_idx
+    ON asset_versions (content_hash)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS asset_versions_asset_version_unique
+    ON asset_versions (asset_id, version)`,
+  `CREATE INDEX IF NOT EXISTS asset_relations_from_idx
+    ON asset_relations (from_asset_id)`,
+  `CREATE INDEX IF NOT EXISTS asset_relations_to_idx
+    ON asset_relations (to_asset_id)`,
 ] as const;
 
 let schemaReady: Promise<unknown> | undefined;
