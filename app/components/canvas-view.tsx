@@ -569,7 +569,6 @@ export function CanvasView({ os }: CanvasViewProps) {
           <div className="canvas-grid" style={gridStyle} aria-hidden="true" />
 
           <div className="canvas-content" style={worldStyle}>
-            <span className="canvas-origin" aria-hidden="true" />
             {os.edges.map((edge) => {
               const source = os.nodes.find((node) => node.id === edge.source);
               const target = os.nodes.find((node) => node.id === edge.target);

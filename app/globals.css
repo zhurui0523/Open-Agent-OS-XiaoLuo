@@ -920,39 +920,6 @@ button:disabled {
   will-change: transform;
 }
 
-.canvas-origin {
-  position: absolute;
-  top: -5px;
-  left: -5px;
-  display: block;
-  width: 10px;
-  height: 10px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.canvas-origin::before,
-.canvas-origin::after {
-  position: absolute;
-  background: rgba(99, 102, 241, 0.25);
-  content: "";
-}
-
-.canvas-origin::before {
-  top: 4px;
-  left: -8px;
-  width: 24px;
-  height: 1px;
-}
-
-.canvas-origin::after {
-  top: -8px;
-  left: 4px;
-  width: 1px;
-  height: 24px;
-}
-
 .canvas-mode-chip,
 .open-console-button {
   position: absolute;
