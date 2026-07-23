@@ -2,11 +2,15 @@
 
 import {
   ArrowRight,
+  Blocks,
   Download,
   Eraser,
   ImagePlus,
   Hand,
+  Library,
+  MoreHorizontal,
   MousePointer2,
+  PanelsTopLeft,
   Pencil,
   Play,
   Redo2,
@@ -16,7 +20,8 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react";
-import type { NodeKind, RunState } from "../types";
+import { useState } from "react";
+import type { AppView, NodeKind, RunState } from "../types";
 import { IconButton } from "./icon-button";
 
 interface CanvasToolbarProps {
@@ -27,6 +32,8 @@ interface CanvasToolbarProps {
   onAddNode: (kind: NodeKind) => void;
   onRun: () => void;
   onDelete: () => void;
+  onOpenDrawer: () => void;
+  onNavigate: (view: AppView) => void;
 }
 
 export function CanvasToolbar({
@@ -37,11 +44,15 @@ export function CanvasToolbar({
   onAddNode,
   onRun,
   onDelete,
+  onOpenDrawer,
+  onNavigate,
 }: CanvasToolbarProps) {
+  const [moreOpen, setMoreOpen] = useState(false);
+
   return (
     <div className="canvas-toolbar" role="toolbar" aria-label="画布工具">
-      <IconButton label="导入素材" onClick={() => onAddNode("image")}>
-        <ImagePlus size={18} />
+      <IconButton label="打开画布管理" onClick={onOpenDrawer}>
+        <PanelsTopLeft size={18} />
       </IconButton>
       <span className="tool-separator" />
       <IconButton
@@ -59,6 +70,12 @@ export function CanvasToolbar({
         <Hand size={18} />
       </IconButton>
       <IconButton
+        label="导入素材"
+        onClick={() => onAddNode("image")}
+      >
+        <ImagePlus size={18} />
+      </IconButton>
+      <IconButton
         label="添加卡片"
         active={activeTool === "card"}
         onClick={() => {
@@ -69,34 +86,24 @@ export function CanvasToolbar({
         <Square size={18} />
       </IconButton>
       <IconButton
-        label="画笔标注"
-        active={activeTool === "draw"}
-        onClick={() => onToolChange("draw")}
-      >
-        <Pencil size={18} />
-      </IconButton>
-      <IconButton
         label="连接节点"
         active={activeTool === "connect"}
         onClick={() => onToolChange("connect")}
       >
         <ArrowRight size={18} />
       </IconButton>
-      <IconButton label="添加标签">
-        <Tag size={18} />
+      <span className="tool-separator" />
+      <IconButton
+        label="打开资产中心"
+        onClick={() => onNavigate("assets")}
+      >
+        <Library size={18} />
       </IconButton>
       <IconButton
-        label="添加文本节点"
-        active={activeTool === "text"}
-        onClick={() => {
-          onToolChange("text");
-          onAddNode("text");
-        }}
+        label="打开能力中心"
+        onClick={() => onNavigate("capabilities")}
       >
-        <TextCursorInput size={18} />
-      </IconButton>
-      <IconButton label="橡皮擦">
-        <Eraser size={18} />
+        <Blocks size={18} />
       </IconButton>
       <span className="tool-separator" />
       <IconButton
@@ -106,23 +113,60 @@ export function CanvasToolbar({
       >
         <Play size={18} fill={runState === "running" ? "currentColor" : "none"} />
       </IconButton>
-      <IconButton label="撤销">
-        <Undo2 size={18} />
-      </IconButton>
-      <IconButton label="重做">
-        <Redo2 size={18} />
-      </IconButton>
-      <IconButton label="导出画布">
-        <Download size={18} />
-      </IconButton>
-      <IconButton
-        label="删除选中节点"
-        danger
-        disabled={!hasSelection}
-        onClick={onDelete}
-      >
-        <Trash2 size={18} />
-      </IconButton>
+      <div className="canvas-toolbar-more">
+        <IconButton
+          label={moreOpen ? "收起更多工具" : "展开更多工具"}
+          active={moreOpen}
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((current) => !current)}
+        >
+          <MoreHorizontal size={18} />
+        </IconButton>
+        {moreOpen && (
+          <div className="canvas-toolbar-menu" role="group" aria-label="更多画布工具">
+            <IconButton
+              label="画笔标注"
+              active={activeTool === "draw"}
+              onClick={() => onToolChange("draw")}
+            >
+              <Pencil size={18} />
+            </IconButton>
+            <IconButton label="添加标签">
+              <Tag size={18} />
+            </IconButton>
+            <IconButton
+              label="添加文本节点"
+              active={activeTool === "text"}
+              onClick={() => {
+                onToolChange("text");
+                onAddNode("text");
+              }}
+            >
+              <TextCursorInput size={18} />
+            </IconButton>
+            <IconButton label="橡皮擦">
+              <Eraser size={18} />
+            </IconButton>
+            <IconButton label="撤销">
+              <Undo2 size={18} />
+            </IconButton>
+            <IconButton label="重做">
+              <Redo2 size={18} />
+            </IconButton>
+            <IconButton label="导出画布">
+              <Download size={18} />
+            </IconButton>
+            <IconButton
+              label="删除选中节点"
+              danger
+              disabled={!hasSelection}
+              onClick={onDelete}
+            >
+              <Trash2 size={18} />
+            </IconButton>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

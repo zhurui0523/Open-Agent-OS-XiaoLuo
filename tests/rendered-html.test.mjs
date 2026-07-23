@@ -33,9 +33,10 @@ test("server-renders the XiaoLuo AI workspace", async () => {
   const html = await response.text();
   assert.match(html, /<title>XiaoLuo AI Intent OS V2<\/title>/i);
   assert.match(html, /XiaoLuo AI/);
-  assert.match(html, /Intent Console/);
+  assert.match(html, /aria-label="无限画布"/);
+  assert.match(html, /个人额度/);
+  assert.match(html, /open-console-button[\s\S]*Intent/);
   assert.match(html, /夏日品牌短片/);
-  assert.match(html, /AI 会先生成可检查计划/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
 });
 
@@ -119,9 +120,11 @@ test("validates Package Contract namespaces, permissions, and runtime isolation"
 
 test("uses an unbounded world-coordinate canvas with pointer-centered zoom", async () => {
   const geometry = await import("../app/lib/canvas-geometry.ts");
-  const [canvasView, nodeCard, styles] = await Promise.all([
+  const [appShell, canvasView, nodeCard, controller, styles] = await Promise.all([
+    readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/node-card.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
@@ -148,4 +151,10 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.doesNotMatch(nodeCard, /Math\.max\(16|Math\.max\(24/);
   assert.doesNotMatch(styles, /width:\s*1240px|height:\s*720px/);
   assert.match(styles, /\.canvas-content[\s\S]*width:\s*0;[\s\S]*height:\s*0;/);
+  assert.match(appShell, /is-canvas-view/);
+  assert.match(styles, /\.is-canvas-view \.app-main[\s\S]*inset:\s*0;/);
+  assert.match(styles, /\.is-canvas-view \.canvas-toolbar[\s\S]*flex-direction:\s*column;/);
+  assert.match(styles, /\.is-canvas-view \.minimap[\s\S]*bottom:\s*24px;[\s\S]*left:\s*24px;/);
+  assert.match(styles, /\.is-canvas-view \.open-console-button[\s\S]*right:\s*24px;[\s\S]*bottom:\s*24px;/);
+  assert.match(controller, /useState\(false\)/);
 });

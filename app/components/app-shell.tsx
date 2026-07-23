@@ -36,7 +36,7 @@ export function AppShell() {
   if (!loggedIn) return <AuthScreen onEnter={() => setLoggedIn(true)} />;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${os.view === "canvas" ? "is-canvas-view" : ""}`}>
       <header className="top-bar">
         <div className="brand-lockup">
           <span><Sparkles size={18} /></span>

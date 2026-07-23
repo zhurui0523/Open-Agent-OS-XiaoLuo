@@ -38,8 +38,8 @@ import { ZoomControls } from "./zoom-controls";
 
 const NODE_WIDTH = 264;
 const NODE_FIT_HEIGHT = 220;
-const MINIMAP_WIDTH = 132;
-const MINIMAP_HEIGHT = 82;
+const MINIMAP_WIDTH = 200;
+const MINIMAP_HEIGHT = 124;
 const MINIMAP_PADDING = 8;
 
 interface CanvasViewProps {
@@ -537,6 +537,8 @@ export function CanvasView({ os }: CanvasViewProps) {
             onAddNode={addNodeAtViewport}
             onRun={os.startRun}
             onDelete={os.deleteSelected}
+            onOpenDrawer={() => os.setDrawerOpen(true)}
+            onNavigate={os.setView}
           />
           <ZoomControls
             zoom={os.zoom}
@@ -552,7 +554,7 @@ export function CanvasView({ os }: CanvasViewProps) {
               className="open-console-button"
               onClick={() => os.setConsoleOpen(true)}
             >
-              <MessageSquareText size={17} /> 打开 Intent
+              <MessageSquareText size={17} /> Intent
             </button>
           )}
         </div>

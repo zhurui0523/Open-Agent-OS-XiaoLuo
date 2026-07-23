@@ -61,8 +61,8 @@ export function useIntentOS() {
     "node_visual",
   );
   const [activeCanvasId, setActiveCanvasId] = useState("cv_campaign");
-  const [drawerOpen, setDrawerOpen] = useState(true);
-  const [consoleOpen, setConsoleOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const [activeTool, setActiveTool] = useState("select");
   const [zoom, setZoom] = useState(92);
   const [runState, setRunState] = useState<RunState>("running");

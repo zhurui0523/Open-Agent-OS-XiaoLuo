@@ -3696,6 +3696,189 @@ button:disabled {
   text-align: center;
 }
 
+/* Full-viewport canvas layout */
+
+.app-shell.is-canvas-view {
+  min-height: 100svh;
+  overflow: hidden;
+}
+
+.is-canvas-view .top-bar {
+  top: 24px;
+  right: auto;
+  left: 24px;
+  display: flex;
+  width: auto;
+  height: 54px;
+  grid-template-columns: none;
+  border-radius: 18px;
+  box-shadow: var(--shadow-float);
+  padding: 6px;
+}
+
+.is-canvas-view .brand-lockup,
+.is-canvas-view .top-actions,
+.is-canvas-view .top-status > :not(:first-child) {
+  display: none;
+}
+
+.is-canvas-view .top-status {
+  display: flex;
+}
+
+.is-canvas-view .status-pill {
+  height: 40px;
+  border: 0;
+  background: var(--color-surface-subtle);
+  padding: 0 12px 0 8px;
+}
+
+.is-canvas-view .app-dock {
+  display: none;
+}
+
+.is-canvas-view .app-main {
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-canvas);
+  box-shadow: none;
+}
+
+.is-canvas-view .canvas-view {
+  overflow: hidden;
+}
+
+.is-canvas-view .canvas-header,
+.is-canvas-view .canvas-mode-chip,
+.is-canvas-view .canvas-navigation-hint {
+  display: none;
+}
+
+.is-canvas-view .canvas-workspace,
+.is-canvas-view .canvas-stage {
+  width: 100%;
+  height: 100%;
+}
+
+.is-canvas-view .canvas-drawer {
+  position: absolute;
+  z-index: 140;
+  top: 24px;
+  bottom: 24px;
+  left: 94px;
+  width: 260px;
+  flex-basis: auto;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 20px;
+  box-shadow: var(--shadow-float);
+}
+
+.is-canvas-view .canvas-toolbar {
+  z-index: 110;
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 24px;
+  width: 54px;
+  height: auto;
+  max-height: calc(100svh - 180px);
+  flex-direction: column;
+  gap: 2px;
+  overflow: visible;
+  border-radius: 19px;
+  padding: 8px 6px;
+  transform: translateY(-50%);
+}
+
+.is-canvas-view .canvas-toolbar .icon-button {
+  flex: 0 0 34px;
+}
+
+.is-canvas-view .canvas-toolbar .icon-button:nth-of-type(4),
+.is-canvas-view .canvas-toolbar .icon-button:nth-of-type(6),
+.is-canvas-view .canvas-toolbar .icon-button:nth-of-type(8) {
+  display: inline-flex;
+}
+
+.is-canvas-view .canvas-toolbar .tool-separator {
+  width: 24px;
+  height: 1px;
+  margin: 3px 0;
+}
+
+.canvas-toolbar-more {
+  position: relative;
+  display: flex;
+}
+
+.canvas-toolbar-menu {
+  position: absolute;
+  z-index: 115;
+  bottom: 0;
+  left: calc(100% + 12px);
+  display: grid;
+  width: 92px;
+  grid-template-columns: repeat(2, 34px);
+  gap: 4px;
+  justify-content: center;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: var(--shadow-float);
+  padding: 9px;
+  backdrop-filter: blur(14px);
+}
+
+.is-canvas-view .zoom-controls {
+  z-index: 90;
+  right: auto;
+  bottom: 28px;
+  left: 244px;
+  height: 44px;
+  border-radius: 15px;
+}
+
+.is-canvas-view .minimap {
+  z-index: 80;
+  right: auto;
+  bottom: 24px;
+  left: 24px;
+  width: 200px;
+  height: 124px;
+  border-radius: 18px;
+  box-shadow: var(--shadow-float);
+}
+
+.is-canvas-view .open-console-button {
+  z-index: 100;
+  top: auto;
+  right: 24px;
+  bottom: 24px;
+  min-width: 142px;
+  min-height: 54px;
+  justify-content: center;
+  border-radius: 18px;
+  padding: 0 20px;
+  box-shadow: var(--shadow-float);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.is-canvas-view .intent-console {
+  position: absolute;
+  z-index: 130;
+  top: 24px;
+  right: 24px;
+  bottom: 24px;
+  width: min(390px, calc(100vw - 132px));
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  border-radius: 20px;
+  box-shadow: var(--shadow-float);
+}
+
 /* Responsive */
 
 @media (max-width: 1280px) {
@@ -3870,6 +4053,55 @@ button:disabled {
   .auth-screen { grid-template-columns: 1fr; }
   .auth-story { display: none; }
   .auth-panel { min-height: 100vh; padding: 18px; }
+
+  .is-canvas-view .top-bar {
+    top: 12px;
+    left: 12px;
+    width: auto;
+  }
+  .is-canvas-view .canvas-toolbar {
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+    left: 12px;
+    width: auto;
+    height: 54px;
+    max-height: none;
+    flex-direction: row;
+    justify-content: center;
+    overflow-x: auto;
+    border-radius: 18px;
+    transform: none;
+  }
+  .is-canvas-view .canvas-toolbar .tool-separator {
+    width: 1px;
+    height: 22px;
+    margin: 0 3px;
+  }
+  .canvas-toolbar-menu {
+    bottom: calc(100% + 12px);
+    left: auto;
+    right: 0;
+  }
+  .is-canvas-view .open-console-button {
+    right: 12px;
+    bottom: 78px;
+    min-width: 120px;
+    min-height: 46px;
+  }
+  .is-canvas-view .intent-console {
+    top: 12px;
+    right: 12px;
+    bottom: 78px;
+    width: calc(100vw - 24px);
+    border-radius: 18px;
+  }
+  .is-canvas-view .canvas-drawer {
+    top: 12px;
+    bottom: 78px;
+    left: 12px;
+    width: min(290px, calc(100vw - 24px));
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
