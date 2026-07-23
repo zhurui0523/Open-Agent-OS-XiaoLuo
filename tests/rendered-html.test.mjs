@@ -35,8 +35,14 @@ test("server-renders the XiaoLuo AI workspace", async () => {
   assert.match(html, /XiaoLuo AI/);
   assert.match(html, /aria-label="无限画布"/);
   assert.match(html, /个人额度/);
-  assert.match(html, /open-console-button[\s\S]*Intent/);
-  assert.match(html, /xiaoluo-intent-mark\.png/);
+  assert.match(
+    html,
+    /open-console-button[\s\S]*xiaoluo-intent-mark\.png[\s\S]*Intent/,
+  );
+  assert.match(
+    html,
+    /<link[^>]+rel="icon"[^>]+href="\/xiaoluo-intent-mark\.png"/,
+  );
   assert.match(html, /夏日品牌短片/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
   await access(new URL("../public/xiaoluo-intent-mark.png", import.meta.url));

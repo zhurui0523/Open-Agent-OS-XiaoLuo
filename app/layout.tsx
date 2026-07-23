@@ -22,6 +22,17 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title,
     description,
+    icons: {
+      icon: [
+        {
+          url: "/xiaoluo-intent-mark.png",
+          type: "image/png",
+          sizes: "1254x1254",
+        },
+      ],
+      shortcut: ["/xiaoluo-intent-mark.png"],
+      apple: [{ url: "/xiaoluo-intent-mark.png" }],
+    },
     openGraph: {
       title,
       description,
