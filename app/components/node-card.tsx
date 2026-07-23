@@ -16,6 +16,7 @@ import {
 import { useRef } from "react";
 import type { CanvasNode, Capability, ModelConnection, NodeStatus } from "../types";
 import { IconButton } from "./icon-button";
+import { SchemaFields } from "./schema-fields";
 
 const statusMeta: Record<
   NodeStatus,
@@ -73,6 +74,9 @@ export function NodeCard({
   );
   const compatibleModels = models.filter((model) =>
     model.modalities.includes(node.kind),
+  );
+  const activeCapability = capabilities.find(
+    (capability) => capability.id === node.capabilityId,
   );
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
@@ -171,6 +175,9 @@ export function NodeCard({
               value={node.modelId}
               onChange={(event) => onUpdate({ modelId: event.target.value })}
             >
+              {!compatibleModels.some((model) => model.id === node.modelId) && (
+                <option value="unconfigured">未配置兼容模型</option>
+              )}
               {compatibleModels.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.name}
@@ -179,6 +186,15 @@ export function NodeCard({
             </select>
           </label>
         </div>
+      )}
+
+      {selected && activeCapability?.inputSchema && (
+        <SchemaFields
+          schema={activeCapability.inputSchema}
+          uiSchema={activeCapability.uiSchema}
+          value={node.parameters ?? {}}
+          onChange={(parameters) => onUpdate({ parameters })}
+        />
       )}
 
       {(node.status === "running" || node.status === "queued") && (
@@ -208,4 +224,3 @@ export function NodeCard({
     </article>
   );
 }
-

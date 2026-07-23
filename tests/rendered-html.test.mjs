@@ -39,22 +39,80 @@ test("server-renders the XiaoLuo AI workspace", async () => {
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
 });
 
-test("keeps SKILL packages empty for later user integration", async () => {
-  const [data, capabilityView, packageJson] = await Promise.all([
+test("ships the extension engine without creating user SKILL content", async () => {
+  const [data, capabilityView, packageJson, contract, schemaRenderer] = await Promise.all([
     readFile(new URL("../app/data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/capabilities-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/package-contract.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/schema-fields.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(data, /core\.capability\.text/);
   assert.match(data, /core\.capability\.image/);
   assert.match(data, /core\.capability\.video/);
   assert.doesNotMatch(data, /core\.skill\.|analyze-script|create-script|video-dissect/);
-  assert.match(capabilityView, /SKILL 接入区域已留空/);
-  assert.match(capabilityView, /程序没有创建开发文档中的 14 个 SKILL/);
+  assert.match(capabilityView, /Skill 引擎已经就位，内容保持为空/);
+  assert.match(capabilityView, /程序不会预装或创建任何具体 Skill/);
+  assert.match(capabilityView, /sandbox="allow-scripts"/);
+  assert.doesNotMatch(capabilityView, /sandbox="[^"]*allow-same-origin/);
+  assert.match(contract, /Skill Package 默认无代码执行权/);
+  assert.match(contract, /network:https:\/\//);
+  assert.match(schemaRenderer, /Schema 自动渲染/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   await assert.rejects(access(new URL("public/_sites-preview", root)));
 });
 
+test("validates Package Contract namespaces, permissions, and runtime isolation", async () => {
+  const { parsePackagePayload, ManifestValidationError } = await import(
+    "../app/lib/package-contract.ts"
+  );
+
+  const manifest = parsePackagePayload({
+    schemaVersion: "2.0",
+    id: "com.example.review",
+    name: "Review Panel",
+    version: "1.0.0",
+    type: "plugin",
+    runtime: {
+      type: "sandbox-ui",
+      entry: "https://plugins.example.com/review",
+    },
+    permissions: ["assets:read"],
+    contributes: {
+      panels: [{ id: "com.example.review.panel", title: "Review" }],
+    },
+  });
+  assert.equal(manifest.runtime.type, "sandbox-ui");
+  assert.deepEqual(manifest.permissions, ["assets:read"]);
+
+  assert.throws(
+    () =>
+      parsePackagePayload({
+        schemaVersion: "2.0",
+        id: "com.example.skill",
+        name: "Unsafe Skill",
+        version: "1.0.0",
+        type: "skill",
+        runtime: {
+          type: "remote-api",
+          entry: "https://plugins.example.com/execute",
+        },
+        permissions: ["network:https://plugins.example.com"],
+        contributes: {
+          skills: [
+            {
+              id: "com.example.skill.run",
+              title: "Run",
+              modality: "text",
+            },
+          ],
+        },
+      }),
+    (error) =>
+      error instanceof ManifestValidationError &&
+      error.issues.some((issue) => issue.includes("无代码执行权")),
+  );
+});

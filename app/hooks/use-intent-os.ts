@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   coreCapabilities,
   initialEdges,
@@ -12,11 +12,37 @@ import type {
   CanvasNode,
   Capability,
   ChatMessage,
+  InstalledPackage,
   IntentPlan,
+  ModelConnectionDraft,
   NodeKind,
+  RegistryEvent,
+  RegistrySnapshot,
   RunState,
 } from "../types";
 import { createIntentPlan, messageTime } from "../lib/intent-plan";
+
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...init?.headers,
+    },
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    issues?: string[];
+  } & T;
+  if (!response.ok) {
+    throw new Error(
+      payload.issues?.length
+        ? `${payload.error ?? "请求失败"}：${payload.issues.join("；")}`
+        : payload.error ?? `请求失败（${response.status}）`,
+    );
+  }
+  return payload;
+}
 
 export function useIntentOS() {
   const [view, setView] = useState<AppView>("canvas");
@@ -25,6 +51,12 @@ export function useIntentOS() {
   const [capabilities, setCapabilities] =
     useState<Capability[]>(coreCapabilities);
   const [models, setModels] = useState(initialModels);
+  const [packages, setPackages] = useState<InstalledPackage[]>([]);
+  const [registryEvents, setRegistryEvents] = useState<RegistryEvent[]>([]);
+  const [registryStatus, setRegistryStatus] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [registryError, setRegistryError] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     "node_visual",
   );
@@ -46,6 +78,28 @@ export function useIntentOS() {
     },
   ]);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const refreshRegistry = useCallback(async () => {
+    setRegistryStatus("loading");
+    try {
+      const snapshot = await requestJson<RegistrySnapshot>("/api/v2/registry");
+      setPackages(snapshot.packages);
+      setCapabilities([...coreCapabilities, ...snapshot.capabilities]);
+      setModels(snapshot.models);
+      setRegistryEvents(snapshot.events);
+      setRegistryStatus("ready");
+      setRegistryError("");
+    } catch (error) {
+      setRegistryStatus("error");
+      setRegistryError(
+        error instanceof Error ? error.message : "注册表加载失败",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshRegistry();
+  }, [refreshRegistry]);
 
   useEffect(
     () => () => {
@@ -246,23 +300,88 @@ export function useIntentOS() {
     );
   }
 
-  function testModel(id: string) {
+  async function testModel(id: string) {
     setModels((current) =>
       current.map((model) =>
         model.id === id ? { ...model, state: "checking" } : model,
       ),
     );
-    timers.current.push(
-      setTimeout(() => {
-        setModels((current) =>
-          current.map((model) =>
-            model.id === id
-              ? { ...model, state: "healthy", latency: "926 ms" }
-              : model,
-          ),
-        );
-      }, 900),
+    try {
+      const payload = await requestJson<{
+        model: (typeof models)[number];
+        probe: { message: string };
+      }>("/api/v2/models/test", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      });
+      setModels((current) =>
+        current.map((model) => (model.id === id ? payload.model : model)),
+      );
+      return payload.probe.message;
+    } catch (error) {
+      setModels((current) =>
+        current.map((model) =>
+          model.id === id ? { ...model, state: "attention" } : model,
+        ),
+      );
+      throw error;
+    }
+  }
+
+  async function installPackage(raw: string) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      throw new Error("文件不是有效的 JSON Package");
+    }
+    const result = await requestJson<{
+      package: InstalledPackage;
+      action: "installed" | "updated";
+    }>("/api/v2/packages", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    await refreshRegistry();
+    return result;
+  }
+
+  async function setPackageEnabled(id: string, enabled: boolean) {
+    await requestJson("/api/v2/packages", {
+      method: "PATCH",
+      body: JSON.stringify({ id, enabled }),
+    });
+    await refreshRegistry();
+  }
+
+  async function uninstallPackage(id: string) {
+    await requestJson(`/api/v2/packages?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    await refreshRegistry();
+  }
+
+  async function testPlugin(id: string) {
+    return requestJson<{ ok: boolean; message: string; previewUrl?: string }>(
+      "/api/v2/plugins/test",
+      { method: "POST", body: JSON.stringify({ id }) },
     );
+  }
+
+  async function createModel(draft: ModelConnectionDraft) {
+    const result = await requestJson<{ model: (typeof models)[number] }>(
+      "/api/v2/models",
+      { method: "POST", body: JSON.stringify(draft) },
+    );
+    await refreshRegistry();
+    return result.model;
+  }
+
+  async function deleteModel(id: string) {
+    await requestJson(`/api/v2/models?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    await refreshRegistry();
   }
 
   return {
@@ -272,6 +391,10 @@ export function useIntentOS() {
     edges,
     capabilities,
     models,
+    packages,
+    registryEvents,
+    registryStatus,
+    registryError,
     selectedNode,
     selectedNodeId,
     setSelectedNodeId,
@@ -300,6 +423,13 @@ export function useIntentOS() {
     cancelRun,
     toggleCapability,
     testModel,
+    refreshRegistry,
+    installPackage,
+    setPackageEnabled,
+    uninstallPackage,
+    testPlugin,
+    createModel,
+    deleteModel,
   };
 }
 

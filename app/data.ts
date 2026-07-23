@@ -40,7 +40,7 @@ export const initialNodes: CanvasNode[] = [
     kind: "text",
     status: "succeeded",
     capabilityId: "core.capability.text",
-    modelId: "model-text-pro",
+    modelId: "unconfigured",
     x: 92,
     y: 168,
     result: "核心主张：把夏天走成自己的路。",
@@ -52,7 +52,7 @@ export const initialNodes: CanvasNode[] = [
     kind: "text",
     status: "succeeded",
     capabilityId: "core.capability.text",
-    modelId: "model-text-pro",
+    modelId: "unconfigured",
     x: 426,
     y: 110,
     result: "清晨出发 / 山谷奔跑 / 日落相聚",
@@ -64,7 +64,7 @@ export const initialNodes: CanvasNode[] = [
     kind: "image",
     status: "running",
     capabilityId: "core.capability.image",
-    modelId: "model-image-studio",
+    modelId: "unconfigured",
     x: 760,
     y: 92,
     progress: 68,
@@ -76,7 +76,7 @@ export const initialNodes: CanvasNode[] = [
     kind: "video",
     status: "queued",
     capabilityId: "core.capability.video",
-    modelId: "model-video-flow",
+    modelId: "unconfigured",
     x: 760,
     y: 360,
     progress: 0,
@@ -122,32 +122,7 @@ export const coreCapabilities: Capability[] = [
   },
 ];
 
-export const initialModels: ModelConnection[] = [
-  {
-    id: "model-text-pro",
-    name: "XiaoLuo Text Pro",
-    provider: "OpenAI Compatible",
-    modalities: ["text"],
-    state: "healthy",
-    latency: "842 ms",
-  },
-  {
-    id: "model-image-studio",
-    name: "Image Studio 4",
-    provider: "Visual Provider",
-    modalities: ["image"],
-    state: "healthy",
-    latency: "1.4 s",
-  },
-  {
-    id: "model-video-flow",
-    name: "Video Flow",
-    provider: "Async Video",
-    modalities: ["video"],
-    state: "attention",
-    latency: "需要复检",
-  },
-];
+export const initialModels: ModelConnection[] = [];
 
 export const initialAssets: AssetItem[] = [
   {

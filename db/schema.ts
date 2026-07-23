@@ -1,4 +1,56 @@
-// Intentionally empty by default.
-// Add Drizzle tables here when the site actually needs a database.
-// See examples/d1/db/schema.ts for an opt-in example.
-export {};
+import { sql } from "drizzle-orm";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+export const packages = sqliteTable("packages", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  version: text("version").notNull(),
+  description: text("description").notNull().default(""),
+  packageType: text("package_type").notNull(),
+  runtimeType: text("runtime_type").notNull(),
+  runtimeUrl: text("runtime_url"),
+  manifestJson: text("manifest_json").notNull(),
+  permissionsJson: text("permissions_json").notNull().default("[]"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  installedAt: text("installed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const packageCapabilities = sqliteTable("package_capabilities", {
+  id: text("id").primaryKey(),
+  packageId: text("package_id")
+    .notNull()
+    .references(() => packages.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  modality: text("modality").notNull(),
+  contributionType: text("contribution_type").notNull(),
+  inputSchemaJson: text("input_schema_json").notNull().default("{}"),
+  outputSchemaJson: text("output_schema_json").notNull().default("{}"),
+  uiSchemaJson: text("ui_schema_json").notNull().default("{}"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+});
+
+export const modelConnections = sqliteTable("model_connections", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  protocol: text("protocol").notNull(),
+  baseUrl: text("base_url").notNull(),
+  modelName: text("model_name").notNull(),
+  modalitiesJson: text("modalities_json").notNull(),
+  credentialRef: text("credential_ref"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  state: text("state").notNull().default("attention"),
+  latencyMs: integer("latency_ms"),
+  lastCheckedAt: text("last_checked_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const registryEvents = sqliteTable("registry_events", {
+  id: text("id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  entityId: text("entity_id").notNull(),
+  detailJson: text("detail_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

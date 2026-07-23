@@ -24,6 +24,7 @@ export interface CanvasNode {
   y: number;
   progress?: number;
   result?: string;
+  parameters?: Record<string, unknown>;
 }
 
 export interface CanvasEdge {
@@ -46,10 +47,14 @@ export interface Capability {
   title: string;
   description: string;
   modality: NodeKind;
-  category: "系统" | "自定义";
+  category: "系统" | "SKILL" | "插件";
   enabled: boolean;
   packageVersion: string;
   parameterHint: string;
+  packageId?: string;
+  contributionType?: "skill" | "node";
+  inputSchema?: Record<string, unknown>;
+  uiSchema?: Record<string, unknown>;
 }
 
 export interface ModelConnection {
@@ -59,6 +64,58 @@ export interface ModelConnection {
   modalities: NodeKind[];
   state: "healthy" | "checking" | "attention";
   latency: string;
+  protocol?: ModelProtocol;
+  baseUrl?: string;
+  modelName?: string;
+  credentialRef?: string;
+  enabled?: boolean;
+  lastCheckedAt?: string | null;
+}
+
+export type PackageType = "skill" | "plugin" | "model-provider";
+export type PluginRuntimeType = "declarative" | "sandbox-ui" | "remote-api";
+export type ModelProtocol =
+  | "openai-compatible"
+  | "anthropic-compatible"
+  | "generic-rest";
+
+export interface InstalledPackage {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  packageType: PackageType;
+  runtimeType: PluginRuntimeType;
+  runtimeUrl?: string | null;
+  permissions: string[];
+  enabled: boolean;
+  installedAt: string;
+  updatedAt: string;
+  contributionCount: number;
+}
+
+export interface RegistryEvent {
+  id: string;
+  eventType: string;
+  entityId: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface RegistrySnapshot {
+  packages: InstalledPackage[];
+  capabilities: Capability[];
+  models: ModelConnection[];
+  events: RegistryEvent[];
+}
+
+export interface ModelConnectionDraft {
+  name: string;
+  protocol: ModelProtocol;
+  baseUrl: string;
+  modelName: string;
+  modalities: NodeKind[];
+  credentialRef?: string;
 }
 
 export interface AssetItem {
