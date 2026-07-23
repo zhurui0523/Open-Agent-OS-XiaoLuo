@@ -234,6 +234,10 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.is-canvas-view \.open-console-button[\s\S]*right:\s*24px;[\s\S]*bottom:\s*24px;/);
   assert.match(controller, /useState\(false\)/);
   assert.match(nodeCard, /ResizeObserver/);
+  assert.match(nodeCard, /function NodeWorkbench/);
+  assert.match(nodeCard, /workbench-\$\{node\.kind\}/);
+  assert.match(nodeCard, /语气|参考素材|首帧素材/);
   assert.match(canvasView, /nodeHeights\[source\.id\]/);
+  assert.match(styles, /\.node-workbench-scroll[\s\S]*max-height:\s*304px;[\s\S]*overflow-y:\s*auto;/);
   assert.match(styles, /\.port\s*\{[\s\S]*top:\s*50%;[\s\S]*transform:\s*translateY\(-50%\);/);
 });

@@ -3,13 +3,17 @@
 import {
   AlertCircle,
   Check,
+  Clapperboard,
   Clock3,
   FileText,
   GripHorizontal,
   Image as ImageIcon,
+  Layers3,
   Pause,
   Play,
   RotateCcw,
+  Sparkles,
+  Type,
   Video,
   XCircle,
 } from "lucide-react";
@@ -51,6 +55,161 @@ interface NodeCardProps {
   onMove: (x: number, y: number) => void;
   onUpdate: (patch: Partial<CanvasNode>) => void;
   onSizeChange: (nodeId: string, height: number) => void;
+}
+
+interface NodeWorkbenchProps {
+  node: CanvasNode;
+  onUpdate: (patch: Partial<CanvasNode>) => void;
+}
+
+function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
+  const parameters = node.parameters ?? {};
+  const value = (key: string, fallback: string) =>
+    typeof parameters[key] === "string" ? String(parameters[key]) : fallback;
+  const updateParameter = (key: string, nextValue: string) =>
+    onUpdate({ parameters: { ...parameters, [key]: nextValue } });
+  const progressLabel =
+    node.status === "running"
+      ? `生成中 ${node.progress ?? 0}%`
+      : node.status === "queued"
+        ? "等待执行"
+        : "预览";
+
+  return (
+    <section className={`node-workbench workbench-${node.kind}`}>
+      <header>
+        <span>
+          <Layers3 size={12} /> 专业工作台
+        </span>
+        <small>{node.kind === "text" ? "TEXT" : node.kind === "image" ? "IMAGE" : "VIDEO"}</small>
+      </header>
+
+      {node.kind === "text" && (
+        <>
+          <div className="workbench-preview text-workbench-preview">
+            <Type size={15} />
+            <p>{node.result ?? "运行节点后，文本结果会直接显示在这里。"}</p>
+          </div>
+          <div className="workbench-fields">
+            <label>
+              <span>语气</span>
+              <select
+                value={value("tone", "brand")}
+                onChange={(event) => updateParameter("tone", event.target.value)}
+              >
+                <option value="brand">品牌叙事</option>
+                <option value="cinematic">电影感</option>
+                <option value="natural">自然口语</option>
+              </select>
+            </label>
+            <label>
+              <span>长度</span>
+              <select
+                value={value("length", "medium")}
+                onChange={(event) => updateParameter("length", event.target.value)}
+              >
+                <option value="short">精简</option>
+                <option value="medium">标准</option>
+                <option value="long">详细</option>
+              </select>
+            </label>
+          </div>
+        </>
+      )}
+
+      {node.kind === "image" && (
+        <>
+          <div className="workbench-preview image-workbench-preview">
+            <div className="media-preview-art" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <span className="media-preview-badge">
+              <Sparkles size={11} /> {progressLabel}
+            </span>
+          </div>
+          <label className="workbench-reference">
+            <span>参考素材</span>
+            <input
+              value={value("reference", "上游节点 · 主视觉参考")}
+              onChange={(event) => updateParameter("reference", event.target.value)}
+            />
+          </label>
+          <div className="workbench-fields">
+            <label>
+              <span>画幅</span>
+              <select
+                value={value("ratio", "16:9")}
+                onChange={(event) => updateParameter("ratio", event.target.value)}
+              >
+                <option value="16:9">16:9 横向</option>
+                <option value="9:16">9:16 竖向</option>
+                <option value="1:1">1:1 方形</option>
+              </select>
+            </label>
+            <label>
+              <span>质量</span>
+              <select
+                value={value("quality", "high")}
+                onChange={(event) => updateParameter("quality", event.target.value)}
+              >
+                <option value="draft">草图</option>
+                <option value="high">高清</option>
+                <option value="ultra">超清</option>
+              </select>
+            </label>
+          </div>
+        </>
+      )}
+
+      {node.kind === "video" && (
+        <>
+          <div className="workbench-preview video-workbench-preview">
+            <Clapperboard size={18} />
+            <span className="video-preview-play" aria-hidden="true">
+              <Play size={14} fill="currentColor" />
+            </span>
+            <div className="video-preview-timeline">
+              <span style={{ width: `${node.progress ?? 0}%` }} />
+            </div>
+            <small>{value("duration", "6")}s</small>
+          </div>
+          <label className="workbench-reference">
+            <span>首帧素材</span>
+            <input
+              value={value("firstFrame", "继承上游图像节点")}
+              onChange={(event) => updateParameter("firstFrame", event.target.value)}
+            />
+          </label>
+          <div className="workbench-fields">
+            <label>
+              <span>时长</span>
+              <select
+                value={value("duration", "6")}
+                onChange={(event) => updateParameter("duration", event.target.value)}
+              >
+                <option value="4">4 秒</option>
+                <option value="6">6 秒</option>
+                <option value="10">10 秒</option>
+              </select>
+            </label>
+            <label>
+              <span>运镜</span>
+              <select
+                value={value("camera", "push")}
+                onChange={(event) => updateParameter("camera", event.target.value)}
+              >
+                <option value="push">缓慢推进</option>
+                <option value="follow">稳定跟随</option>
+                <option value="orbit">环绕主体</option>
+              </select>
+            </label>
+          </div>
+        </>
+      )}
+    </section>
+  );
 }
 
 export function NodeCard({
@@ -184,60 +343,64 @@ export function NodeCard({
         <h3>{node.title}</h3>
       )}
 
-      {selected ? (
-        <textarea
-          className="node-prompt-input"
-          aria-label="节点任务描述"
-          value={node.prompt}
-          onChange={(event) => onUpdate({ prompt: event.target.value })}
-        />
-      ) : (
+      {!selected && (
         <p className="node-prompt">{node.prompt}</p>
       )}
 
       {selected && (
-        <div className="node-fields">
-          <label>
-            <span>能力</span>
-            <select
-              aria-label="能力"
-              value={node.capabilityId}
-              onChange={(event) => onUpdate({ capabilityId: event.target.value })}
-            >
-              {compatibleCapabilities.map((capability) => (
-                <option key={capability.id} value={capability.id}>
-                  {capability.title}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>模型</span>
-            <select
-              aria-label="模型"
-              value={node.modelId}
-              onChange={(event) => onUpdate({ modelId: event.target.value })}
-            >
-              {!compatibleModels.some((model) => model.id === node.modelId) && (
-                <option value="unconfigured">未配置兼容模型</option>
-              )}
-              {compatibleModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )}
+        <div className="node-workbench-scroll">
+          <textarea
+            className="node-prompt-input"
+            aria-label="节点任务描述"
+            value={node.prompt}
+            onChange={(event) => onUpdate({ prompt: event.target.value })}
+          />
 
-      {selected && activeCapability?.inputSchema && (
-        <SchemaFields
-          schema={activeCapability.inputSchema}
-          uiSchema={activeCapability.uiSchema}
-          value={node.parameters ?? {}}
-          onChange={(parameters) => onUpdate({ parameters })}
-        />
+          <NodeWorkbench node={node} onUpdate={onUpdate} />
+
+          <div className="node-fields">
+            <label>
+              <span>能力</span>
+              <select
+                aria-label="能力"
+                value={node.capabilityId}
+                onChange={(event) => onUpdate({ capabilityId: event.target.value })}
+              >
+                {compatibleCapabilities.map((capability) => (
+                  <option key={capability.id} value={capability.id}>
+                    {capability.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>模型</span>
+              <select
+                aria-label="模型"
+                value={node.modelId}
+                onChange={(event) => onUpdate({ modelId: event.target.value })}
+              >
+                {!compatibleModels.some((model) => model.id === node.modelId) && (
+                  <option value="unconfigured">未配置兼容模型</option>
+                )}
+                {compatibleModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {activeCapability?.inputSchema && (
+            <SchemaFields
+              schema={activeCapability.inputSchema}
+              uiSchema={activeCapability.uiSchema}
+              value={node.parameters ?? {}}
+              onChange={(parameters) => onUpdate({ parameters })}
+            />
+          )}
+        </div>
       )}
 
       {(node.status === "running" || node.status === "queued") && (
@@ -246,7 +409,7 @@ export function NodeCard({
         </div>
       )}
 
-      {node.result && <div className="node-result">{node.result}</div>}
+      {!selected && node.result && <div className="node-result">{node.result}</div>}
 
       {selected && (
         <div className="node-actions">

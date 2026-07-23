@@ -1025,9 +1025,233 @@ button:disabled {
   padding: 7px 9px;
 }
 
+.node-workbench-scroll {
+  max-height: 304px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 7px;
+  padding-right: 3px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.node-workbench-scroll .node-prompt-input {
+  margin-top: 0;
+}
+
+.node-workbench {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  background: #fbfcfe;
+  padding: 8px;
+}
+
+.node-workbench > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.node-workbench > header span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #334155;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.node-workbench > header small {
+  border-radius: 999px;
+  background: #eef2ff;
+  padding: 3px 5px;
+  color: #4f46e5;
+  font-family: var(--font-mono);
+  font-size: 5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.workbench-preview {
+  position: relative;
+  min-height: 78px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: white;
+}
+
+.text-workbench-preview {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: start;
+  gap: 5px;
+  min-height: 66px;
+  padding: 9px;
+  color: #6366f1;
+}
+
+.text-workbench-preview p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #475569;
+  font-size: 8px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.image-workbench-preview {
+  min-height: 108px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(15, 23, 42, 0.12)),
+    linear-gradient(145deg, #d9eee9 0%, #b7d5ce 46%, #f4d8ba 100%);
+}
+
+.media-preview-art {
+  position: absolute;
+  inset: 0;
+}
+
+.media-preview-art span {
+  position: absolute;
+  bottom: -18px;
+  width: 105px;
+  height: 78px;
+  border-radius: 55% 55% 0 0;
+  background: rgba(42, 95, 82, 0.2);
+  transform: rotate(-12deg);
+}
+
+.media-preview-art span:nth-child(1) {
+  left: -20px;
+}
+
+.media-preview-art span:nth-child(2) {
+  right: 22px;
+  bottom: -28px;
+  background: rgba(255, 255, 255, 0.38);
+  transform: rotate(18deg);
+}
+
+.media-preview-art span:nth-child(3) {
+  right: -30px;
+  bottom: -8px;
+  background: rgba(104, 77, 52, 0.14);
+  transform: rotate(-8deg);
+}
+
+.media-preview-badge {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  padding: 4px 6px;
+  color: #334155;
+  font-size: 6px;
+  font-weight: 800;
+  backdrop-filter: blur(8px);
+}
+
+.video-workbench-preview {
+  display: grid;
+  min-height: 104px;
+  place-items: center;
+  background:
+    radial-gradient(circle at 66% 38%, rgba(129, 140, 248, 0.35), transparent 24%),
+    linear-gradient(145deg, #1e293b, #0f172a);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.video-preview-play {
+  position: absolute;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+  backdrop-filter: blur(8px);
+}
+
+.video-preview-timeline {
+  position: absolute;
+  right: 10px;
+  bottom: 9px;
+  left: 10px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.video-preview-timeline span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #a5b4fc;
+}
+
+.video-workbench-preview > small {
+  position: absolute;
+  right: 9px;
+  top: 8px;
+  font-family: var(--font-mono);
+  font-size: 6px;
+}
+
+.workbench-reference {
+  display: grid;
+  gap: 4px;
+}
+
+.workbench-reference > span,
+.workbench-fields label > span {
+  color: var(--color-subtle);
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.workbench-reference input,
+.workbench-fields select {
+  width: 100%;
+  height: 29px;
+  border: 1px solid #dde4ee;
+  border-radius: 8px;
+  outline: 0;
+  background: white;
+  padding: 0 7px;
+  color: #334155;
+  font-size: 7px;
+}
+
+.workbench-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.workbench-fields label {
+  display: grid;
+  gap: 4px;
+}
+
 .node-title-input:focus,
 .node-prompt-input:focus,
-.node-fields select:focus {
+.node-fields select:focus,
+.workbench-reference input:focus,
+.workbench-fields select:focus {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
