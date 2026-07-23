@@ -145,10 +145,11 @@ test("validates Package Contract namespaces, permissions, and runtime isolation"
 
 test("uses an unbounded world-coordinate canvas with pointer-centered zoom", async () => {
   const geometry = await import("../app/lib/canvas-geometry.ts");
-  const [appShell, canvasView, contextMenu, nodeCard, controller, styles] =
+  const [appShell, canvasView, canvasToolbar, contextMenu, nodeCard, controller, styles] =
     await Promise.all([
     readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/canvas-toolbar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-context-menu.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/node-card.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
@@ -201,6 +202,10 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(contextMenu, /自由画布/);
   assert.match(contextMenu, /时间排序/);
   assert.match(contextMenu, /类型排序/);
+  assert.doesNotMatch(
+    canvasToolbar,
+    /导入素材|添加卡片|连接节点|展开更多工具|canvas-toolbar-more/,
+  );
   assert.match(controller, /function undoCanvas/);
   assert.match(controller, /function selectNode/);
   assert.match(controller, /function arrangeNodes\(mode: "free" \| "time" \| "type"\)/);

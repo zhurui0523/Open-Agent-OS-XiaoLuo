@@ -387,18 +387,6 @@ export function CanvasView({ os }: CanvasViewProps) {
     setIsPanning(false);
   }
 
-  function addNodeAtViewport(kind: NodeKind) {
-    const center = screenToWorld(
-      { x: stageSize.width / 2, y: stageSize.height / 2 },
-      viewportRef.current,
-    );
-    const offset = (os.nodes.length % 4) * 18;
-    os.addNode(kind, {
-      x: center.x - NODE_WIDTH / 2 + offset,
-      y: center.y - 78 + offset,
-    });
-  }
-
   function addNodeAtContext(
     kind: NodeKind,
     preset?: Parameters<typeof os.addNode>[2],
@@ -718,13 +706,8 @@ export function CanvasView({ os }: CanvasViewProps) {
           <CanvasToolbar
             activeTool={os.activeTool}
             runState={os.runState}
-            hasSelection={Boolean(os.selectedNodeId)}
-            canUndo={os.canUndo}
             onToolChange={os.setActiveTool}
-            onAddNode={addNodeAtViewport}
             onRun={os.startRun}
-            onDelete={os.deleteSelected}
-            onUndo={os.undoCanvas}
             onOpenDrawer={() => os.setDrawerOpen(true)}
             onNavigate={os.setView}
           />

@@ -3945,39 +3945,10 @@ button:disabled {
   flex: 0 0 34px;
 }
 
-.is-canvas-view .canvas-toolbar .icon-button:nth-of-type(4),
-.is-canvas-view .canvas-toolbar .icon-button:nth-of-type(6),
-.is-canvas-view .canvas-toolbar .icon-button:nth-of-type(8) {
-  display: inline-flex;
-}
-
 .is-canvas-view .canvas-toolbar .tool-separator {
   width: 24px;
   height: 1px;
   margin: 3px 0;
-}
-
-.canvas-toolbar-more {
-  position: relative;
-  display: flex;
-}
-
-.canvas-toolbar-menu {
-  position: absolute;
-  z-index: 115;
-  bottom: 0;
-  left: calc(100% + 12px);
-  display: grid;
-  width: 92px;
-  grid-template-columns: repeat(2, 34px);
-  gap: 4px;
-  justify-content: center;
-  border: 1px solid rgba(226, 232, 240, 0.96);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow: var(--shadow-float);
-  padding: 9px;
-  backdrop-filter: blur(14px);
 }
 
 .is-canvas-view .zoom-controls {
@@ -4050,9 +4021,6 @@ button:disabled {
   .profile-button > div { display: none; }
   .intent-console { width: 338px; flex-basis: 338px; }
   .canvas-drawer { width: 220px; flex-basis: 220px; }
-  .canvas-toolbar .icon-button:nth-of-type(4),
-  .canvas-toolbar .icon-button:nth-of-type(6),
-  .canvas-toolbar .icon-button:nth-of-type(8) { display: none; }
   .asset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -4236,11 +4204,6 @@ button:disabled {
     width: 1px;
     height: 22px;
     margin: 0 3px;
-  }
-  .canvas-toolbar-menu {
-    bottom: calc(100% + 12px);
-    left: auto;
-    right: 0;
   }
   .is-canvas-view .open-console-button {
     right: 12px;
