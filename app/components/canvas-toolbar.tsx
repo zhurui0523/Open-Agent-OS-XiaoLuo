@@ -7,6 +7,7 @@ import {
   MousePointer2,
   PanelsTopLeft,
   Play,
+  WandSparkles,
 } from "lucide-react";
 import type { AppView, RunState } from "../types";
 import { IconButton } from "./icon-button";
@@ -59,6 +60,13 @@ export function CanvasToolbar({
         onClick={() => chooseCanvasTool("hand")}
       >
         <Hand size={18} />
+      </IconButton>
+      <IconButton
+        label="进入灵境画布"
+        active={currentView === "canvas"}
+        onClick={() => onNavigate("canvas")}
+      >
+        <WandSparkles size={18} />
       </IconButton>
       <span className="tool-separator" />
       <IconButton

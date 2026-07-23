@@ -206,6 +206,8 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
     canvasToolbar,
     /导入素材|添加卡片|连接节点|展开更多工具|canvas-toolbar-more/,
   );
+  assert.match(canvasToolbar, /WandSparkles/);
+  assert.match(canvasToolbar, /onClick=\{\(\) => onNavigate\("canvas"\)\}/);
   assert.match(controller, /function undoCanvas/);
   assert.match(controller, /function selectNode/);
   assert.match(controller, /function arrangeNodes\(mode: "free" \| "time" \| "type"\)/);
