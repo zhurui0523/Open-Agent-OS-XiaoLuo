@@ -116,3 +116,36 @@ test("validates Package Contract namespaces, permissions, and runtime isolation"
       error.issues.some((issue) => issue.includes("无代码执行权")),
   );
 });
+
+test("uses an unbounded world-coordinate canvas with pointer-centered zoom", async () => {
+  const geometry = await import("../app/lib/canvas-geometry.ts");
+  const [canvasView, nodeCard, styles] = await Promise.all([
+    readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/node-card.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  const viewport = { x: 120, y: 80, zoom: 100 };
+  const anchor = { x: 420, y: 280 };
+  const before = geometry.screenToWorld(anchor, viewport);
+  const zoomed = geometry.zoomViewportAt(viewport, 175, anchor);
+  const after = geometry.screenToWorld(anchor, zoomed);
+  assert.deepEqual(after, before);
+
+  assert.equal(geometry.clampCanvasZoom(1), 15);
+  assert.equal(geometry.clampCanvasZoom(900), 300);
+  assert.deepEqual(
+    geometry.screenToWorld(
+      { x: 0, y: 0 },
+      { x: 200, y: 100, zoom: 50 },
+    ),
+    { x: -400, y: -200 },
+  );
+
+  assert.match(canvasView, /translate3d\(/);
+  assert.match(canvasView, /Ctrl\/⌘ \+ 滚轮缩放/);
+  assert.match(canvasView, /visibleWorldBounds/);
+  assert.doesNotMatch(nodeCard, /Math\.max\(16|Math\.max\(24/);
+  assert.doesNotMatch(styles, /width:\s*1240px|height:\s*720px/);
+  assert.match(styles, /\.canvas-content[\s\S]*width:\s*0;[\s\S]*height:\s*0;/);
+});

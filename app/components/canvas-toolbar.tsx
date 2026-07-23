@@ -5,6 +5,7 @@ import {
   Download,
   Eraser,
   ImagePlus,
+  Hand,
   MousePointer2,
   Pencil,
   Play,
@@ -49,6 +50,13 @@ export function CanvasToolbar({
         onClick={() => onToolChange("select")}
       >
         <MousePointer2 size={18} />
+      </IconButton>
+      <IconButton
+        label="抓手平移"
+        active={activeTool === "hand"}
+        onClick={() => onToolChange("hand")}
+      >
+        <Hand size={18} />
       </IconButton>
       <IconButton
         label="添加卡片"
@@ -118,4 +126,3 @@ export function CanvasToolbar({
     </div>
   );
 }
-

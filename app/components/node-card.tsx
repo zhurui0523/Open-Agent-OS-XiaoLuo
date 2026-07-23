@@ -42,6 +42,7 @@ interface NodeCardProps {
   node: CanvasNode;
   selected: boolean;
   zoom: number;
+  panMode: boolean;
   capabilities: Capability[];
   models: ModelConnection[];
   onSelect: () => void;
@@ -53,6 +54,7 @@ export function NodeCard({
   node,
   selected,
   zoom,
+  panMode,
   capabilities,
   models,
   onSelect,
@@ -80,6 +82,7 @@ export function NodeCard({
   );
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (panMode || event.button !== 0) return;
     if ((event.target as HTMLElement).closest("button, input, textarea, select")) return;
     drag.current = {
       pointerId: event.pointerId,
@@ -96,8 +99,8 @@ export function NodeCard({
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
     const scale = zoom / 100;
     onMove(
-      Math.max(16, drag.current.nodeX + (event.clientX - drag.current.startX) / scale),
-      Math.max(24, drag.current.nodeY + (event.clientY - drag.current.startY) / scale),
+      drag.current.nodeX + (event.clientX - drag.current.startX) / scale,
+      drag.current.nodeY + (event.clientY - drag.current.startY) / scale,
     );
   }
 
@@ -109,7 +112,7 @@ export function NodeCard({
     <article
       className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""}`}
       style={{ left: node.x, top: node.y }}
-      onClick={onSelect}
+      onClick={panMode ? undefined : onSelect}
       aria-label={`${node.title}，${status.label}`}
     >
       <div

@@ -125,7 +125,10 @@ export function useIntentOS() {
     );
   }
 
-  function addNode(kind: NodeKind = "text") {
+  function addNode(
+    kind: NodeKind = "text",
+    position?: { x: number; y: number },
+  ) {
     const id = `node_${Date.now()}`;
     const modalityModels = models.filter((model) =>
       model.modalities.includes(kind),
@@ -141,8 +144,8 @@ export function useIntentOS() {
       status: "draft",
       capabilityId: modalityCapabilities[0]?.id ?? "manual.text",
       modelId: modalityModels[0]?.id ?? "unconfigured",
-      x: 320 + (nodes.length % 3) * 72,
-      y: 250 + (nodes.length % 2) * 110,
+      x: position?.x ?? 320 + (nodes.length % 3) * 72,
+      y: position?.y ?? 250 + (nodes.length % 2) * 110,
     };
     setNodes((current) => [...current, next]);
     setSelectedNodeId(id);

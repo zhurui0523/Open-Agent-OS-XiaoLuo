@@ -1,30 +1,38 @@
 "use client";
 
-import { LocateFixed, Minus, Plus } from "lucide-react";
+import { Focus, Minus, Plus } from "lucide-react";
 import { IconButton } from "./icon-button";
 
 interface ZoomControlsProps {
   zoom: number;
-  onChange: (zoom: number) => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onFit: () => void;
+  onReset: () => void;
 }
 
-export function ZoomControls({ zoom, onChange }: ZoomControlsProps) {
+export function ZoomControls({
+  zoom,
+  onZoomIn,
+  onZoomOut,
+  onFit,
+  onReset,
+}: ZoomControlsProps) {
   return (
-    <div className="zoom-controls" aria-label="缩放控制">
-      <IconButton label="回到画布中心" onClick={() => onChange(100)}>
-        <LocateFixed size={16} />
+    <div className="zoom-controls" aria-label="无限画布缩放控制">
+      <IconButton label="适配所有节点" onClick={onFit}>
+        <Focus size={16} />
       </IconButton>
       <span className="tool-separator" />
-      <IconButton label="缩小" onClick={() => onChange(Math.max(50, zoom - 10))}>
+      <IconButton label="缩小" onClick={onZoomOut}>
         <Minus size={16} />
       </IconButton>
-      <button type="button" className="zoom-value" onClick={() => onChange(100)}>
-        {zoom}%
+      <button type="button" className="zoom-value" onClick={onReset}>
+        {Math.round(zoom)}%
       </button>
-      <IconButton label="放大" onClick={() => onChange(Math.min(150, zoom + 10))}>
+      <IconButton label="放大" onClick={onZoomIn}>
         <Plus size={16} />
       </IconButton>
     </div>
   );
 }
-
