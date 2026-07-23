@@ -5,7 +5,6 @@ import {
   Blocks,
   ChevronDown,
   CircleHelp,
-  Gauge,
   Library,
   LogOut,
   Menu,
@@ -43,10 +42,6 @@ export function AppShell() {
           <div><b>XiaoLuo AI</b><small>Intent OS · V2</small></div>
         </div>
         <div className="top-status">
-          <button type="button" className="status-pill">
-            <span className="credit-ring">68</span>
-            <span><small>个人额度</small><b>6,820</b></span>
-          </button>
           <button type="button" className="status-pill team-pill">
             <span className="team-mark">XL</span>
             <span><small>品牌内容实验室</small><b>团队空间</b></span>
@@ -71,7 +66,6 @@ export function AppShell() {
             {profileOpen && (
               <div className="profile-menu">
                 <button type="button"><UserRound size={15} /> 个人中心</button>
-                <button type="button"><Gauge size={15} /> 用量与额度</button>
                 <button type="button" onClick={() => setLoggedIn(false)}><LogOut size={15} /> 退出演示</button>
               </div>
             )}

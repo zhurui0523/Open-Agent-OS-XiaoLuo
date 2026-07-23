@@ -34,7 +34,6 @@ test("server-renders the XiaoLuo AI workspace", async () => {
   assert.match(html, /<title>XiaoLuo AI Intent OS V2<\/title>/i);
   assert.match(html, /XiaoLuo AI/);
   assert.match(html, /aria-label="无限画布"/);
-  assert.match(html, /个人额度/);
   assert.match(
     html,
     /open-console-button[\s\S]*xiaoluo-intent-mark\.png[\s\S]*Intent/,
@@ -44,8 +43,26 @@ test("server-renders the XiaoLuo AI workspace", async () => {
     /<link[^>]+rel="icon"[^>]+href="\/xiaoluo-intent-mark\.png"/,
   );
   assert.match(html, /夏日品牌短片/);
+  assert.doesNotMatch(html, /个人额度|用量与额度|6,820|credit-ring/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
   await access(new URL("../public/xiaoluo-intent-mark.png", import.meta.url));
+});
+
+test("ships without a credits, points, quota, or billing system", async () => {
+  const [appShell, styles, types, controller, schema] = await Promise.all([
+    readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
+  const productSource = [appShell, styles, types, controller, schema].join("\n");
+
+  assert.doesNotMatch(
+    productSource,
+    /积分|额度|计费|余额|\bcredits?\b|\bquota\b|\bbilling\b/i,
+  );
+  assert.doesNotMatch(productSource, /credit-ring|6,820/);
 });
 
 test("ships the extension engine without creating user SKILL content", async () => {
