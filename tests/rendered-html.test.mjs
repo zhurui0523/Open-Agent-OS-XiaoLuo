@@ -215,7 +215,9 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.canvas-content[\s\S]*width:\s*0;[\s\S]*height:\s*0;/);
   assert.match(appShell, /is-canvas-view/);
   assert.match(styles, /\.is-canvas-view \.app-main[\s\S]*inset:\s*0;/);
-  assert.match(styles, /\.is-canvas-view \.canvas-toolbar[\s\S]*flex-direction:\s*column;/);
+  assert.match(styles, /\.app-shell \.canvas-toolbar[\s\S]*flex-direction:\s*column;/);
+  assert.match(appShell, /<CanvasToolbar/);
+  assert.doesNotMatch(appShell, /className="app-dock"/);
   assert.match(styles, /\.is-canvas-view \.minimap[\s\S]*bottom:\s*24px;[\s\S]*left:\s*24px;/);
   assert.match(canvasView, /minimapOpen/);
   assert.match(canvasView, /收起地图导航/);

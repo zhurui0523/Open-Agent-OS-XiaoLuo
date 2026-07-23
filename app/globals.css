@@ -414,94 +414,6 @@ button:disabled {
   color: var(--color-text);
 }
 
-.app-dock {
-  position: fixed;
-  z-index: 90;
-  top: 84px;
-  bottom: 16px;
-  left: 16px;
-  display: flex;
-  width: 68px;
-  flex-direction: column;
-  align-items: center;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.07);
-  padding: 10px 8px;
-  backdrop-filter: blur(16px);
-}
-
-.dock-menu-button {
-  margin-bottom: 12px;
-}
-
-.dock-main-items {
-  display: grid;
-  width: 100%;
-  gap: 9px;
-}
-
-.dock-item {
-  position: relative;
-  display: grid;
-  width: 100%;
-  justify-items: center;
-  gap: 4px;
-  border: 0;
-  border-radius: 14px;
-  background: transparent;
-  padding: 7px 0 6px;
-  color: var(--color-muted);
-  font-size: 9px;
-  font-weight: 700;
-  transition: 180ms ease;
-}
-
-.dock-item > span {
-  display: flex;
-  width: 36px;
-  height: 32px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 11px;
-}
-
-.dock-item:hover {
-  color: var(--color-text);
-  transform: translateY(-1px);
-}
-
-.dock-item.is-active {
-  background: white;
-  color: var(--color-accent);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.09);
-}
-
-.dock-item.is-active::after {
-  position: absolute;
-  top: 17px;
-  right: -8px;
-  width: 3px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--color-accent);
-  content: "";
-}
-
-.dock-item.is-active > span {
-  background: var(--color-primary-soft);
-}
-
-.dock-bottom {
-  display: grid;
-  margin-top: auto;
-  justify-items: center;
-  gap: 5px;
-  color: var(--color-subtle);
-  font-size: 8px;
-}
-
 .app-main {
   position: fixed;
   top: 84px;
@@ -3849,10 +3761,6 @@ button:disabled {
   display: none;
 }
 
-.is-canvas-view .app-dock {
-  display: none;
-}
-
 .is-canvas-view .app-main {
   inset: 0;
   border: 0;
@@ -3891,7 +3799,8 @@ button:disabled {
   box-shadow: var(--shadow-float);
 }
 
-.is-canvas-view .canvas-toolbar {
+.app-shell .canvas-toolbar {
+  position: fixed;
   z-index: 110;
   top: 50%;
   right: auto;
@@ -3908,11 +3817,11 @@ button:disabled {
   transform: translateY(-50%);
 }
 
-.is-canvas-view .canvas-toolbar .icon-button {
+.app-shell .canvas-toolbar .icon-button {
   flex: 0 0 34px;
 }
 
-.is-canvas-view .canvas-toolbar .tool-separator {
+.app-shell .canvas-toolbar .tool-separator {
   width: 24px;
   height: 1px;
   margin: 3px 0;
@@ -4035,26 +3944,6 @@ button:disabled {
   }
   .top-status { display: none; }
   .top-actions > .icon-button:first-child { display: none; }
-  .app-dock {
-    top: auto;
-    right: 9px;
-    bottom: 8px;
-    left: 9px;
-    width: auto;
-    height: 62px;
-    flex-direction: row;
-    justify-content: center;
-    border-radius: 18px;
-  }
-  .dock-menu-button,
-  .dock-bottom { display: none; }
-  .dock-main-items {
-    display: flex;
-    width: auto;
-    gap: 28px;
-  }
-  .dock-item { width: 55px; padding: 4px 0; }
-  .dock-item.is-active::after { display: none; }
   .app-main {
     top: 69px;
     right: 9px;
@@ -4153,7 +4042,7 @@ button:disabled {
   .auth-story { display: none; }
   .auth-panel { min-height: 100vh; padding: 18px; }
 
-  .is-canvas-view .canvas-toolbar {
+  .app-shell .canvas-toolbar {
     top: auto;
     right: 12px;
     bottom: 12px;
@@ -4167,7 +4056,7 @@ button:disabled {
     border-radius: 18px;
     transform: none;
   }
-  .is-canvas-view .canvas-toolbar .tool-separator {
+  .app-shell .canvas-toolbar .tool-separator {
     width: 1px;
     height: 22px;
     margin: 0 3px;

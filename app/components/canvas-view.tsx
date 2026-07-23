@@ -33,7 +33,6 @@ import {
 import type { NodeKind } from "../types";
 import { CanvasContextMenu } from "./canvas-context-menu";
 import { CanvasDrawer } from "./canvas-drawer";
-import { CanvasToolbar } from "./canvas-toolbar";
 import { IconButton } from "./icon-button";
 import { IntentConsole } from "./intent-console";
 import { NodeCard } from "./node-card";
@@ -702,14 +701,6 @@ export function CanvasView({ os }: CanvasViewProps) {
             拖动空白处平移 · 右键快捷菜单 · Ctrl/⌘ + 滚轮缩放 · Space 抓手 · 0 适配全部
           </div>
 
-          <CanvasToolbar
-            activeTool={os.activeTool}
-            runState={os.runState}
-            onToolChange={os.setActiveTool}
-            onRun={os.startRun}
-            onOpenDrawer={() => os.setDrawerOpen(true)}
-            onNavigate={os.setView}
-          />
           <ZoomControls
             zoom={os.zoom}
             onFit={fitView}

@@ -2,30 +2,20 @@
 
 import {
   Bell,
-  Blocks,
   ChevronDown,
   CircleHelp,
-  Library,
   LogOut,
-  Menu,
   Sparkles,
   UserRound,
-  WandSparkles,
 } from "lucide-react";
 import { useState } from "react";
 import { useIntentOS } from "../hooks/use-intent-os";
-import type { AppView } from "../types";
 import { AssetsView } from "./assets-view";
 import { AuthScreen } from "./auth-screen";
+import { CanvasToolbar } from "./canvas-toolbar";
 import { CanvasView } from "./canvas-view";
 import { CapabilitiesView } from "./capabilities-view";
 import { IconButton } from "./icon-button";
-
-const navItems: Array<{ id: AppView; label: string; icon: typeof Sparkles }> = [
-  { id: "canvas", label: "灵境", icon: WandSparkles },
-  { id: "assets", label: "资产", icon: Library },
-  { id: "capabilities", label: "能力", icon: Blocks },
-];
 
 export function AppShell() {
   const os = useIntentOS();
@@ -73,26 +63,18 @@ export function AppShell() {
         </div>
       </header>
 
-      <nav className="app-dock" aria-label="主导航">
-        <IconButton label="打开菜单" className="dock-menu-button"><Menu size={20} /></IconButton>
-        <div className="dock-main-items">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                type="button"
-                key={item.id}
-                className={`dock-item ${os.view === item.id ? "is-active" : ""}`}
-                onClick={() => os.setView(item.id)}
-              >
-                <span><Icon size={21} /></span>
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="dock-bottom"><span className="sync-dot" title="同步正常" /><small>同步</small></div>
-      </nav>
+      <CanvasToolbar
+        currentView={os.view}
+        activeTool={os.activeTool}
+        runState={os.runState}
+        onToolChange={os.setActiveTool}
+        onRun={os.startRun}
+        onOpenDrawer={() => {
+          os.setView("canvas");
+          os.setDrawerOpen(true);
+        }}
+        onNavigate={os.setView}
+      />
 
       <main className="app-main">
         {os.view === "canvas" && <CanvasView os={os} />}
