@@ -208,6 +208,10 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   );
   assert.match(canvasToolbar, /WandSparkles/);
   assert.match(canvasToolbar, /onClick=\{\(\) => onNavigate\("canvas"\)\}/);
+  assert.match(
+    canvasToolbar,
+    /tool-separator[\s\S]*进入灵境画布[\s\S]*打开资产中心/,
+  );
   assert.match(controller, /function undoCanvas/);
   assert.match(controller, /function selectNode/);
   assert.match(controller, /function arrangeNodes\(mode: "free" \| "time" \| "type"\)/);

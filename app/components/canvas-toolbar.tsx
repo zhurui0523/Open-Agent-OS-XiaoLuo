@@ -61,6 +61,7 @@ export function CanvasToolbar({
       >
         <Hand size={18} />
       </IconButton>
+      <span className="tool-separator" />
       <IconButton
         label="进入灵境画布"
         active={currentView === "canvas"}
@@ -68,7 +69,6 @@ export function CanvasToolbar({
       >
         <WandSparkles size={18} />
       </IconButton>
-      <span className="tool-separator" />
       <IconButton
         label="打开资产中心"
         active={currentView === "assets"}
