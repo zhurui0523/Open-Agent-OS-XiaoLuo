@@ -28,10 +28,12 @@ interface CanvasToolbarProps {
   activeTool: string;
   runState: RunState;
   hasSelection: boolean;
+  canUndo: boolean;
   onToolChange: (tool: string) => void;
   onAddNode: (kind: NodeKind) => void;
   onRun: () => void;
   onDelete: () => void;
+  onUndo: () => void;
   onOpenDrawer: () => void;
   onNavigate: (view: AppView) => void;
 }
@@ -40,10 +42,12 @@ export function CanvasToolbar({
   activeTool,
   runState,
   hasSelection,
+  canUndo,
   onToolChange,
   onAddNode,
   onRun,
   onDelete,
+  onUndo,
   onOpenDrawer,
   onNavigate,
 }: CanvasToolbarProps) {
@@ -147,7 +151,7 @@ export function CanvasToolbar({
             <IconButton label="橡皮擦">
               <Eraser size={18} />
             </IconButton>
-            <IconButton label="撤销">
+            <IconButton label="撤销" disabled={!canUndo} onClick={onUndo}>
               <Undo2 size={18} />
             </IconButton>
             <IconButton label="重做">

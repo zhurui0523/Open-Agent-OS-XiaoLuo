@@ -145,13 +145,15 @@ test("validates Package Contract namespaces, permissions, and runtime isolation"
 
 test("uses an unbounded world-coordinate canvas with pointer-centered zoom", async () => {
   const geometry = await import("../app/lib/canvas-geometry.ts");
-  const [appShell, canvasView, nodeCard, controller, styles] = await Promise.all([
+  const [appShell, canvasView, contextMenu, nodeCard, controller, styles] =
+    await Promise.all([
     readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/canvas-context-menu.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/node-card.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-  ]);
+    ]);
 
   const viewport = { x: 120, y: 80, zoom: 100 };
   const anchor = { x: 420, y: 280 };
@@ -189,6 +191,20 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(canvasView, /translate3d\(/);
   assert.match(canvasView, /Ctrl\/⌘ \+ 滚轮缩放/);
   assert.match(canvasView, /visibleWorldBounds/);
+  assert.match(canvasView, /onContextMenu=\{handleStageContextMenu\}/);
+  assert.match(canvasView, /screenToWorld\(screenPoint/);
+  assert.match(contextMenu, /文本占位卡片/);
+  assert.match(contextMenu, /图片占位卡片/);
+  assert.match(contextMenu, /视频占位卡片/);
+  assert.match(contextMenu, /新建专业节点/);
+  assert.match(contextMenu, /添加 AI 插件卡片/);
+  assert.match(contextMenu, /自由画布/);
+  assert.match(contextMenu, /时间排序/);
+  assert.match(contextMenu, /类型排序/);
+  assert.match(controller, /function undoCanvas/);
+  assert.match(controller, /function selectNode/);
+  assert.match(controller, /function arrangeNodes\(mode: "free" \| "time" \| "type"\)/);
+  assert.match(styles, /\.canvas-context-menu[\s\S]*z-index:\s*220;/);
   assert.doesNotMatch(nodeCard, /Math\.max\(16|Math\.max\(24/);
   assert.doesNotMatch(styles, /width:\s*1240px|height:\s*720px/);
   assert.match(styles, /\.canvas-content[\s\S]*width:\s*0;[\s\S]*height:\s*0;/);

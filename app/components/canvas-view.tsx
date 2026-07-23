@@ -31,6 +31,7 @@ import {
   type WorldBounds,
 } from "../lib/canvas-geometry";
 import type { NodeKind } from "../types";
+import { CanvasContextMenu } from "./canvas-context-menu";
 import { CanvasDrawer } from "./canvas-drawer";
 import { CanvasToolbar } from "./canvas-toolbar";
 import { IconButton } from "./icon-button";
@@ -43,6 +44,16 @@ const NODE_FIT_HEIGHT = 220;
 const MINIMAP_WIDTH = 200;
 const MINIMAP_HEIGHT = 124;
 const MINIMAP_PADDING = 8;
+const CONTEXT_MENU_WIDTH = 286;
+const CONTEXT_MENU_HEIGHT = 462;
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  worldX: number;
+  worldY: number;
+  opensLeft: boolean;
+}
 
 interface CanvasViewProps {
   os: IntentOSController;
@@ -92,11 +103,14 @@ export function CanvasView({ os }: CanvasViewProps) {
     canvasList.find((canvas) => canvas.id === os.activeCanvasId) ?? canvasList[0];
   const workspaceRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const uploadAnchorRef = useRef({ x: 0, y: 0 });
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
   const [isPanning, setIsPanning] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const initialFitDone = useRef(false);
   const panGesture = useRef<{
@@ -194,7 +208,7 @@ export function CanvasView({ os }: CanvasViewProps) {
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, input, textarea, select",
+          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, input, textarea, select",
         )
       ) {
         return;
@@ -249,6 +263,14 @@ export function CanvasView({ os }: CanvasViewProps) {
     }
     function keyDown(event: KeyboardEvent) {
       if (editableTarget(event.target)) return;
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "z"
+      ) {
+        event.preventDefault();
+        os.undoCanvas();
+        return;
+      }
       if (event.code === "Space") {
         event.preventDefault();
         setSpaceHeld(true);
@@ -275,12 +297,12 @@ export function CanvasView({ os }: CanvasViewProps) {
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
     };
-  }, [fitView, zoomAtCenter]);
+  }, [fitView, os.undoCanvas, zoomAtCenter]);
 
   function isCanvasOverlay(target: HTMLElement) {
     return Boolean(
       target.closest(
-        ".canvas-node, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
+        ".canvas-node, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
       ),
     );
   }
@@ -304,6 +326,39 @@ export function CanvasView({ os }: CanvasViewProps) {
       moved: false,
     };
     setIsPanning(true);
+  }
+
+  function handleStageContextMenu(
+    event: React.MouseEvent<HTMLDivElement>,
+  ) {
+    event.preventDefault();
+    const target = event.target as HTMLElement;
+    if (
+      target.closest(
+        ".canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
+      )
+    ) {
+      setContextMenu(null);
+      return;
+    }
+    const stage = stageRef.current;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const screenPoint = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+    const worldPoint = screenToWorld(screenPoint, viewportRef.current);
+    const maxX = Math.max(8, rect.width - CONTEXT_MENU_WIDTH - 8);
+    const maxY = Math.max(8, rect.height - CONTEXT_MENU_HEIGHT - 8);
+    setContextMenu({
+      x: Math.max(8, Math.min(screenPoint.x, maxX)),
+      y: Math.max(8, Math.min(screenPoint.y, maxY)),
+      worldX: worldPoint.x,
+      worldY: worldPoint.y,
+      opensLeft:
+        screenPoint.x + CONTEXT_MENU_WIDTH * 2 + 20 > rect.width,
+    });
   }
 
   function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>) {
@@ -341,6 +396,67 @@ export function CanvasView({ os }: CanvasViewProps) {
     os.addNode(kind, {
       x: center.x - NODE_WIDTH / 2 + offset,
       y: center.y - 78 + offset,
+    });
+  }
+
+  function addNodeAtContext(
+    kind: NodeKind,
+    preset?: Parameters<typeof os.addNode>[2],
+  ) {
+    if (!contextMenu) return;
+    os.addNode(
+      kind,
+      { x: contextMenu.worldX, y: contextMenu.worldY },
+      preset,
+    );
+  }
+
+  function uploadAtContext() {
+    if (!contextMenu) return;
+    uploadAnchorRef.current = {
+      x: contextMenu.worldX,
+      y: contextMenu.worldY,
+    };
+    uploadInputRef.current?.click();
+  }
+
+  async function handleCanvasUpload(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const kind: NodeKind = file.type.startsWith("image/")
+      ? "image"
+      : file.type.startsWith("video/")
+        ? "video"
+        : "text";
+    let prompt = `从本地导入 ${file.name}，可继续补充处理要求。`;
+    if (
+      kind === "text" &&
+      file.size <= 2_000_000 &&
+      (file.type.startsWith("text/") ||
+        ["md", "txt", "json"].includes(extension))
+    ) {
+      const preview = (await file.text()).trim().slice(0, 360);
+      if (preview) prompt = preview;
+    }
+    const sizeLabel =
+      file.size >= 1_048_576
+        ? `${(file.size / 1_048_576).toFixed(1)} MB`
+        : `${Math.max(1, Math.round(file.size / 1024))} KB`;
+    os.addNode(kind, uploadAnchorRef.current, {
+      title: file.name,
+      prompt,
+      result: `本地文件 · ${sizeLabel}`,
+      parameters: {
+        source: "local-upload",
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+      },
     });
   }
 
@@ -460,6 +576,7 @@ export function CanvasView({ os }: CanvasViewProps) {
           onPointerMove={handleStagePointerMove}
           onPointerUp={endStagePan}
           onPointerCancel={endStagePan}
+          onContextMenu={handleStageContextMenu}
         >
           <div className="canvas-grid" style={gridStyle} aria-hidden="true" />
 
@@ -493,11 +610,13 @@ export function CanvasView({ os }: CanvasViewProps) {
                 key={node.id}
                 node={node}
                 selected={node.id === os.selectedNodeId}
+                multiSelected={os.selectedNodeIds.includes(node.id)}
                 zoom={os.zoom}
                 panMode={os.activeTool === "hand" || spaceHeld}
                 capabilities={os.capabilities}
                 models={os.models}
-                onSelect={() => os.setSelectedNodeId(node.id)}
+                onSelect={(additive) => os.selectNode(node.id, additive)}
+                onMoveStart={os.beginNodeMove}
                 onMove={(x, y) => os.moveNode(node.id, x, y)}
                 onUpdate={(patch) => os.updateNode(node.id, patch)}
                 onSizeChange={handleNodeSizeChange}
@@ -593,17 +712,19 @@ export function CanvasView({ os }: CanvasViewProps) {
           )}
 
           <div className="canvas-navigation-hint">
-            拖动空白处平移 · Ctrl/⌘ + 滚轮缩放 · Space 抓手 · 0 适配全部
+            拖动空白处平移 · 右键快捷菜单 · Ctrl/⌘ + 滚轮缩放 · Space 抓手 · 0 适配全部
           </div>
 
           <CanvasToolbar
             activeTool={os.activeTool}
             runState={os.runState}
             hasSelection={Boolean(os.selectedNodeId)}
+            canUndo={os.canUndo}
             onToolChange={os.setActiveTool}
             onAddNode={addNodeAtViewport}
             onRun={os.startRun}
             onDelete={os.deleteSelected}
+            onUndo={os.undoCanvas}
             onOpenDrawer={() => os.setDrawerOpen(true)}
             onNavigate={os.setView}
           />
@@ -614,6 +735,60 @@ export function CanvasView({ os }: CanvasViewProps) {
             onZoomIn={() => zoomAtCenter(viewportRef.current.zoom + 10)}
             onZoomOut={() => zoomAtCenter(viewportRef.current.zoom - 10)}
           />
+
+          <input
+            ref={uploadInputRef}
+            className="canvas-file-input"
+            type="file"
+            tabIndex={-1}
+            aria-hidden="true"
+            accept=".txt,.md,.json,.pdf,text/*,image/*,video/*"
+            onChange={handleCanvasUpload}
+          />
+
+          {contextMenu && (
+            <CanvasContextMenu
+              x={contextMenu.x}
+              y={contextMenu.y}
+              opensLeft={contextMenu.opensLeft}
+              capabilities={os.capabilities}
+              packages={os.packages}
+              canUndo={os.canUndo}
+              multiSelectActive={os.activeTool === "multi-select"}
+              arrangeMode={os.arrangeMode}
+              onAddNode={addNodeAtContext}
+              onAddCapability={(capability) =>
+                addNodeAtContext(capability.modality, {
+                  title: capability.title,
+                  prompt: capability.description,
+                  capabilityId: capability.id,
+                })
+              }
+              onAddPlugin={(plugin) =>
+                addNodeAtContext("text", {
+                  title: plugin.name,
+                  prompt: plugin.description,
+                  parameters: {
+                    packageId: plugin.id,
+                    runtimeType: plugin.runtimeType,
+                  },
+                })
+              }
+              onUndo={os.undoCanvas}
+              onToggleMultiSelect={() => {
+                if (os.activeTool === "multi-select") {
+                  os.setActiveTool("select");
+                  os.setSelectedNodeId(os.selectedNodeId);
+                  return;
+                }
+                os.setActiveTool("multi-select");
+              }}
+              onArrange={os.arrangeNodes}
+              onUpload={uploadAtContext}
+              onOpenExtensions={() => os.setView("capabilities")}
+              onClose={() => setContextMenu(null)}
+            />
+          )}
 
           {!os.consoleOpen && (
             <button

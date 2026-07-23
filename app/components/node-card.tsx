@@ -41,11 +41,13 @@ const kindMeta = {
 interface NodeCardProps {
   node: CanvasNode;
   selected: boolean;
+  multiSelected: boolean;
   zoom: number;
   panMode: boolean;
   capabilities: Capability[];
   models: ModelConnection[];
-  onSelect: () => void;
+  onSelect: (additive?: boolean) => void;
+  onMoveStart: () => void;
   onMove: (x: number, y: number) => void;
   onUpdate: (patch: Partial<CanvasNode>) => void;
   onSizeChange: (nodeId: string, height: number) => void;
@@ -54,11 +56,13 @@ interface NodeCardProps {
 export function NodeCard({
   node,
   selected,
+  multiSelected,
   zoom,
   panMode,
   capabilities,
   models,
   onSelect,
+  onMoveStart,
   onMove,
   onUpdate,
   onSizeChange,
@@ -70,6 +74,7 @@ export function NodeCard({
     startY: number;
     nodeX: number;
     nodeY: number;
+    checkpointed: boolean;
   } | null>(null);
   const status = statusMeta[node.status];
   const StatusIcon = status.icon;
@@ -103,13 +108,23 @@ export function NodeCard({
       startY: event.clientY,
       nodeX: node.x,
       nodeY: node.y,
+      checkpointed: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-    onSelect();
+    onSelect(event.shiftKey || event.metaKey || event.ctrlKey);
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+    const distance = Math.hypot(
+      event.clientX - drag.current.startX,
+      event.clientY - drag.current.startY,
+    );
+    if (distance <= 2) return;
+    if (!drag.current.checkpointed) {
+      drag.current.checkpointed = true;
+      onMoveStart();
+    }
     const scale = zoom / 100;
     onMove(
       drag.current.nodeX + (event.clientX - drag.current.startX) / scale,
@@ -124,9 +139,20 @@ export function NodeCard({
   return (
     <article
       ref={cardRef}
-      className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""}`}
+      className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""} ${multiSelected ? "is-multi-selected" : ""}`}
       style={{ left: node.x, top: node.y }}
-      onClick={panMode ? undefined : onSelect}
+      onPointerDown={(event) => {
+        if (
+          panMode ||
+          event.button !== 0 ||
+          (event.target as HTMLElement).closest(
+            "button, input, textarea, select, .node-drag-handle",
+          )
+        ) {
+          return;
+        }
+        onSelect(event.shiftKey || event.metaKey || event.ctrlKey);
+      }}
       aria-label={`${node.title}，${status.label}`}
     >
       <div

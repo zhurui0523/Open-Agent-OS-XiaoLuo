@@ -22,6 +22,7 @@ export interface CanvasNode {
   modelId: string;
   x: number;
   y: number;
+  createdAt?: number;
   progress?: number;
   result?: string;
   parameters?: Record<string, unknown>;

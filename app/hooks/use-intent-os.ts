@@ -9,6 +9,7 @@ import {
 } from "../data";
 import type {
   AppView,
+  CanvasEdge,
   CanvasNode,
   Capability,
   ChatMessage,
@@ -21,6 +22,20 @@ import type {
   RunState,
 } from "../types";
 import { createIntentPlan, messageTime } from "../lib/intent-plan";
+
+interface CanvasHistoryEntry {
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+  selectedNodeIds: string[];
+  arrangeMode: "free" | "time" | "type";
+}
+
+type NodePreset = Partial<
+  Pick<
+    CanvasNode,
+    "title" | "prompt" | "capabilityId" | "modelId" | "result" | "parameters"
+  >
+>;
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -57,13 +72,19 @@ export function useIntentOS() {
     "loading" | "ready" | "error"
   >("loading");
   const [registryError, setRegistryError] = useState("");
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
+  const [selectedNodeId, setSelectedNodeIdState] = useState<string | null>(
     "node_visual",
   );
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([
+    "node_visual",
+  ]);
   const [activeCanvasId, setActiveCanvasId] = useState("cv_campaign");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [activeTool, setActiveTool] = useState("select");
+  const [arrangeMode, setArrangeMode] = useState<"free" | "time" | "type">(
+    "free",
+  );
   const [zoom, setZoom] = useState(92);
   const [runState, setRunState] = useState<RunState>("running");
   const [isPlanning, setIsPlanning] = useState(false);
@@ -78,6 +99,8 @@ export function useIntentOS() {
     },
   ]);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const canvasHistory = useRef<CanvasHistoryEntry[]>([]);
+  const [historyDepth, setHistoryDepth] = useState(0);
 
   const refreshRegistry = useCallback(async () => {
     setRegistryStatus("loading");
@@ -113,6 +136,39 @@ export function useIntentOS() {
     [nodes, selectedNodeId],
   );
 
+  function rememberCanvas() {
+    canvasHistory.current = [
+      ...canvasHistory.current.slice(-39),
+      { nodes, edges, selectedNodeIds, arrangeMode },
+    ];
+    setHistoryDepth(canvasHistory.current.length);
+  }
+
+  function setSelectedNodeId(id: string | null) {
+    setSelectedNodeIdState(id);
+    setSelectedNodeIds(id ? [id] : []);
+  }
+
+  function selectNode(id: string, additive = false) {
+    if (!additive && activeTool !== "multi-select") {
+      setSelectedNodeIdState(id);
+      setSelectedNodeIds([id]);
+      return;
+    }
+    setSelectedNodeIds((current) => {
+      const next = current.includes(id)
+        ? current.filter((nodeId) => nodeId !== id)
+        : [...current, id];
+      setSelectedNodeIdState(next.at(-1) ?? null);
+      return next;
+    });
+  }
+
+  function beginNodeMove() {
+    rememberCanvas();
+    setArrangeMode("free");
+  }
+
   function moveNode(id: string, x: number, y: number) {
     setNodes((current) =>
       current.map((node) => (node.id === id ? { ...node, x, y } : node)),
@@ -128,8 +184,10 @@ export function useIntentOS() {
   function addNode(
     kind: NodeKind = "text",
     position?: { x: number; y: number },
+    preset: NodePreset = {},
   ) {
-    const id = `node_${Date.now()}`;
+    rememberCanvas();
+    const id = `node_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const modalityModels = models.filter((model) =>
       model.modalities.includes(kind),
     );
@@ -138,29 +196,107 @@ export function useIntentOS() {
     );
     const next: CanvasNode = {
       id,
-      title: kind === "image" ? "新图片节点" : kind === "video" ? "新视频节点" : "新文本节点",
-      prompt: "在这里描述这个节点需要完成的任务。",
+      title:
+        preset.title ??
+        (kind === "image"
+          ? "新图片节点"
+          : kind === "video"
+            ? "新视频节点"
+            : "新文本节点"),
+      prompt: preset.prompt ?? "在这里描述这个节点需要完成的任务。",
       kind,
       status: "draft",
-      capabilityId: modalityCapabilities[0]?.id ?? "manual.text",
-      modelId: modalityModels[0]?.id ?? "unconfigured",
+      capabilityId:
+        preset.capabilityId ??
+        modalityCapabilities[0]?.id ??
+        "manual.text",
+      modelId: preset.modelId ?? modalityModels[0]?.id ?? "unconfigured",
       x: position?.x ?? 320 + (nodes.length % 3) * 72,
       y: position?.y ?? 250 + (nodes.length % 2) * 110,
+      createdAt: Date.now(),
+      result: preset.result,
+      parameters: preset.parameters,
     };
+    setArrangeMode("free");
     setNodes((current) => [...current, next]);
-    setSelectedNodeId(id);
+    setSelectedNodeIdState(id);
+    setSelectedNodeIds([id]);
+    return id;
   }
 
   function deleteSelected() {
-    if (!selectedNodeId) return;
-    setNodes((current) => current.filter((node) => node.id !== selectedNodeId));
+    const ids = selectedNodeIds.length
+      ? selectedNodeIds
+      : selectedNodeId
+        ? [selectedNodeId]
+        : [];
+    if (!ids.length) return;
+    rememberCanvas();
+    const selectedIds = new Set(ids);
+    setNodes((current) => current.filter((node) => !selectedIds.has(node.id)));
     setEdges((current) =>
       current.filter(
         (edge) =>
-          edge.source !== selectedNodeId && edge.target !== selectedNodeId,
+          !selectedIds.has(edge.source) && !selectedIds.has(edge.target),
       ),
     );
-    setSelectedNodeId(null);
+    setSelectedNodeIdState(null);
+    setSelectedNodeIds([]);
+  }
+
+  function undoCanvas() {
+    const previous = canvasHistory.current.pop();
+    if (!previous) return;
+    setNodes(previous.nodes);
+    setEdges(previous.edges);
+    setSelectedNodeIds(previous.selectedNodeIds);
+    setSelectedNodeIdState(previous.selectedNodeIds.at(-1) ?? null);
+    setArrangeMode(previous.arrangeMode);
+    setHistoryDepth(canvasHistory.current.length);
+  }
+
+  function arrangeNodes(mode: "free" | "time" | "type") {
+    setArrangeMode(mode);
+    if (mode === "free" || nodes.length < 2) return;
+    rememberCanvas();
+    const startX = Math.min(...nodes.map((node) => node.x));
+    const startY = Math.min(...nodes.map((node) => node.y));
+    setNodes((current) => {
+      if (mode === "type") {
+        const kindOrder: Record<NodeKind, number> = {
+          text: 0,
+          image: 1,
+          video: 2,
+        };
+        const typeIndex: Record<NodeKind, number> = {
+          text: 0,
+          image: 0,
+          video: 0,
+        };
+        return current.map((node) => {
+          const row = typeIndex[node.kind]++;
+          return {
+            ...node,
+            x: startX + kindOrder[node.kind] * 324,
+            y: startY + row * 250,
+          };
+        });
+      }
+      const sourceOrder = new Map(
+        current.map((node, index) => [node.id, index]),
+      );
+      return [...current]
+        .sort(
+          (first, second) =>
+            (first.createdAt ?? sourceOrder.get(first.id) ?? 0) -
+            (second.createdAt ?? sourceOrder.get(second.id) ?? 0),
+        )
+        .map((node, index) => ({
+          ...node,
+          x: startX + (index % 4) * 324,
+          y: startY + Math.floor(index / 4) * 250,
+        }));
+    });
   }
 
   function submitIntent(value: string) {
@@ -194,6 +330,7 @@ export function useIntentOS() {
 
   function confirmPlan() {
     if (!plan) return;
+    rememberCanvas();
     const startX = 122;
     const plannedNodes: CanvasNode[] = plan.tasks.map((task, index) => {
       const kind: NodeKind = index === 2 ? "image" : index === 3 ? "video" : "text";
@@ -209,6 +346,7 @@ export function useIntentOS() {
         modelId: model?.id ?? "unconfigured",
         x: startX + index * 285,
         y: index % 2 === 0 ? 160 : 330,
+        createdAt: Date.now() + index,
         progress: 0,
       };
     });
@@ -220,7 +358,8 @@ export function useIntentOS() {
         target: plannedNodes[index + 1].id,
       })),
     );
-    setSelectedNodeId(plannedNodes[0]?.id ?? null);
+    setSelectedNodeIdState(plannedNodes[0]?.id ?? null);
+    setSelectedNodeIds(plannedNodes[0] ? [plannedNodes[0].id] : []);
     setPlan(null);
     setRunState("ready");
   }
@@ -400,7 +539,9 @@ export function useIntentOS() {
     registryError,
     selectedNode,
     selectedNodeId,
+    selectedNodeIds,
     setSelectedNodeId,
+    selectNode,
     activeCanvasId,
     setActiveCanvasId,
     drawerOpen,
@@ -409,16 +550,21 @@ export function useIntentOS() {
     setConsoleOpen,
     activeTool,
     setActiveTool,
+    arrangeMode,
     zoom,
     setZoom,
     runState,
     isPlanning,
     plan,
     messages,
+    canUndo: historyDepth > 0,
+    beginNodeMove,
     moveNode,
     updateNode,
     addNode,
     deleteSelected,
+    undoCanvas,
+    arrangeNodes,
     submitIntent,
     confirmPlan,
     startRun,
