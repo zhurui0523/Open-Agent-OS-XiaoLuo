@@ -348,7 +348,7 @@ export function NodeCard({
       )}
 
       {selected && (
-        <div className="node-workbench-scroll">
+        <div className="node-workbench-content">
           <textarea
             className="node-prompt-input"
             aria-label="节点任务描述"

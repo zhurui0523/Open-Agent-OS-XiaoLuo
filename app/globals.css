@@ -1025,17 +1025,11 @@ button:disabled {
   padding: 7px 9px;
 }
 
-.node-workbench-scroll {
-  max-height: 304px;
-  overflow-x: hidden;
-  overflow-y: auto;
+.node-workbench-content {
   margin-top: 7px;
-  padding-right: 3px;
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
 }
 
-.node-workbench-scroll .node-prompt-input {
+.node-workbench-content .node-prompt-input {
   margin-top: 0;
 }
 
@@ -1087,9 +1081,9 @@ button:disabled {
 .text-workbench-preview {
   display: grid;
   grid-template-columns: 24px 1fr;
+  height: 66px;
   align-items: start;
   gap: 5px;
-  min-height: 66px;
   padding: 9px;
   color: #6366f1;
 }
@@ -1106,7 +1100,7 @@ button:disabled {
 }
 
 .image-workbench-preview {
-  min-height: 108px;
+  height: 108px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(15, 23, 42, 0.12)),
     linear-gradient(145deg, #d9eee9 0%, #b7d5ce 46%, #f4d8ba 100%);
@@ -1164,7 +1158,7 @@ button:disabled {
 
 .video-workbench-preview {
   display: grid;
-  min-height: 104px;
+  height: 104px;
   place-items: center;
   background:
     radial-gradient(circle at 66% 38%, rgba(129, 140, 248, 0.35), transparent 24%),
@@ -1281,9 +1275,7 @@ button:disabled {
 
 .schema-fields {
   display: grid;
-  max-height: 205px;
   gap: 7px;
-  overflow-y: auto;
   margin-top: 9px;
   border-top: 1px solid #e9edf3;
   border-bottom: 1px solid #e9edf3;
