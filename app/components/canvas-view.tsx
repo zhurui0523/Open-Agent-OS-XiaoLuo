@@ -3,10 +3,12 @@
 import {
   Check,
   ChevronsLeft,
+  Map as MapIcon,
   Maximize2,
   PanelLeftOpen,
   Share2,
   Sparkles,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -94,6 +96,7 @@ export function CanvasView({ os }: CanvasViewProps) {
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
   const [isPanning, setIsPanning] = useState(false);
+  const [minimapOpen, setMinimapOpen] = useState(true);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const initialFitDone = useRef(false);
   const panGesture = useRef<{
@@ -191,7 +194,7 @@ export function CanvasView({ os }: CanvasViewProps) {
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, input, textarea, select",
+          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, input, textarea, select",
         )
       ) {
         return;
@@ -277,7 +280,7 @@ export function CanvasView({ os }: CanvasViewProps) {
   function isCanvasOverlay(target: HTMLElement) {
     return Boolean(
       target.closest(
-        ".canvas-node, .canvas-toolbar, .zoom-controls, .minimap, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
+        ".canvas-node, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
       ),
     );
   }
@@ -399,6 +402,7 @@ export function CanvasView({ os }: CanvasViewProps) {
   const stageClass = [
     "canvas-stage",
     isPanning ? "is-panning" : "",
+    minimapOpen ? "" : "is-minimap-collapsed",
     os.activeTool === "hand" || spaceHeld ? "is-pan-mode" : "",
   ]
     .filter(Boolean)
@@ -509,59 +513,84 @@ export function CanvasView({ os }: CanvasViewProps) {
             </code>
           </div>
 
-          <div
-            className="minimap"
-            aria-label="无限画布小地图，点击或拖动定位"
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              event.preventDefault();
-              event.currentTarget.setPointerCapture(event.pointerId);
-              recenterFromMinimap(
-                event.clientX,
-                event.clientY,
-                event.currentTarget,
-              );
-            }}
-            onPointerMove={(event) => {
-              if (event.buttons !== 1) return;
-              recenterFromMinimap(
-                event.clientX,
-                event.clientY,
-                event.currentTarget,
-              );
-            }}
-          >
-            <span
-              className="minimap-viewport"
-              style={{
-                left: minimapX(visibleBounds.minX),
-                top: minimapY(visibleBounds.minY),
-                width: Math.max(
-                  8,
-                  (visibleBounds.maxX - visibleBounds.minX) * minimapScale,
-                ),
-                height: Math.max(
-                  6,
-                  (visibleBounds.maxY - visibleBounds.minY) * minimapScale,
-                ),
+          {minimapOpen ? (
+            <div
+              className="minimap"
+              aria-label="无限画布小地图，点击或拖动定位"
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                event.preventDefault();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                recenterFromMinimap(
+                  event.clientX,
+                  event.clientY,
+                  event.currentTarget,
+                );
               }}
-            />
-            {os.nodes.map((node) => (
-              <i
-                key={node.id}
+              onPointerMove={(event) => {
+                if (event.buttons !== 1) return;
+                recenterFromMinimap(
+                  event.clientX,
+                  event.clientY,
+                  event.currentTarget,
+                );
+              }}
+            >
+              <button
+                type="button"
+                className="minimap-close"
+                aria-label="收起地图导航"
+                title="收起地图导航"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMinimapOpen(false);
+                }}
+              >
+                <X size={16} />
+              </button>
+              <span
+                className="minimap-viewport"
                 style={{
-                  left: minimapX(node.x),
-                  top: minimapY(node.y),
-                  width: Math.max(5, NODE_WIDTH * minimapScale),
+                  left: minimapX(visibleBounds.minX),
+                  top: minimapY(visibleBounds.minY),
+                  width: Math.max(
+                    8,
+                    (visibleBounds.maxX - visibleBounds.minX) * minimapScale,
+                  ),
                   height: Math.max(
-                    4,
-                    (nodeHeights[node.id] ?? 156) * minimapScale,
+                    6,
+                    (visibleBounds.maxY - visibleBounds.minY) * minimapScale,
                   ),
                 }}
-                className={`mini-${node.kind}`}
               />
-            ))}
-          </div>
+              {os.nodes.map((node) => (
+                <i
+                  key={node.id}
+                  style={{
+                    left: minimapX(node.x),
+                    top: minimapY(node.y),
+                    width: Math.max(5, NODE_WIDTH * minimapScale),
+                    height: Math.max(
+                      4,
+                      (nodeHeights[node.id] ?? 156) * minimapScale,
+                    ),
+                  }}
+                  className={`mini-${node.kind}`}
+                />
+              ))}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="minimap-toggle"
+              aria-label="展开地图导航"
+              title="展开地图导航"
+              onClick={() => setMinimapOpen(true)}
+            >
+              <MapIcon size={23} />
+            </button>
+          )}
 
           <div className="canvas-navigation-hint">
             拖动空白处平移 · Ctrl/⌘ + 滚轮缩放 · Space 抓手 · 0 适配全部

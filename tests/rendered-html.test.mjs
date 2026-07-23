@@ -196,6 +196,12 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.is-canvas-view \.app-main[\s\S]*inset:\s*0;/);
   assert.match(styles, /\.is-canvas-view \.canvas-toolbar[\s\S]*flex-direction:\s*column;/);
   assert.match(styles, /\.is-canvas-view \.minimap[\s\S]*bottom:\s*24px;[\s\S]*left:\s*24px;/);
+  assert.match(canvasView, /minimapOpen/);
+  assert.match(canvasView, /收起地图导航/);
+  assert.match(canvasView, /展开地图导航/);
+  assert.match(styles, /\.minimap-close[\s\S]*border-radius:\s*50%;/);
+  assert.match(styles, /\.minimap-toggle[\s\S]*border-radius:\s*50%;/);
+  assert.match(styles, /\.is-minimap-collapsed \.zoom-controls[\s\S]*left:\s*96px;/);
   assert.match(styles, /\.is-canvas-view \.open-console-button[\s\S]*right:\s*24px;[\s\S]*bottom:\s*24px;/);
   assert.match(controller, /useState\(false\)/);
   assert.match(nodeCard, /ResizeObserver/);

@@ -1420,6 +1420,61 @@ button:disabled {
   touch-action: none;
 }
 
+.minimap-close,
+.minimap-toggle {
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.13);
+  color: #64748b;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.minimap-close {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 50%;
+  padding: 0;
+}
+
+.minimap-toggle {
+  position: absolute;
+  z-index: 80;
+  bottom: 24px;
+  left: 24px;
+  display: grid;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  border-radius: 50%;
+  padding: 0;
+  backdrop-filter: blur(14px);
+}
+
+.minimap-close:hover,
+.minimap-toggle:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16);
+  color: #334155;
+  transform: translateY(-1px);
+}
+
+.minimap-close:focus-visible,
+.minimap-toggle:focus-visible {
+  outline: 3px solid rgba(99, 102, 241, 0.22);
+  outline-offset: 2px;
+}
+
 .minimap i {
   position: absolute;
   border-radius: 3px;
@@ -3798,6 +3853,11 @@ button:disabled {
   left: 244px;
   height: 44px;
   border-radius: 15px;
+  transition: left 180ms ease;
+}
+
+.is-canvas-view .canvas-stage.is-minimap-collapsed .zoom-controls {
+  left: 96px;
 }
 
 .is-canvas-view .minimap {
@@ -3949,6 +4009,7 @@ button:disabled {
   }
   .zoom-controls,
   .minimap,
+  .minimap-toggle,
   .canvas-navigation-hint { display: none; }
   .content-view { padding: 20px 14px 26px; }
   .content-header { align-items: flex-start; flex-direction: column; margin-bottom: 18px; }
