@@ -3867,6 +3867,15 @@ button:disabled {
   font-size: 12px;
 }
 
+.intent-brand-icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
 .is-canvas-view .intent-console {
   position: absolute;
   z-index: 130;

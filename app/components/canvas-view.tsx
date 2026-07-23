@@ -4,7 +4,6 @@ import {
   Check,
   ChevronsLeft,
   Maximize2,
-  MessageSquareText,
   PanelLeftOpen,
   Share2,
   Sparkles,
@@ -593,7 +592,12 @@ export function CanvasView({ os }: CanvasViewProps) {
               className="open-console-button"
               onClick={() => os.setConsoleOpen(true)}
             >
-              <MessageSquareText size={17} /> Intent
+              <img
+                src="/xiaoluo-intent-mark.png"
+                alt=""
+                className="intent-brand-icon"
+              />
+              Intent
             </button>
           )}
         </div>
