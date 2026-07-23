@@ -244,6 +244,33 @@ export function useIntentOS() {
     setSelectedNodeIds([]);
   }
 
+  function connectNodes(source: string, target: string) {
+    if (
+      source === target ||
+      !nodes.some((node) => node.id === source) ||
+      !nodes.some((node) => node.id === target) ||
+      edges.some((edge) => edge.source === source && edge.target === target)
+    ) {
+      return false;
+    }
+    rememberCanvas();
+    setEdges((current) => [
+      ...current,
+      {
+        id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        source,
+        target,
+      },
+    ]);
+    return true;
+  }
+
+  function deleteEdge(id: string) {
+    if (!edges.some((edge) => edge.id === id)) return;
+    rememberCanvas();
+    setEdges((current) => current.filter((edge) => edge.id !== id));
+  }
+
   function undoCanvas() {
     const previous = canvasHistory.current.pop();
     if (!previous) return;
@@ -563,6 +590,8 @@ export function useIntentOS() {
     updateNode,
     addNode,
     deleteSelected,
+    connectNodes,
+    deleteEdge,
     undoCanvas,
     arrangeNodes,
     submitIntent,

@@ -1414,22 +1414,65 @@ button:disabled {
   top: 50%;
   width: 11px;
   height: 11px;
+  padding: 0;
   border: 2px solid white;
   border-radius: 50%;
   background: #94a3b8;
   box-shadow: 0 0 0 1px #cbd5e1;
+  cursor: crosshair;
   transform: translateY(-50%);
+  transition:
+    box-shadow 160ms ease,
+    opacity 160ms ease,
+    transform 160ms ease;
 }
 
 .port-input { left: -6px; }
 .port-output { right: -6px; background: var(--color-primary); }
 
+.port:hover,
+.port:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px white,
+    0 0 0 4px rgba(79, 70, 229, 0.3);
+  transform: translateY(-50%) scale(1.28);
+}
+
+.canvas-stage.is-connecting .port {
+  opacity: 0.42;
+}
+
+.canvas-stage.is-connecting .port-input.is-available {
+  opacity: 1;
+  box-shadow:
+    0 0 0 2px white,
+    0 0 0 5px rgba(79, 70, 229, 0.3);
+  cursor: copy;
+  transform: translateY(-50%) scale(1.32);
+}
+
 .edge-line {
   position: absolute;
   z-index: 2;
   height: 2px;
+  border: 0;
+  padding: 0;
   transform-origin: 0 50%;
   background: #cbd5e1;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.edge-line::before {
+  position: absolute;
+  top: -7px;
+  left: 0;
+  width: 100%;
+  height: 16px;
+  content: "";
 }
 
 .edge-line::after {
@@ -1457,9 +1500,74 @@ button:disabled {
   animation: edge-flow 1.2s linear infinite;
 }
 
+.edge-line:hover,
+.edge-line:focus-visible,
+.edge-line.is-selected {
+  outline: none;
+  background: #4f46e5;
+  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.16);
+}
+
+.edge-line:hover::after,
+.edge-line:focus-visible::after,
+.edge-line.is-selected::after {
+  border-left-color: #4f46e5;
+}
+
+.edge-line.is-selected {
+  z-index: 4;
+  overflow: visible;
+}
+
+.edge-remove-button {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  background: white;
+  color: #475569;
+  box-shadow: 0 5px 14px rgba(15, 23, 42, 0.18);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+
+.edge-remove-button:hover {
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+.edge-line-draft {
+  z-index: 3;
+  height: 2px;
+  background: repeating-linear-gradient(
+    90deg,
+    #4f46e5 0 9px,
+    rgba(99, 102, 241, 0.16) 9px 15px
+  );
+  background-size: 30px 2px;
+  pointer-events: none;
+  animation: edge-draft-flow 680ms linear infinite;
+}
+
+.edge-line-draft::after {
+  border-left-color: #4f46e5;
+}
+
 @keyframes edge-flow {
   from { transform: translateX(-40px); }
   to { transform: translateX(280px); }
+}
+
+@keyframes edge-draft-flow {
+  from { background-position: 0 0; }
+  to { background-position: 30px 0; }
 }
 
 .canvas-toolbar,

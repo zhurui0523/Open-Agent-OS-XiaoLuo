@@ -55,6 +55,8 @@ interface NodeCardProps {
   onMove: (x: number, y: number) => void;
   onUpdate: (patch: Partial<CanvasNode>) => void;
   onSizeChange: (nodeId: string, height: number) => void;
+  onConnectionStart: (clientX: number, clientY: number) => void;
+  connectionTargetAvailable: boolean;
 }
 
 interface NodeWorkbenchProps {
@@ -225,6 +227,8 @@ export function NodeCard({
   onMove,
   onUpdate,
   onSizeChange,
+  onConnectionStart,
+  connectionTargetAvailable,
 }: NodeCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const drag = useRef<{
@@ -305,7 +309,7 @@ export function NodeCard({
           panMode ||
           event.button !== 0 ||
           (event.target as HTMLElement).closest(
-            "button, input, textarea, select, .node-drag-handle",
+            "button, input, textarea, select, .node-drag-handle, .port",
           )
         ) {
           return;
@@ -425,8 +429,26 @@ export function NodeCard({
         </div>
       )}
 
-      <span className="port port-input" aria-hidden="true" />
-      <span className="port port-output" aria-hidden="true" />
+      <button
+        type="button"
+        className={`port port-input ${connectionTargetAvailable ? "is-available" : ""}`}
+        data-node-id={node.id}
+        aria-label={`连接到${node.title}`}
+        onPointerDown={(event) => event.stopPropagation()}
+      />
+      <button
+        type="button"
+        className="port port-output"
+        data-node-id={node.id}
+        aria-label={`从${node.title}开始连接`}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          onConnectionStart(event.clientX, event.clientY);
+        }}
+      />
     </article>
   );
 }

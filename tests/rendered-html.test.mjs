@@ -214,6 +214,8 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   );
   assert.match(controller, /function undoCanvas/);
   assert.match(controller, /function selectNode/);
+  assert.match(controller, /function connectNodes/);
+  assert.match(controller, /function deleteEdge/);
   assert.match(controller, /function arrangeNodes\(mode: "free" \| "time" \| "type"\)/);
   assert.match(styles, /\.canvas-context-menu[\s\S]*z-index:\s*220;/);
   assert.doesNotMatch(nodeCard, /Math\.max\(16|Math\.max\(24/);
@@ -243,4 +245,11 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.image-workbench-preview[\s\S]*height:\s*108px;/);
   assert.match(styles, /\.video-workbench-preview[\s\S]*height:\s*104px;/);
   assert.match(styles, /\.port\s*\{[\s\S]*top:\s*50%;[\s\S]*transform:\s*translateY\(-50%\);/);
+  assert.match(nodeCard, /onConnectionStart/);
+  assert.match(nodeCard, /data-node-id=\{node\.id\}/);
+  assert.match(canvasView, /connectionDraft/);
+  assert.match(canvasView, /document[\s\S]*\.elementFromPoint/);
+  assert.match(canvasView, /edge-remove-button/);
+  assert.match(styles, /\.edge-line\.is-selected/);
+  assert.match(styles, /\.canvas-stage\.is-connecting \.port-input\.is-available/);
 });

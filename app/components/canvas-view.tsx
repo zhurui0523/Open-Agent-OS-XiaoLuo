@@ -54,8 +54,27 @@ interface ContextMenuState {
   opensLeft: boolean;
 }
 
+interface ConnectionDraft {
+  sourceId: string;
+  current: { x: number; y: number };
+}
+
 interface CanvasViewProps {
   os: IntentOSController;
+}
+
+function lineStyle(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+): CSSProperties {
+  const distance = Math.hypot(end.x - start.x, end.y - start.y);
+  const angle = Math.atan2(end.y - start.y, end.x - start.x) * (180 / Math.PI);
+  return {
+    left: start.x,
+    top: start.y,
+    width: distance,
+    transform: `rotate(${angle}deg)`,
+  };
 }
 
 function edgeStyle(
@@ -74,18 +93,7 @@ function edgeStyle(
     { width: NODE_WIDTH, height: targetHeight },
     "input",
   );
-  const startX = start.x;
-  const startY = start.y;
-  const endX = end.x;
-  const endY = end.y;
-  const distance = Math.hypot(endX - startX, endY - startY);
-  const angle = Math.atan2(endY - startY, endX - startX) * (180 / Math.PI);
-  return {
-    left: startX,
-    top: startY,
-    width: distance,
-    transform: `rotate(${angle}deg)`,
-  };
+  return lineStyle(start, end);
 }
 
 function expandBounds(bounds: WorldBounds, amount: number): WorldBounds {
@@ -111,6 +119,9 @@ export function CanvasView({ os }: CanvasViewProps) {
   const [minimapOpen, setMinimapOpen] = useState(true);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const [connectionDraft, setConnectionDraft] =
+    useState<ConnectionDraft | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const initialFitDone = useRef(false);
   const panGesture = useRef<{
     pointerId: number;
@@ -270,6 +281,21 @@ export function CanvasView({ os }: CanvasViewProps) {
         os.undoCanvas();
         return;
       }
+      if (event.key === "Escape" && connectionDraft) {
+        event.preventDefault();
+        setConnectionDraft(null);
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        if (selectedEdgeId) {
+          os.deleteEdge(selectedEdgeId);
+          setSelectedEdgeId(null);
+        } else {
+          os.deleteSelected();
+        }
+        return;
+      }
       if (event.code === "Space") {
         event.preventDefault();
         setSpaceHeld(true);
@@ -296,7 +322,15 @@ export function CanvasView({ os }: CanvasViewProps) {
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
     };
-  }, [fitView, os.undoCanvas, zoomAtCenter]);
+  }, [
+    connectionDraft,
+    fitView,
+    os.deleteEdge,
+    os.deleteSelected,
+    os.undoCanvas,
+    selectedEdgeId,
+    zoomAtCenter,
+  ]);
 
   function isCanvasOverlay(target: HTMLElement) {
     return Boolean(
@@ -360,7 +394,37 @@ export function CanvasView({ os }: CanvasViewProps) {
     });
   }
 
+  function clientToWorld(clientX: number, clientY: number) {
+    const stage = stageRef.current;
+    if (!stage) return null;
+    const rect = stage.getBoundingClientRect();
+    return screenToWorld(
+      { x: clientX - rect.left, y: clientY - rect.top },
+      viewportRef.current,
+    );
+  }
+
+  function beginConnection(
+    sourceId: string,
+    clientX: number,
+    clientY: number,
+  ) {
+    const current = clientToWorld(clientX, clientY);
+    if (!current) return;
+    setSelectedEdgeId(null);
+    setConnectionDraft({ sourceId, current });
+  }
+
   function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (connectionDraft) {
+      const current = clientToWorld(event.clientX, event.clientY);
+      if (current) {
+        setConnectionDraft((draft) =>
+          draft ? { ...draft, current } : draft,
+        );
+      }
+      return;
+    }
     const gesture = panGesture.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - gesture.startX;
@@ -376,14 +440,36 @@ export function CanvasView({ os }: CanvasViewProps) {
   }
 
   function endStagePan(event: React.PointerEvent<HTMLDivElement>) {
+    if (connectionDraft) {
+      const target = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>(".port-input[data-node-id]");
+      const targetId = target?.dataset.nodeId;
+      if (targetId) {
+        os.connectNodes(connectionDraft.sourceId, targetId);
+      }
+      setConnectionDraft(null);
+      return;
+    }
     const gesture = panGesture.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
-    if (!gesture.moved && event.button === 0) os.setSelectedNodeId(null);
+    if (!gesture.moved && event.button === 0) {
+      os.setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+    }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     panGesture.current = null;
     setIsPanning(false);
+  }
+
+  function cancelStagePointer(event: React.PointerEvent<HTMLDivElement>) {
+    if (connectionDraft) {
+      setConnectionDraft(null);
+      return;
+    }
+    endStagePan(event);
   }
 
   function addNodeAtContext(
@@ -502,9 +588,13 @@ export function CanvasView({ os }: CanvasViewProps) {
     setPan({ x: next.x, y: next.y });
   }
 
+  const connectionSource = connectionDraft
+    ? os.nodes.find((node) => node.id === connectionDraft.sourceId)
+    : null;
   const stageClass = [
     "canvas-stage",
     isPanning ? "is-panning" : "",
+    connectionDraft ? "is-connecting" : "",
     minimapOpen ? "" : "is-minimap-collapsed",
     os.activeTool === "hand" || spaceHeld ? "is-pan-mode" : "",
   ]
@@ -562,7 +652,7 @@ export function CanvasView({ os }: CanvasViewProps) {
           onPointerDown={handleStagePointerDown}
           onPointerMove={handleStagePointerMove}
           onPointerUp={endStagePan}
-          onPointerCancel={endStagePan}
+          onPointerCancel={cancelStagePointer}
           onContextMenu={handleStageContextMenu}
         >
           <div className="canvas-grid" style={gridStyle} aria-hidden="true" />
@@ -574,22 +664,72 @@ export function CanvasView({ os }: CanvasViewProps) {
               if (!source || !target) return null;
               const flowing =
                 source.status === "running" || target.status === "running";
+              const selected = selectedEdgeId === edge.id;
               return (
                 <div
                   key={edge.id}
-                  className={`edge-line ${flowing ? "is-flowing" : ""}`}
+                  className={`edge-line ${flowing ? "is-flowing" : ""} ${selected ? "is-selected" : ""}`}
                   style={edgeStyle(
                     source,
                     target,
                     nodeHeights[source.id] ?? 156,
                     nodeHeights[target.id] ?? 156,
                   )}
-                  aria-hidden="true"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`连接：${source.title} 到 ${target.title}`}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedEdgeId(edge.id);
+                    os.setSelectedNodeId(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    setSelectedEdgeId(edge.id);
+                    os.setSelectedNodeId(null);
+                  }}
                 >
                   <span />
+                  {selected && (
+                    <button
+                      type="button"
+                      className="edge-remove-button"
+                      aria-label="取消连接"
+                      title="取消连接"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        os.deleteEdge(edge.id);
+                        setSelectedEdgeId(null);
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
                 </div>
               );
             })}
+
+            {connectionDraft && connectionSource && (
+              <div
+                className="edge-line edge-line-draft"
+                style={lineStyle(
+                  centeredPortPoint(
+                    connectionSource,
+                    {
+                      width: NODE_WIDTH,
+                      height: nodeHeights[connectionSource.id] ?? 156,
+                    },
+                    "output",
+                  ),
+                  connectionDraft.current,
+                )}
+                aria-hidden="true"
+              />
+            )}
 
             {os.nodes.map((node) => (
               <NodeCard
@@ -601,11 +741,26 @@ export function CanvasView({ os }: CanvasViewProps) {
                 panMode={os.activeTool === "hand" || spaceHeld}
                 capabilities={os.capabilities}
                 models={os.models}
-                onSelect={(additive) => os.selectNode(node.id, additive)}
+                onSelect={(additive) => {
+                  setSelectedEdgeId(null);
+                  os.selectNode(node.id, additive);
+                }}
                 onMoveStart={os.beginNodeMove}
                 onMove={(x, y) => os.moveNode(node.id, x, y)}
                 onUpdate={(patch) => os.updateNode(node.id, patch)}
                 onSizeChange={handleNodeSizeChange}
+                onConnectionStart={(clientX, clientY) =>
+                  beginConnection(node.id, clientX, clientY)
+                }
+                connectionTargetAvailable={Boolean(
+                  connectionDraft &&
+                    connectionDraft.sourceId !== node.id &&
+                    !os.edges.some(
+                      (edge) =>
+                        edge.source === connectionDraft.sourceId &&
+                        edge.target === node.id,
+                    ),
+                )}
               />
             ))}
           </div>
