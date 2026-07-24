@@ -364,3 +364,24 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   assert.match(gitignore, /^\.env\*$/m);
   assert.match(gitignore, /^!\.env\.example$/m);
 });
+
+test("offers a one-click local runtime with durable local D1 and R2 state", async () => {
+  const [packageJson, launcher, viteConfig, gitignore] = await Promise.all([
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../start-local.cmd", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal(
+    JSON.parse(packageJson).scripts["dev:local"],
+    "vinext dev --host localhost --port 3001",
+  );
+  assert.match(launcher, /http:\/\/localhost:3001\//);
+  assert.match(launcher, /DATABASE_DRIVER=d1/);
+  assert.match(launcher, /STORAGE_DRIVER=r2/);
+  assert.match(viteConfig, /d1_databases/);
+  assert.match(viteConfig, /r2_buckets/);
+  assert.match(viteConfig, /MINIFLARE_REGISTRY_PATH/);
+  assert.match(gitignore, /^\/\.wrangler\/$/m);
+});
