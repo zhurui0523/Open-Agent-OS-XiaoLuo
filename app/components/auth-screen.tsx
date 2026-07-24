@@ -182,9 +182,6 @@ export function AuthScreen({
                 : "SECURE RECOVERY"}
           </span>
           <h2>{title}</h2>
-          <p>
-            账号信息保存在 MySQL，文件与生成结果保存在阿里云 OSS。
-          </p>
 
           {mode === "recover" && recoveryStep === "complete" ? (
             <div className="auth-complete">
@@ -323,9 +320,6 @@ export function AuthScreen({
                   <ArrowLeft size={14} /> 返回登录
                 </button>
               )}
-              <small className="auth-notice">
-                系统管理员账号不能公开注册，只能由服务器端安全初始化。
-              </small>
             </>
           )}
         </form>

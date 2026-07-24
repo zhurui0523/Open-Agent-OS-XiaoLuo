@@ -4467,16 +4467,9 @@ button:disabled {
 }
 
 .auth-card h2 {
-  margin: 0;
+  margin: 0 0 24px;
   font-size: 24px;
   letter-spacing: -0.035em;
-}
-
-.auth-card > p {
-  margin: 8px 0 24px;
-  color: var(--color-muted);
-  font-size: 10px;
-  line-height: 1.65;
 }
 
 .auth-card > label {
@@ -4532,15 +4525,6 @@ button:disabled {
   width: 100%;
   height: 45px;
   margin-top: 18px;
-}
-
-.auth-notice {
-  display: block;
-  margin-top: 12px;
-  color: var(--color-subtle);
-  font-size: 8px;
-  line-height: 1.5;
-  text-align: center;
 }
 
 .auth-error {
