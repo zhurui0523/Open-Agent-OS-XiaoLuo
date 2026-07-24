@@ -1,0 +1,18 @@
+id,priority,requirement,implementation,evidence,status
+REQ-001,P0,账户注册必须包含手机号并支持手机号找回密码,MySQL账户与验证码流程,app/api/v2/auth,implemented
+REQ-002,P0,角色保持系统管理员企业管理员企业普通用户和普通用户四类,服务端授权策略,app/lib/authorization.ts,implemented
+REQ-003,P0,用户不能跨工作区访问画布资产模型密钥和任务,所有核心路由强制workspaceId与资源级校验,app/lib/workspace-context.ts,implemented
+REQ-004,P0,工作空间项目画布形成层级且支持归档快照,服务端CRUD与快照表,app/api/v2/canvases,implemented
+REQ-005,P0,Intent对话与计划必须由服务端持久化,会话消息计划API与SSE,app/api/v2/intent,implemented
+REQ-006,P0,Runtime必须具备可恢复队列租约重试暂停取消和事件流,MySQL任务队列与Worker调度,app/lib/kernel-worker.ts,implemented
+REQ-007,P0,节点可一对多连接可主动连接并可断开,多边画布状态与交互,app/components/canvas-view.tsx,implemented
+REQ-008,P0,模型连接密钥不能明文返回客户端,AES-GCM Secret引用与服务端解析,app/lib/secret-vault.ts,implemented
+REQ-009,P0,Package具有安装升级禁用卸载版本摘要和签名策略,不可变版本记录与软卸载,app/api/v2/packages/route.ts,implemented
+REQ-010,P0,生成结果自动沉淀至OSS并在MySQL记录来源,Worker资产持久化和lineage,app/lib/kernel-worker.ts,implemented
+REQ-011,P0,文件系统只使用MySQL和OSS且不保留本地业务存储,云存储适配器与迁移脚本,app/lib/asset-kernel.ts,implemented
+REQ-012,P0,任务中心支持运行和异步生成任务查询与控制,统一任务API,app/api/v2/tasks/route.ts,implemented
+REQ-013,P0,数据库结构变更只能通过版本化迁移,Drizzle迁移账本校验和和回滚脚本,scripts/migrate-v2.mjs,implemented
+REQ-014,P0,服务提供存活和就绪探针,MySQL与OSS就绪检查,app/api/v2/health,implemented
+REQ-015,P1,多人实时协作与权限撤销后实时断连,当前为服务端保存和revision基础,docs/baseline/requirements.csv,deferred
+REQ-016,P1,完整审计日志与Outbox事件投递,关键能力已有Registry与Run事件但未全域覆盖,db/schema.ts,partial
+REQ-017,P2,插件市场与第三方发布者治理,当前支持Package导入与注册表未包含市场,app/api/v2/packages/route.ts,deferred

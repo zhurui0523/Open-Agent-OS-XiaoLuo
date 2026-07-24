@@ -1,5 +1,33 @@
 export type AppView = "canvas" | "assets" | "capabilities";
 
+export interface AccountUser {
+  id: string;
+  email: string;
+  displayName: string;
+  phoneLast4: string | null;
+  platformRole: "system_admin" | "user";
+}
+
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  status: "pending" | "active" | "rejected" | "disabled";
+  role: "admin" | "member" | null;
+  membershipStatus: "active" | "disabled" | null;
+  workspaceId: string | null;
+  applicationStatus: "pending" | "approved" | "rejected" | null;
+  createdAt: string;
+}
+
+export interface WorkspaceOption {
+  id: string;
+  name: string;
+  role: "owner" | "admin" | "editor" | "viewer";
+  kind: "personal" | "enterprise";
+  organizationName: string | null;
+  organizationRole: "admin" | "member" | null;
+}
+
 export type NodeKind = "text" | "image" | "video";
 
 export type NodeStatus =
@@ -93,6 +121,7 @@ export interface ModelConnection {
   baseUrl?: string;
   modelName?: string;
   credentialRef?: string;
+  secretRefId?: string;
   enabled?: boolean;
   lastCheckedAt?: string | null;
 }
@@ -102,10 +131,14 @@ export type PluginRuntimeType = "declarative" | "sandbox-ui" | "remote-api";
 export type ModelProtocol =
   | "openai-compatible"
   | "anthropic-compatible"
+  | "gemini"
+  | "ark"
+  | "async-video"
   | "generic-rest";
 
 export interface InstalledPackage {
   id: string;
+  packageKey?: string;
   name: string;
   version: string;
   description: string;
@@ -114,6 +147,9 @@ export interface InstalledPackage {
   runtimeUrl?: string | null;
   permissions: string[];
   enabled: boolean;
+  lifecycleState?: string;
+  healthStatus?: string;
+  integritySha256?: string;
   installedAt: string;
   updatedAt: string;
   contributionCount: number;
@@ -141,6 +177,9 @@ export interface ModelConnectionDraft {
   modelName: string;
   modalities: NodeKind[];
   credentialRef?: string;
+  secretRefId?: string;
+  secretValue?: string;
+  secretName?: string;
 }
 
 export interface AssetItem {
@@ -177,9 +216,10 @@ export interface FileSystemAsset {
   sourceType: string;
   sourceRef: string | null;
   contentHash: string;
+  favorite: boolean;
   currentVersion: number;
   versionCount: number;
-  status: "ready" | "processing" | "failed";
+  status: "ready" | "processing" | "failed" | "missing";
   trashedAt: string | null;
   createdAt: string;
   updatedAt: string;

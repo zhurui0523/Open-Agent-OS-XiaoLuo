@@ -27,7 +27,13 @@ export interface PanelContribution {
 export interface ModelProviderContribution {
   id: string;
   title: string;
-  protocol: "openai-compatible" | "anthropic-compatible" | "generic-rest";
+  protocol:
+    | "openai-compatible"
+    | "anthropic-compatible"
+    | "gemini"
+    | "ark"
+    | "async-video"
+    | "generic-rest";
 }
 
 export interface XiaoLuoPackageManifest {
@@ -221,7 +227,14 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
       !isRecord(item) ||
       !safeString(item.id) ||
       !safeString(item.title) ||
-      !["openai-compatible", "anthropic-compatible", "generic-rest"].includes(
+      ![
+        "openai-compatible",
+        "anthropic-compatible",
+        "gemini",
+        "ark",
+        "async-video",
+        "generic-rest",
+      ].includes(
         safeString(item.protocol),
       )
     ) {

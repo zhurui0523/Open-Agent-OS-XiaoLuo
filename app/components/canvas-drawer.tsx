@@ -9,21 +9,29 @@ import {
   Search,
   Star,
 } from "lucide-react";
-import { canvasList } from "../data";
+import type { CanvasSummary } from "../types";
 import { IconButton } from "./icon-button";
 
 interface CanvasDrawerProps {
   open: boolean;
   activeCanvasId: string;
+  canvases: CanvasSummary[];
+  workspaceName: string;
+  projectName: string;
   onClose: () => void;
   onSelect: (id: string) => void;
+  onCreate: () => void;
 }
 
 export function CanvasDrawer({
   open,
   activeCanvasId,
+  canvases,
+  workspaceName,
+  projectName,
   onClose,
   onSelect,
+  onCreate,
 }: CanvasDrawerProps) {
   if (!open) return null;
 
@@ -32,7 +40,7 @@ export function CanvasDrawer({
       <div className="drawer-heading">
         <div>
           <span className="eyebrow">工作空间</span>
-          <strong>品牌内容实验室</strong>
+          <strong>{workspaceName || "云端工作空间"}</strong>
         </div>
         <IconButton label="收起画布管理" onClick={onClose}>
           <PanelLeftClose size={17} />
@@ -45,7 +53,7 @@ export function CanvasDrawer({
         </span>
         <span>
           <small>当前项目</small>
-          <b>夏日品牌计划</b>
+          <b>{projectName || "正在加载"}</b>
         </span>
         <ChevronLeft size={16} className="rotate-down" />
       </button>
@@ -58,13 +66,18 @@ export function CanvasDrawer({
 
       <div className="drawer-section-heading">
         <span>最近画布</span>
-        <button type="button" aria-label="新建画布" title="新建画布">
+        <button
+          type="button"
+          aria-label="新建画布"
+          title="新建画布"
+          onClick={onCreate}
+        >
           <Plus size={16} />
         </button>
       </div>
 
       <div className="canvas-list">
-        {canvasList.map((canvas) => (
+        {canvases.map((canvas) => (
           <button
             type="button"
             key={canvas.id}
@@ -82,7 +95,7 @@ export function CanvasDrawer({
                 {canvas.starred && <Star size={12} fill="currentColor" />}
               </span>
               <small>
-                {canvas.nodes} 个节点 · {canvas.updatedAt}
+                {canvas.nodes} 个节点 · {new Date(canvas.updatedAt).toLocaleString("zh-CN")}
               </small>
             </span>
             <Ellipsis size={16} className="canvas-more" aria-hidden="true" />
@@ -90,17 +103,6 @@ export function CanvasDrawer({
         ))}
       </div>
 
-      <div className="drawer-storage">
-        <div>
-          <span>本地缓存</span>
-          <b>38 MB</b>
-        </div>
-        <div className="storage-bar">
-          <span />
-        </div>
-        <small>仅保存预览与未提交草稿</small>
-      </div>
     </aside>
   );
 }
-

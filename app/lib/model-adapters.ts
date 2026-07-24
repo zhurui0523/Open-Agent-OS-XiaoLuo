@@ -52,7 +52,9 @@ function requestFor(config: ModelAdapterConfig) {
   const baseUrl = trimSlash(validateExternalEndpoint(config.baseUrl).toString());
   const headers = new Headers({ accept: "application/json" });
   if (config.credential) {
-    if (config.protocol === "anthropic-compatible") {
+    if (config.protocol === "gemini") {
+      headers.set("x-goog-api-key", config.credential);
+    } else if (config.protocol === "anthropic-compatible") {
       headers.set("x-api-key", config.credential);
       headers.set("anthropic-version", "2023-06-01");
     } else {
@@ -60,7 +62,10 @@ function requestFor(config: ModelAdapterConfig) {
     }
   }
 
-  if (config.protocol === "generic-rest") {
+  if (
+    config.protocol === "generic-rest" ||
+    config.protocol === "async-video"
+  ) {
     return new Request(baseUrl, { method: "HEAD", headers });
   }
   return new Request(`${baseUrl}/models`, { method: "GET", headers });
@@ -80,7 +85,10 @@ export async function probeModelAdapter(
     const latencyMs = Date.now() - startedAt;
     if (response.ok) {
       let discoveredModels: string[] | undefined;
-      if (config.protocol !== "generic-rest") {
+      if (
+        config.protocol !== "generic-rest" &&
+        config.protocol !== "async-video"
+      ) {
         const payload = (await response.json().catch(() => null)) as
           | { data?: Array<{ id?: string }> }
           | null;

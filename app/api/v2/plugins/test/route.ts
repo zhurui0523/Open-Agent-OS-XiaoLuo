@@ -1,10 +1,12 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { packages, registryEvents } from "../../../../../db/schema";
 import {
   type XiaoLuoPackageManifest,
 } from "../../../../lib/package-contract";
 import { validateExternalEndpoint } from "../../../../lib/model-adapters";
+import { requireUser } from "../../../../lib/auth";
+import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 
 function joinUrl(base: string, path: string) {
   const normalized = `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
@@ -13,7 +15,17 @@ function joinUrl(base: string, path: string) {
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as { id?: string };
+    const user = await requireUser(request);
+    const payload = (await request.json()) as {
+      id?: string;
+      workspaceId?: string;
+    };
+    const workspaceId = await requireRequestedWorkspace(
+      request,
+      user.id,
+      "manage",
+      payload,
+    );
     if (!payload.id) {
       return Response.json({ error: "id 必填" }, { status: 400 });
     }
@@ -21,7 +33,12 @@ export async function POST(request: Request) {
     const [row] = await db
       .select()
       .from(packages)
-      .where(eq(packages.id, payload.id))
+      .where(
+        and(
+          eq(packages.id, payload.id),
+          eq(packages.workspaceId, workspaceId),
+        ),
+      )
       .limit(1);
     if (!row) return Response.json({ error: "插件不存在" }, { status: 404 });
     const manifest = JSON.parse(row.manifestJson) as XiaoLuoPackageManifest;
@@ -67,6 +84,8 @@ export async function POST(request: Request) {
       };
       await db.insert(registryEvents).values({
         id: crypto.randomUUID(),
+        workspaceId,
+        actorUserId: user.id,
         eventType: result.ok ? "plugin.healthy" : "plugin.attention",
         entityId: row.id,
         detailJson: JSON.stringify(result),
@@ -76,6 +95,7 @@ export async function POST(request: Request) {
       clearTimeout(timeout);
     }
   } catch (error) {
+    if (error instanceof Response) return error;
     return Response.json(
       { error: error instanceof Error ? error.message : "插件检测失败" },
       { status: 500 },

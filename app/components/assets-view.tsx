@@ -66,8 +66,14 @@ interface AssetVersion {
   createdAt: string;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+async function requestJson<T>(
+  workspaceId: string,
+  url: string,
+  init?: RequestInit,
+): Promise<T> {
+  const separator = url.includes("?") ? "&" : "?";
+  const scopedUrl = `${url}${separator}workspaceId=${encodeURIComponent(workspaceId)}`;
+  const response = await fetch(scopedUrl, init);
   const payload = (await response.json().catch(() => ({}))) as T & {
     error?: string;
   };
@@ -135,7 +141,7 @@ function AssetMedia({
   );
 }
 
-export function AssetsView() {
+export function AssetsView({ workspaceId }: { workspaceId: string }) {
   const uploadRef = useRef<HTMLInputElement>(null);
   const versionRef = useRef<HTMLInputElement>(null);
   const [assets, setAssets] = useState<FileSystemAsset[]>([]);
@@ -171,6 +177,7 @@ export function AssetsView() {
       if (filter !== "all") params.set("kind", filter);
       if (trash) params.set("trash", "1");
       const payload = await requestJson<{ assets: FileSystemAsset[] }>(
+        workspaceId,
         `/api/v2/files?${params}`,
       );
       setAssets(payload.assets);
@@ -182,11 +189,12 @@ export function AssetsView() {
     } finally {
       setLoading(false);
     }
-  }, [filter, folderId, query, trash]);
+  }, [filter, folderId, query, trash, workspaceId]);
 
   const loadFolders = useCallback(async () => {
     try {
       const payload = await requestJson<{ folders: FileSystemFolder[] }>(
+        workspaceId,
         "/api/v2/folders",
       );
       setFolders(payload.folders);
@@ -195,11 +203,14 @@ export function AssetsView() {
         loadError instanceof Error ? loadError.message : "文件夹加载失败",
       );
     }
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     let active = true;
-    void requestJson<{ folders: FileSystemFolder[] }>("/api/v2/folders")
+    void requestJson<{ folders: FileSystemFolder[] }>(
+      workspaceId,
+      "/api/v2/folders",
+    )
       .then((payload) => {
         if (active) setFolders(payload.folders);
       })
@@ -215,7 +226,7 @@ export function AssetsView() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     const timeout = setTimeout(() => void loadAssets(), 160);
@@ -225,11 +236,12 @@ export function AssetsView() {
   useEffect(() => {
     if (!selected) return;
     void requestJson<{ versions: AssetVersion[] }>(
+      workspaceId,
       `/api/v2/files/versions?assetId=${encodeURIComponent(selected.id)}`,
     )
       .then((payload) => setVersions(payload.versions))
       .catch(() => setVersions([]));
-  }, [selected]);
+  }, [selected, workspaceId]);
 
   async function uploadFiles(files: FileList | File[]) {
     const list = Array.from(files);
@@ -243,7 +255,10 @@ export function AssetsView() {
         form.set("file", list[index]);
         if (folderId) form.set("folderId", folderId);
         form.set("sourceType", "asset-manager-upload");
-        await requestJson("/api/v2/files", { method: "POST", body: form });
+        await requestJson(workspaceId, "/api/v2/files", {
+          method: "POST",
+          body: form,
+        });
       }
       await loadAssets();
     } catch (uploadError) {
@@ -259,7 +274,7 @@ export function AssetsView() {
     const name = window.prompt("新文件夹名称");
     if (!name?.trim()) return;
     try {
-      await requestJson("/api/v2/folders", {
+      await requestJson(workspaceId, "/api/v2/folders", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name, parentId: folderId }),
@@ -279,6 +294,7 @@ export function AssetsView() {
     setBusy("正在保存");
     try {
       const payload = await requestJson<{ asset: FileSystemAsset }>(
+        workspaceId,
         "/api/v2/files",
         {
           method: "PATCH",
@@ -308,6 +324,7 @@ export function AssetsView() {
     setBusy("正在永久删除");
     try {
       await requestJson(
+        workspaceId,
         `/api/v2/files?id=${encodeURIComponent(asset.id)}`,
         { method: "DELETE" },
       );
@@ -330,6 +347,7 @@ export function AssetsView() {
       form.set("assetId", selected.id);
       form.set("file", file);
       const payload = await requestJson<{ asset: FileSystemAsset }>(
+        workspaceId,
         "/api/v2/files/versions",
         { method: "POST", body: form },
       );
@@ -601,7 +619,7 @@ export function AssetsView() {
                 {versions.slice(0, 5).map((version) => (
                   <a
                     key={version.id}
-                    href={`/api/v2/files/content?assetId=${encodeURIComponent(selected.id)}&version=${version.version}`}
+                    href={`/api/v2/files/content?assetId=${encodeURIComponent(selected.id)}&version=${version.version}&workspaceId=${encodeURIComponent(workspaceId)}`}
                     target="_blank"
                     rel="noreferrer"
                   >

@@ -1,98 +1,71 @@
-# vinext-starter
+# XiaoLuo AI Intent OS V2
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+联网运行的 Web AI OS：以无限画布组织意图、节点、模型、插件、文件与
+AI 微内核任务。
 
-## Prerequisites
+## 数据架构
+
+- MySQL：账号、密码哈希、会话、权限、工作区、项目、画布、节点、连线、
+  扩展注册表、模型连接、运行记录、资产元数据与文件版本。
+- 阿里云 OSS：用户上传、AI 生成结果和所有版本的文件二进制。
+- 本机不作为业务数据存储。`localhost` 只是开发入口，仍然连接远程服务。
+- 所有业务 API 都要求有效会话；资产查询按 `workspace_id` 隔离。
+
+## 准备环境
 
 - Node.js `>=22.13.0`
+- pnpm `11.9.0`
+- 可联网访问的 MySQL 8.x
+- 阿里云 OSS Bucket
 
-## Quick Start
+复制 `.env.example` 为被 Git 忽略的 `.env.local`，只在服务器中填写真实
+值。不要把密码、AccessKey 或 `.env.local` 提交到仓库。
+
+```dotenv
+DB_HOST=
+DB_PORT=3306
+DB_USER=
+DB_PASSWORD=
+DB_NAME=
+DB_SSL_MODE=preferred
+
+OSS_REGION=
+OSS_ACCESS_KEY_ID=
+OSS_ACCESS_KEY_SECRET=
+OSS_BUCKET=
+OSS_ENDPOINT=
+```
+
+应用第一次访问数据库时会以 `CREATE TABLE IF NOT EXISTS` 初始化表结构。
+初始化所用数据库账号需要建表权限；稳定运行后可以换成仅具备业务 CRUD
+权限的账号。
+
+## 本地开发
 
 ```bash
-npm install
-npm run dev
-npm run build
+pnpm install
+pnpm cloud:verify
+pnpm dev:local
 ```
 
-This starter does not use `wrangler.jsonc`.
+也可以在 Windows 中双击 `start-local.cmd`。浏览器打开
+`http://localhost:3001/` 后，先创建真实账号；系统会自动创建第一个工作
+空间、项目和云画布。
 
-## Included Shape
+## 验证
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+pnpm test
+pnpm lint
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+`pnpm test` 会完成生产构建并运行架构与渲染测试。
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+## 安全约定
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+- 密码使用 PBKDF2-SHA256、随机盐和 310,000 次迭代保存。
+- 登录状态使用服务端会话与 `HttpOnly`、`SameSite=Lax` Cookie。
+- 画布写入采用 revision 乐观锁，检测多端并发覆盖。
+- OSS AccessKey 只在服务端使用，绝不下发到浏览器。
+- 已经出现在聊天、日志、截图或 Git 历史里的密码与 AccessKey 必须立即
+  作废并重新生成。

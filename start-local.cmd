@@ -24,18 +24,17 @@ if not exist "node_modules\vinext\dist\cli.js" (
   exit /b 1
 )
 
-if not defined DATABASE_DRIVER set "DATABASE_DRIVER=d1"
-if not defined STORAGE_DRIVER set "STORAGE_DRIVER=r2"
-
 echo.
 echo [XiaoLuo AI] Starting local AI Intent OS...
 echo [XiaoLuo AI] Open http://localhost:3001/
+echo [XiaoLuo AI] Business data: remote MySQL + Alibaba Cloud OSS
+echo [XiaoLuo AI] Configure server secrets in the ignored .env.local file.
 echo [XiaoLuo AI] Press Ctrl+C to stop.
 echo [XiaoLuo AI] Runtime log: .wrangler\local-dev.log
 echo.
 
 if not exist ".wrangler" mkdir ".wrangler"
-"%NODE_EXE%" "node_modules\vinext\dist\cli.js" dev --host localhost --port 3001 > ".wrangler\local-dev.log" 2>&1
+"%NODE_EXE%" "node_modules\vinext\dist\cli.js" dev --hostname 127.0.0.1 --port 3001 > ".wrangler\local-dev.log" 2>&1
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
   echo.

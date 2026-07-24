@@ -1,0 +1,10 @@
+resource,system_admin,enterprise_admin,enterprise_member,individual_user
+system_users,manage,none,none,none
+enterprise,manage,manage_own,view_own,none
+workspace,all,manage_own,member_scope,own
+project,all,manage_own,member_scope,own
+canvas,all,manage_own,member_scope,own
+asset,all,manage_own,member_scope,own
+model_secret,all,workspace_scope,workspace_scope,own_workspace
+package,all,workspace_scope,view_and_use,own_workspace
+run_task,all,workspace_scope,own_runs,own_runs

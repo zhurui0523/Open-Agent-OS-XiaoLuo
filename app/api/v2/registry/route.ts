@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import {
   modelConnections,
@@ -12,6 +12,8 @@ import {
   serializeModel,
   serializePackage,
 } from "../../../lib/registry-serialization";
+import { requireUser } from "../../../lib/auth";
+import { requireRequestedWorkspace } from "../../../lib/workspace-context";
 
 function routeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Registry unavailable";
@@ -21,19 +23,68 @@ function routeError(error: unknown) {
   return message;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const user = await requireUser(request);
+    const workspaceId = await requireRequestedWorkspace(
+      request,
+      user.id,
+      "view",
+    );
     const db = await getDb();
     const [packageRows, capabilityRows, modelRows, eventRows] =
       await Promise.all([
-        db.select().from(packages).orderBy(desc(packages.updatedAt)),
-        db.select().from(packageCapabilities),
+        db
+          .select()
+          .from(packages)
+          .where(
+            and(
+              eq(packages.workspaceId, workspaceId),
+              ne(packages.lifecycleState, "uninstalled"),
+            ),
+          )
+          .orderBy(desc(packages.updatedAt)),
+        db
+          .select({
+            id: packageCapabilities.id,
+            capabilityKey: packageCapabilities.capabilityKey,
+            packageId: packageCapabilities.packageId,
+            title: packageCapabilities.title,
+            description: packageCapabilities.description,
+            modality: packageCapabilities.modality,
+            contributionType: packageCapabilities.contributionType,
+            inputSchemaJson: packageCapabilities.inputSchemaJson,
+            outputSchemaJson: packageCapabilities.outputSchemaJson,
+            uiSchemaJson: packageCapabilities.uiSchemaJson,
+            enabled: packageCapabilities.enabled,
+          })
+          .from(packageCapabilities)
+          .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
+          .where(
+            and(
+              eq(packages.workspaceId, workspaceId),
+              ne(packages.lifecycleState, "uninstalled"),
+            ),
+          ),
         db
           .select()
           .from(modelConnections)
-          .where(eq(modelConnections.enabled, true))
-          .orderBy(desc(modelConnections.updatedAt)),
-        db.select().from(registryEvents).orderBy(desc(registryEvents.createdAt)).limit(20),
+          .where(
+            and(
+              eq(modelConnections.workspaceId, workspaceId),
+              eq(modelConnections.enabled, true),
+            ),
+          )
+          .orderBy(
+            asc(modelConnections.priority),
+            desc(modelConnections.updatedAt),
+          ),
+        db
+          .select()
+          .from(registryEvents)
+          .where(eq(registryEvents.workspaceId, workspaceId))
+          .orderBy(desc(registryEvents.createdAt))
+          .limit(20),
       ]);
     const packageMap = new Map(packageRows.map((row) => [row.id, row]));
 
@@ -56,6 +107,7 @@ export async function GET() {
       events: eventRows.map(serializeEvent),
     });
   } catch (error) {
+    if (error instanceof Response) return error;
     return Response.json({ error: routeError(error) }, { status: 500 });
   }
 }

@@ -811,6 +811,7 @@ function ModelDialog({
   const [baseUrl, setBaseUrl] = useState("");
   const [modelName, setModelName] = useState("");
   const [credentialRef, setCredentialRef] = useState("");
+  const [secretValue, setSecretValue] = useState("");
   const [modalities, setModalities] = useState<NodeKind[]>(["text"]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -835,6 +836,8 @@ function ModelDialog({
         modelName,
         modalities,
         credentialRef: credentialRef || undefined,
+        secretValue: secretValue || undefined,
+        secretName: secretValue ? `${name || modelName} API Key` : undefined,
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建失败");
@@ -871,6 +874,9 @@ function ModelDialog({
             <select value={protocol} onChange={(event) => setProtocol(event.target.value as ModelProtocol)}>
               <option value="openai-compatible">OpenAI Compatible</option>
               <option value="anthropic-compatible">Anthropic Compatible</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="ark">Volcengine Ark</option>
+              <option value="async-video">Async Video API</option>
               <option value="generic-rest">Generic REST</option>
             </select>
           </label>
@@ -885,6 +891,16 @@ function ModelDialog({
           <label>
             <span>Secret Ref</span>
             <input value={credentialRef} onChange={(event) => setCredentialRef(event.target.value.toUpperCase())} placeholder="MODEL_API_KEY" />
+          </label>
+          <label className="form-span-two">
+            <span>API Key（服务器加密保存）</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={secretValue}
+              onChange={(event) => setSecretValue(event.target.value)}
+              placeholder="也可以只填写上面的环境变量引用"
+            />
           </label>
         </div>
         <fieldset className="modality-fieldset">

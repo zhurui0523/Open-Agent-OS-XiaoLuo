@@ -1,16 +1,26 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { packages, registryEvents } from "../../../../../db/schema";
 import type { XiaoLuoPackageManifest } from "../../../../lib/package-contract";
 import { validateExternalEndpoint } from "../../../../lib/model-adapters";
+import { requireUser } from "../../../../lib/auth";
+import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 
 export async function POST(request: Request) {
   try {
+    const user = await requireUser(request);
     const payload = (await request.json()) as {
       packageId?: string;
       operation?: string;
       input?: unknown;
+      workspaceId?: string;
     };
+    const workspaceId = await requireRequestedWorkspace(
+      request,
+      user.id,
+      "edit",
+      payload,
+    );
     if (!payload.packageId || !payload.operation) {
       return Response.json(
         { error: "packageId 和 operation 必填" },
@@ -21,7 +31,12 @@ export async function POST(request: Request) {
     const [row] = await db
       .select()
       .from(packages)
-      .where(eq(packages.id, payload.packageId))
+      .where(
+        and(
+          eq(packages.id, payload.packageId),
+          eq(packages.workspaceId, workspaceId),
+        ),
+      )
       .limit(1);
     if (!row || !row.enabled) {
       return Response.json({ error: "插件不存在或已停用" }, { status: 404 });
@@ -59,6 +74,8 @@ export async function POST(request: Request) {
       const output = await response.json().catch(() => null);
       await db.insert(registryEvents).values({
         id: crypto.randomUUID(),
+        workspaceId,
+        actorUserId: user.id,
         eventType: response.ok ? "runtime.succeeded" : "runtime.failed",
         entityId: row.id,
         detailJson: JSON.stringify({
@@ -74,6 +91,7 @@ export async function POST(request: Request) {
       clearTimeout(timeout);
     }
   } catch (error) {
+    if (error instanceof Response) return error;
     return Response.json(
       { error: error instanceof Error ? error.message : "Runtime 调用失败" },
       { status: 500 },

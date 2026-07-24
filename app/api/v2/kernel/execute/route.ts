@@ -20,8 +20,11 @@ import type {
   KernelNodeOutput,
   KernelUpstreamInput,
 } from "../../../../types";
+import { mysqlNow } from "../../../../lib/mysql";
+import { requireUser } from "../../../../lib/auth";
 
 function errorResponse(error: unknown, status = 400) {
+  if (error instanceof Response) return error;
   return Response.json(
     { error: error instanceof Error ? error.message : "节点执行失败" },
     { status },
@@ -30,6 +33,7 @@ function errorResponse(error: unknown, status = 400) {
 
 export async function POST(request: Request) {
   try {
+    const user = await requireUser(request);
     const payload = (await request.json()) as {
       runId?: string;
       nodeId?: string;
@@ -42,7 +46,12 @@ export async function POST(request: Request) {
     const [run] = await db
       .select()
       .from(kernelRuns)
-      .where(eq(kernelRuns.id, payload.runId))
+      .where(
+        and(
+          eq(kernelRuns.id, payload.runId),
+          eq(kernelRuns.createdBy, user.id),
+        ),
+      )
       .limit(1);
     if (!run) return errorResponse(new Error("运行记录不存在"), 404);
     if (run.status === "canceled") {
@@ -98,7 +107,7 @@ export async function POST(request: Request) {
       };
     });
 
-    const now = new Date().toISOString();
+    const now = mysqlNow();
     await db
       .update(kernelRuns)
       .set({
@@ -120,15 +129,29 @@ export async function POST(request: Request) {
 
     try {
       const [capability] = await db
-        .select()
+        .select({
+          capability: packageCapabilities,
+          pkg: packages,
+        })
         .from(packageCapabilities)
-        .where(eq(packageCapabilities.id, node.capabilityId))
+        .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
+        .where(
+          and(
+            eq(packageCapabilities.id, node.capabilityId),
+            eq(packages.workspaceId, run.workspaceId),
+          ),
+        )
         .limit(1);
       const [pkg] = capability
         ? await db
             .select()
             .from(packages)
-            .where(eq(packages.id, capability.packageId))
+            .where(
+              and(
+                eq(packages.id, capability.capability.packageId),
+                eq(packages.workspaceId, run.workspaceId),
+              ),
+            )
             .limit(1)
         : [];
       const [model] =
@@ -136,7 +159,12 @@ export async function POST(request: Request) {
           ? await db
               .select()
               .from(modelConnections)
-              .where(eq(modelConnections.id, node.modelId))
+              .where(
+                and(
+                  eq(modelConnections.id, node.modelId),
+                  eq(modelConnections.workspaceId, run.workspaceId),
+                ),
+              )
               .limit(1)
           : [];
 
@@ -146,7 +174,7 @@ export async function POST(request: Request) {
           : model?.enabled
             ? await executeModel(model, node, inputs, request.signal)
             : executeBuiltin(node, inputs);
-      const completedAt = new Date().toISOString();
+      const completedAt = mysqlNow();
       await db
         .update(kernelTasks)
         .set({
@@ -159,6 +187,8 @@ export async function POST(request: Request) {
         .where(eq(kernelTasks.id, task.id));
       await db.insert(registryEvents).values({
         id: crypto.randomUUID(),
+        workspaceId: run.workspaceId,
+        actorUserId: user.id,
         eventType: "kernel.node.succeeded",
         entityId: task.id,
         detailJson: JSON.stringify({
@@ -173,7 +203,7 @@ export async function POST(request: Request) {
         ...execution,
       });
     } catch (error) {
-      const failedAt = new Date().toISOString();
+      const failedAt = mysqlNow();
       const message = error instanceof Error ? error.message : "节点执行失败";
       await db
         .update(kernelTasks)
@@ -186,6 +216,8 @@ export async function POST(request: Request) {
         .where(eq(kernelTasks.id, task.id));
       await db.insert(registryEvents).values({
         id: crypto.randomUUID(),
+        workspaceId: run.workspaceId,
+        actorUserId: user.id,
         eventType: "kernel.node.failed",
         entityId: task.id,
         detailJson: JSON.stringify({

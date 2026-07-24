@@ -36,6 +36,7 @@ export function serializePackage(row: PackageRow): InstalledPackage {
   );
   return {
     id: row.id,
+    packageKey: row.packageKey,
     name: row.name,
     version: row.version,
     description: row.description,
@@ -44,6 +45,9 @@ export function serializePackage(row: PackageRow): InstalledPackage {
     runtimeUrl: row.runtimeUrl,
     permissions: parseJson<string[]>(row.permissionsJson, []),
     enabled: row.enabled,
+    lifecycleState: row.lifecycleState,
+    healthStatus: row.healthStatus,
+    integritySha256: row.integritySha256,
     installedAt: row.installedAt,
     updatedAt: row.updatedAt,
     contributionCount: manifest ? packageContributionCount(manifest) : 0,
@@ -86,6 +90,7 @@ export function serializeModel(row: ModelRow): ModelConnection {
     baseUrl: row.baseUrl,
     modelName: row.modelName,
     credentialRef: row.credentialRef ?? undefined,
+    secretRefId: row.secretRefId ?? undefined,
     modalities: parseJson<NodeKind[]>(row.modalitiesJson, []),
     state: row.state as ModelConnection["state"],
     latency:

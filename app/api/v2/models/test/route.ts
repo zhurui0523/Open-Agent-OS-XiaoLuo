@@ -1,13 +1,27 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { modelConnections, registryEvents } from "../../../../../db/schema";
 import { probeModelAdapter } from "../../../../lib/model-adapters";
 import { serializeModel } from "../../../../lib/registry-serialization";
 import type { ModelProtocol, NodeKind } from "../../../../types";
+import { mysqlNow } from "../../../../lib/mysql";
+import { requireUser } from "../../../../lib/auth";
+import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
+import { resolveSecret } from "../../../../lib/secret-vault";
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as { id?: string };
+    const user = await requireUser(request);
+    const payload = (await request.json()) as {
+      id?: string;
+      workspaceId?: string;
+    };
+    const workspaceId = await requireRequestedWorkspace(
+      request,
+      user.id,
+      "manage",
+      payload,
+    );
     if (!payload.id) {
       return Response.json({ error: "id 必填" }, { status: 400 });
     }
@@ -15,7 +29,12 @@ export async function POST(request: Request) {
     const [row] = await db
       .select()
       .from(modelConnections)
-      .where(eq(modelConnections.id, payload.id))
+      .where(
+        and(
+          eq(modelConnections.id, payload.id),
+          eq(modelConnections.workspaceId, workspaceId),
+        ),
+      )
       .limit(1);
     if (!row) return Response.json({ error: "模型连接不存在" }, { status: 404 });
 
@@ -25,9 +44,11 @@ export async function POST(request: Request) {
     } catch {
       modalities = [];
     }
-    const credential = row.credentialRef
-      ? process.env[row.credentialRef]
-      : undefined;
+    const credential = row.secretRefId
+      ? await resolveSecret(row.secretRefId, workspaceId)
+      : row.credentialRef
+        ? process.env[row.credentialRef]
+        : undefined;
     const result = await probeModelAdapter({
       protocol: row.protocol as ModelProtocol,
       baseUrl: row.baseUrl,
@@ -35,8 +56,8 @@ export async function POST(request: Request) {
       modalities,
       credential,
     });
-    const checkedAt = new Date().toISOString();
-    const [updated] = await db
+    const checkedAt = mysqlNow();
+    await db
       .update(modelConnections)
       .set({
         state: result.state,
@@ -44,16 +65,26 @@ export async function POST(request: Request) {
         lastCheckedAt: checkedAt,
         updatedAt: checkedAt,
       })
+      .where(eq(modelConnections.id, row.id));
+    const [updated] = await db
+      .select()
+      .from(modelConnections)
       .where(eq(modelConnections.id, row.id))
-      .returning();
+      .limit(1);
+    if (!updated) {
+      return Response.json({ error: "模型连接不存在" }, { status: 404 });
+    }
     await db.insert(registryEvents).values({
       id: crypto.randomUUID(),
+      workspaceId,
+      actorUserId: user.id,
       eventType: result.ok ? "model.healthy" : "model.attention",
       entityId: row.id,
       detailJson: JSON.stringify({ message: result.message }),
     });
     return Response.json({ model: serializeModel(updated), probe: result });
   } catch (error) {
+    if (error instanceof Response) return error;
     return Response.json(
       { error: error instanceof Error ? error.message : "连接测试失败" },
       { status: 500 },

@@ -1,0 +1,16 @@
+id,scenario,expected,automation,status
+E2E-001,注册登录并恢复会话,手机号账户可登录且会话可恢复,API integration,partial
+E2E-002,用户尝试访问其他工作区,服务端返回403,contract+API integration,implemented
+E2E-003,创建项目画布并保存快照,刷新后数据不丢失,API integration,implemented
+E2E-004,提交Intent并接收SSE计划,会话消息和计划持久化,API integration,implemented
+E2E-005,从一个节点连接多个下游,边均保存且可逐条删除,UI regression,implemented
+E2E-006,运行暂停恢复取消,状态和事件按状态机变化,API integration,implemented
+E2E-007,失败任务自动重试,不重复生成资产,worker integration,implemented
+E2E-008,安装Package后能力立即出现,无需重建前端,contract integration,implemented
+E2E-009,模型密钥保存后API不返回明文,只返回Secret引用,security contract,implemented
+E2E-010,生成结果写入OSS,资产元数据和来源关系同时存在,cloud integration,implemented
+E2E-011,上传下载和版本恢复,MIME扩展名和版本正确,cloud integration,implemented
+E2E-012,OSS对象丢失后执行对账,资产标记missing,cloud integration,implemented
+E2E-013,企业管理员管理成员,企业普通用户不能越权,API integration,implemented
+E2E-014,数据库迁移重复执行,第二次无待执行语句,migration test,implemented
+E2E-015,就绪探针依赖异常,返回503且不泄露密钥,API integration,implemented

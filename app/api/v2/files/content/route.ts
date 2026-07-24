@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { assets, assetVersions } from "../../../../../db/schema";
 import { getFileBucket } from "../../../../lib/asset-kernel";
+import { requireWorkspaceContext } from "../../../../lib/cloud-context";
 
 function errorResponse(message: string, status: number) {
   return Response.json({ error: message }, { status });
@@ -27,6 +28,7 @@ function requestedRange(header: string | null, size: number) {
 
 export async function GET(request: Request) {
   try {
+    const { home } = await requireWorkspaceContext(request);
     const url = new URL(request.url);
     const assetId = url.searchParams.get("assetId")?.trim();
     const versionNumber = Number(url.searchParams.get("version") ?? 0);
@@ -35,7 +37,12 @@ export async function GET(request: Request) {
     const [asset] = await db
       .select()
       .from(assets)
-      .where(eq(assets.id, assetId))
+      .where(
+        and(
+          eq(assets.id, assetId),
+          eq(assets.workspaceId, home.workspaceId),
+        ),
+      )
       .limit(1);
     if (!asset) return errorResponse("文件不存在", 404);
     const [version] = await db
@@ -99,6 +106,7 @@ export async function GET(request: Request) {
       headers,
     });
   } catch (error) {
+    if (error instanceof Response) return error;
     return errorResponse(
       error instanceof Error ? error.message : "读取文件失败",
       500,

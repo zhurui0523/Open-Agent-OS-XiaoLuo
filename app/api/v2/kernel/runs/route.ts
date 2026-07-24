@@ -1,27 +1,27 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   kernelRuns,
   kernelTasks,
   registryEvents,
+  runEvents,
 } from "../../../../../db/schema";
-import { compileWorkflow, WorkflowCompileError } from "../../../../lib/workflow-kernel";
+import { requireUser } from "../../../../lib/auth";
+import { requireCanvasAccess } from "../../../../lib/authorization";
+import { readKernelRun } from "../../../../lib/kernel-worker";
+import { mysqlNow } from "../../../../lib/mysql";
+import {
+  compileWorkflow,
+  WorkflowCompileError,
+} from "../../../../lib/workflow-kernel";
 import type { CanvasEdge, CanvasNode } from "../../../../types";
 
-const terminalStates = new Set(["succeeded", "failed", "canceled"]);
-const mutableStates = new Set([
-  "queued",
-  "running",
-  "paused",
-  "succeeded",
-  "failed",
-  "canceled",
-]);
-
 function errorResponse(error: unknown, status = 400) {
+  if (error instanceof Response) return error;
   return Response.json(
     {
-      error: error instanceof Error ? error.message : "微内核运行请求失败",
+      error:
+        error instanceof Error ? error.message : "内核运行请求失败",
       ...(error instanceof WorkflowCompileError ? { code: error.code } : {}),
     },
     { status },
@@ -65,14 +65,60 @@ function validGraph(value: unknown): {
 
 export async function POST(request: Request) {
   try {
-    const graph = validGraph(await request.json());
+    const user = await requireUser(request);
+    const payload = (await request.json()) as {
+      canvasId?: string;
+      nodes?: CanvasNode[];
+      edges?: CanvasEdge[];
+      idempotencyKey?: string;
+    };
+    if (!payload.canvasId) {
+      return errorResponse(new Error("canvasId 必填"));
+    }
+    const access = await requireCanvasAccess(user.id, payload.canvasId, "edit");
+    const idempotencyKey = (
+      request.headers.get("idempotency-key") ??
+      payload.idempotencyKey ??
+      ""
+    )
+      .trim()
+      .slice(0, 160);
+    if (!idempotencyKey) {
+      return errorResponse(new Error("Idempotency-Key 必填"));
+    }
+    const graph = validGraph(payload);
     const workflow = compileWorkflow(graph.nodes, graph.edges);
     const db = await getDb();
+    const [existing] = await db
+      .select()
+      .from(kernelRuns)
+      .where(
+        and(
+          eq(kernelRuns.createdBy, user.id),
+          eq(kernelRuns.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      return Response.json({
+        runId: existing.id,
+        status: existing.status,
+        levels: workflow.levels,
+        dependencies: workflow.dependencies,
+        replayed: true,
+      });
+    }
+
     const runId = `run_${crypto.randomUUID()}`;
-    const now = new Date().toISOString();
+    const now = mysqlNow();
     await db.insert(kernelRuns).values({
       id: runId,
+      workspaceId: access.workspaceId,
+      createdBy: user.id,
+      canvasId: payload.canvasId,
+      idempotencyKey,
       status: "queued",
+      desiredStatus: "running",
       graphJson: JSON.stringify(graph),
       createdAt: now,
       updatedAt: now,
@@ -84,19 +130,36 @@ export async function POST(request: Request) {
         nodeId: node.id,
         status: "queued",
         dependenciesJson: JSON.stringify(workflow.dependencies[node.id]),
+        attempt: 0,
+        maxAttempts: 3,
         updatedAt: now,
       })),
     );
-    await db.insert(registryEvents).values({
-      id: crypto.randomUUID(),
-      eventType: "kernel.run.created",
-      entityId: runId,
-      detailJson: JSON.stringify({
-        nodes: graph.nodes.length,
-        edges: graph.edges.length,
-        levels: workflow.levels.length,
+    await Promise.all([
+      db.insert(registryEvents).values({
+        id: crypto.randomUUID(),
+        workspaceId: access.workspaceId,
+        actorUserId: user.id,
+        eventType: "kernel.run.created",
+        entityId: runId,
+        detailJson: JSON.stringify({
+          nodes: graph.nodes.length,
+          edges: graph.edges.length,
+          levels: workflow.levels.length,
+        }),
       }),
-    });
+      db.insert(runEvents).values({
+        id: `event_${crypto.randomUUID()}`,
+        runId,
+        eventType: "run.created",
+        nodeId: null,
+        payloadJson: JSON.stringify({
+          nodes: graph.nodes.length,
+          levels: workflow.levels.length,
+        }),
+        createdAt: now,
+      }),
+    ]);
     return Response.json(
       {
         runId,
@@ -111,41 +174,118 @@ export async function POST(request: Request) {
   }
 }
 
+export async function GET(request: Request) {
+  try {
+    const user = await requireUser(request);
+    const runId = new URL(request.url).searchParams.get("runId")?.trim();
+    if (!runId) return errorResponse(new Error("runId 必填"));
+    return Response.json(await readKernelRun(runId, user.id));
+  } catch (error) {
+    return errorResponse(error, 500);
+  }
+}
+
 export async function PATCH(request: Request) {
   try {
+    const user = await requireUser(request);
     const payload = (await request.json()) as {
       runId?: string;
-      status?: string;
-      error?: string;
+      action?: "pause" | "resume" | "cancel" | "retry";
     };
-    if (
-      !payload.runId ||
-      !payload.status ||
-      !mutableStates.has(payload.status)
-    ) {
-      return errorResponse(new Error("runId 或 status 无效"));
+    if (!payload.runId || !payload.action) {
+      return errorResponse(new Error("runId 和 action 无效"));
     }
     const db = await getDb();
-    const now = new Date().toISOString();
     const [run] = await db
+      .select()
+      .from(kernelRuns)
+      .where(
+        and(
+          eq(kernelRuns.id, payload.runId),
+          eq(kernelRuns.createdBy, user.id),
+        ),
+      )
+      .limit(1);
+    if (!run) return errorResponse(new Error("运行记录不存在"), 404);
+
+    const now = mysqlNow();
+    if (payload.action === "retry") {
+      await db
+        .update(kernelTasks)
+        .set({
+          status: "queued",
+          error: null,
+          completedAt: null,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(kernelTasks.runId, run.id),
+            eq(kernelTasks.status, "failed"),
+          ),
+        );
+    }
+    if (payload.action === "cancel") {
+      await db
+        .update(kernelTasks)
+        .set({ status: "canceled", updatedAt: now })
+        .where(
+          and(
+            eq(kernelTasks.runId, run.id),
+            eq(kernelTasks.status, "queued"),
+          ),
+        );
+    }
+    const desiredStatus =
+      payload.action === "pause"
+        ? "paused"
+        : payload.action === "cancel"
+          ? "canceled"
+          : "running";
+    const visibleStatus =
+      payload.action === "pause"
+        ? "paused"
+        : payload.action === "cancel"
+          ? "canceled"
+          : "queued";
+    await db
       .update(kernelRuns)
       .set({
-        status: payload.status,
-        error: payload.error ?? null,
-        ...(payload.status === "running" ? { startedAt: now } : {}),
-        ...(terminalStates.has(payload.status) ? { completedAt: now } : {}),
+        desiredStatus,
+        status: visibleStatus,
+        error: payload.action === "retry" ? null : run.error,
+        ...(payload.action === "cancel" ? { completedAt: now } : {}),
+        ...(payload.action === "resume" || payload.action === "retry"
+          ? { completedAt: null, leaseOwner: null, leaseExpiresAt: null }
+          : {}),
         updatedAt: now,
       })
-      .where(eq(kernelRuns.id, payload.runId))
-      .returning();
-    if (!run) return errorResponse(new Error("运行记录不存在"), 404);
-    await db.insert(registryEvents).values({
-      id: crypto.randomUUID(),
-      eventType: `kernel.run.${payload.status}`,
-      entityId: payload.runId,
-      detailJson: JSON.stringify({ error: payload.error ?? null }),
+      .where(eq(kernelRuns.id, run.id));
+    await Promise.all([
+      db.insert(registryEvents).values({
+        id: crypto.randomUUID(),
+        workspaceId: run.workspaceId,
+        actorUserId: user.id,
+        eventType: `kernel.run.${payload.action}`,
+        entityId: run.id,
+        detailJson: "{}",
+      }),
+      db.insert(runEvents).values({
+        id: `event_${crypto.randomUUID()}`,
+        runId: run.id,
+        eventType: `run.${payload.action}`,
+        nodeId: null,
+        payloadJson: "{}",
+        createdAt: now,
+      }),
+    ]);
+    return Response.json({
+      runId: run.id,
+      status: visibleStatus,
+      desiredStatus,
     });
-    return Response.json({ runId: run.id, status: run.status });
   } catch (error) {
     return errorResponse(error, 500);
   }

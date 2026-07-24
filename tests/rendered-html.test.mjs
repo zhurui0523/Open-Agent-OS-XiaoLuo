@@ -25,7 +25,7 @@ async function render() {
   );
 }
 
-test("server-renders the XiaoLuo AI workspace", async () => {
+test("server-renders the connected XiaoLuo AI shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,16 +33,11 @@ test("server-renders the XiaoLuo AI workspace", async () => {
   const html = await response.text();
   assert.match(html, /<title>XiaoLuo AI Intent OS V2<\/title>/i);
   assert.match(html, /XiaoLuo AI/);
-  assert.match(html, /aria-label="无限画布"/);
-  assert.match(
-    html,
-    /open-console-button[\s\S]*xiaoluo-intent-mark\.png[\s\S]*Intent/,
-  );
+  assert.match(html, /正在连接 XiaoLuo AI 云端内核/);
   assert.match(
     html,
     /<link[^>]+rel="icon"[^>]+href="\/xiaoluo-intent-mark\.png"/,
   );
-  assert.match(html, /夏日品牌短片/);
   assert.doesNotMatch(html, /个人额度|用量与额度|6,820|credit-ring/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
   await access(new URL("../public/xiaoluo-intent-mark.png", import.meta.url));
@@ -337,7 +332,7 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
   ]);
 
-  assert.equal(JSON.parse(hosting).r2, "FILES");
+  assert.equal(typeof JSON.parse(hosting).project_id, "string");
   assert.match(schema, /asset_folders/);
   assert.match(schema, /asset_versions/);
   assert.match(schema, /asset_relations/);
@@ -357,31 +352,125 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   assert.match(canvasView, /source: "asset-kernel"/);
   assert.match(controller, /sourceType: "kernel-output"/);
   assert.match(controller, /async function uploadAsset/);
-  assert.match(runtimeConfig, /DATABASE_DRIVER/);
-  assert.match(runtimeConfig, /STORAGE_DRIVER/);
+  assert.match(runtimeConfig, /driver: "mysql"/);
+  assert.match(runtimeConfig, /driver: "oss"/);
+  assert.match(kernel, /ossAuthorization/);
+  assert.match(kernel, /HMAC/);
+  assert.match(kernel, /SHA-1/);
+  assert.doesNotMatch(kernel, /import\("ali-oss"\)/);
   assert.match(envExample, /^DB_PASSWORD=$/m);
   assert.match(envExample, /^OSS_ACCESS_KEY_SECRET=$/m);
   assert.match(gitignore, /^\.env\*$/m);
   assert.match(gitignore, /^!\.env\.example$/m);
 });
 
-test("offers a one-click local runtime with durable local D1 and R2 state", async () => {
-  const [packageJson, launcher, viteConfig, gitignore] = await Promise.all([
+test("offers a local development entry that uses remote MySQL and OSS", async () => {
+  const [packageJson, launcher, envExample, gitignore] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../start-local.cmd", import.meta.url), "utf8"),
-    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
   ]);
 
   assert.equal(
     JSON.parse(packageJson).scripts["dev:local"],
-    "vinext dev --host localhost --port 3001",
+    "vinext dev --hostname 127.0.0.1 --port 3001",
   );
   assert.match(launcher, /http:\/\/localhost:3001\//);
-  assert.match(launcher, /DATABASE_DRIVER=d1/);
-  assert.match(launcher, /STORAGE_DRIVER=r2/);
-  assert.match(viteConfig, /d1_databases/);
-  assert.match(viteConfig, /r2_buckets/);
-  assert.match(viteConfig, /MINIFLARE_REGISTRY_PATH/);
+  assert.match(launcher, /remote MySQL \+ Alibaba Cloud OSS/);
+  assert.doesNotMatch(launcher, /DATABASE_DRIVER=d1/);
+  assert.doesNotMatch(launcher, /STORAGE_DRIVER=r2/);
+  assert.match(envExample, /no local business-data fallback/);
+  assert.match(envExample, /^DB_HOST=$/m);
+  assert.match(envExample, /^OSS_BUCKET=$/m);
   assert.match(gitignore, /^\/\.wrangler\/$/m);
+});
+
+test("keeps identity, canvases, and files on authenticated cloud services", async () => {
+  const [
+    auth,
+    schema,
+    canvasRoute,
+    workspaceStore,
+    fileRoute,
+    fileContentRoute,
+    controller,
+  ] = await Promise.all([
+    readFile(new URL("../app/lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/canvases/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/workspace-store.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/files/route.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/v2/files/content/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(auth, /PBKDF2/);
+  assert.match(auth, /token_hash/);
+  assert.match(auth, /HttpOnly/);
+  assert.match(auth, /SameSite=Lax/);
+  assert.match(schema, /export const users/);
+  assert.match(schema, /export const authSessions/);
+  assert.match(schema, /export const workspaces/);
+  assert.match(schema, /export const canvases/);
+  assert.match(canvasRoute, /requireCanvasAccess/);
+  assert.match(workspaceStore, /revision = revision \+ 1/);
+  assert.match(canvasRoute, /status: 409/);
+  assert.match(fileRoute, /requireWorkspaceContext/);
+  assert.match(fileContentRoute, /eq\(assets\.workspaceId, home\.workspaceId\)/);
+  assert.doesNotMatch(controller, /localStorage|sessionStorage/);
+});
+
+test("ships phone recovery and the deliberately small membership model", async () => {
+  const [
+    schema,
+    phoneAuth,
+    sms,
+    registerRoute,
+    resetRoute,
+    organizationRoute,
+    membersRoute,
+    adminRoute,
+    authScreen,
+    accountCenter,
+    mysql,
+  ] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/phone-auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/sms.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/auth/register/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/auth/password/reset/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/organizations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/organizations/members/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/admin/enterprises/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/auth-screen.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/account-center.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/mysql.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(schema, /platformRole: mysqlEnum\("platform_role", \["system_admin", "user"\]\)/);
+  assert.match(schema, /role: mysqlEnum\("role", \["admin", "member"\]\)/);
+  assert.doesNotMatch(schema, /operations_admin|security_auditor|enterprise_owner/);
+  assert.match(phoneAuth, /INTERVAL 60 SECOND/);
+  assert.match(phoneAuth, /max_attempts AS maxAttempts/);
+  assert.match(phoneAuth, /consumed_at = CURRENT_TIMESTAMP/);
+  assert.match(sms, /生产环境禁止使用开发短信模式/);
+  assert.match(sms, /dysmsapi\.aliyuncs\.com/);
+  assert.match(registerRoute, /verifyPhoneChallenge/);
+  assert.match(resetRoute, /DELETE FROM xiaoluo_v2_auth_sessions/);
+  assert.match(organizationRoute, /enterprise_applications/);
+  assert.match(membersRoute, /企业必须至少保留一名启用的管理员/);
+  assert.match(adminRoute, /requireSystemAdmin/);
+  assert.match(authScreen, /通过手机号找回密码/);
+  assert.match(accountCenter, /仅企业管理员与企业普通用户两种角色/);
+  assert.match(mysql, /disableEval: true/);
+  assert.doesNotMatch(
+    mysql,
+    /\b(?:FROM|JOIN|INTO|UPDATE|REFERENCES|ALTER TABLE|DELETE FROM)\s+users\b/,
+  );
+  assert.match(schema, /xiaoluo_v2_users/);
+  assert.doesNotMatch(mysql, /\bCREATE\s+TABLE\b|\bALTER\s+TABLE\b/i);
 });

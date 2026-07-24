@@ -9,6 +9,7 @@ import type {
   FileSystemAsset,
 } from "../types";
 import { serverRuntimeConfig } from "./server-runtime-config";
+import { mysqlNow } from "./mysql";
 
 type Database = Awaited<ReturnType<typeof getDb>>;
 type AssetRow = typeof assets.$inferSelect;
@@ -25,6 +26,7 @@ export interface FileBucketObject {
 }
 
 export interface FileBucket {
+  health(): Promise<void>;
   put(
     key: string,
     value: ArrayBuffer | Uint8Array | ReadableStream,
@@ -40,21 +42,205 @@ export interface FileBucket {
   delete(key: string | string[]): Promise<void>;
 }
 
+function ossObjectUrl(
+  origin: string,
+  key = "",
+  query = "",
+) {
+  const encodedKey = key
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `${origin}/${encodedKey}${query}`;
+}
+
+function ossOrigin(config: {
+  bucket: string;
+  region: string;
+  endpoint: string | null;
+}) {
+  const rawEndpoint =
+    config.endpoint?.trim() || `${config.region}.aliyuncs.com`;
+  const url = new URL(
+    /^https?:\/\//i.test(rawEndpoint)
+      ? rawEndpoint
+      : `https://${rawEndpoint}`,
+  );
+  if (!url.hostname.startsWith(`${config.bucket}.`)) {
+    url.hostname = `${config.bucket}.${url.hostname}`;
+  }
+  return url.origin;
+}
+
+function base64(bytes: ArrayBuffer) {
+  let binary = "";
+  for (const byte of new Uint8Array(bytes)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+async function ossAuthorization(input: {
+  accessKeyId: string;
+  accessKeySecret: string;
+  method: string;
+  contentType: string;
+  date: string;
+  canonicalHeaders: string;
+  canonicalResource: string;
+}) {
+  const stringToSign = [
+    input.method,
+    "",
+    input.contentType,
+    input.date,
+    `${input.canonicalHeaders}${input.canonicalResource}`,
+  ].join("\n");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(input.accessKeySecret),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(stringToSign),
+  );
+  return `OSS ${input.accessKeyId}:${base64(signature)}`;
+}
+
 export async function getFileBucket(): Promise<FileBucket> {
-  const config = serverRuntimeConfig();
-  if (config.storage.driver !== "r2") {
-    throw new Error(
-      "当前部署包未启用 OSS 驱动。OSS 适配器仅在自托管 Node 运行时加载。",
+  const { oss } = serverRuntimeConfig().storage;
+  const origin = ossOrigin(oss);
+
+  async function request(input: {
+    method: "GET" | "PUT" | "DELETE";
+    key?: string;
+    query?: string;
+    body?: ArrayBuffer;
+    contentType?: string;
+    range?: string;
+    metadata?: Record<string, string>;
+  }) {
+    const date = new Date().toUTCString();
+    const contentType = input.contentType ?? "";
+    const headers = new Headers({ Date: date });
+    if (contentType) headers.set("content-type", contentType);
+    if (input.range) headers.set("range", input.range);
+    Object.entries(input.metadata ?? {}).forEach(([name, value]) => {
+      headers.set(`x-oss-meta-${name.toLowerCase()}`, value);
+    });
+    const canonicalHeaders = [...headers.entries()]
+      .filter(([name]) => name.startsWith("x-oss-"))
+      .sort(([first], [second]) => first.localeCompare(second))
+      .map(([name, value]) => `${name}:${value.trim()}\n`)
+      .join("");
+    const key = input.key ?? "";
+    const query = input.query ?? "";
+    const canonicalResource = `/${oss.bucket}/${key}${query}`;
+    headers.set(
+      "authorization",
+      await ossAuthorization({
+        accessKeyId: oss.accessKeyId,
+        accessKeySecret: oss.accessKeySecret,
+        method: input.method,
+        contentType,
+        date,
+        canonicalHeaders,
+        canonicalResource,
+      }),
     );
+    return fetch(ossObjectUrl(origin, key, query), {
+      method: input.method,
+      headers,
+      body: input.body,
+      signal: AbortSignal.timeout(8_000),
+    });
   }
-  const { env } = await import("cloudflare:workers");
-  const bucket = (env as unknown as { FILES?: FileBucket }).FILES;
-  if (!bucket) {
-    throw new Error(
-      "文件存储未连接。请将 .openai/hosting.json 的 r2 绑定设置为 FILES。",
-    );
-  }
-  return bucket;
+
+  return {
+    async health() {
+      const response = await request({
+        method: "GET",
+        query: "?bucketInfo",
+      });
+      if (!response.ok) {
+        throw new Error(`OSS readiness check failed (${response.status})`);
+      }
+    },
+    async put(key, value, options) {
+      const bytes =
+        value instanceof ReadableStream
+          ? await new Response(value).arrayBuffer()
+          : value;
+      const payload =
+        bytes instanceof ArrayBuffer ? bytes : Uint8Array.from(bytes).buffer;
+      const response = await request({
+        method: "PUT",
+        key,
+        body: payload,
+        contentType:
+          options?.httpMetadata?.contentType ?? "application/octet-stream",
+        metadata: options?.customMetadata,
+      });
+      if (!response.ok) {
+        throw new Error(`OSS upload failed (${response.status})`);
+      }
+      return { etag: response.headers.get("etag") ?? "" };
+    },
+    async get(key, options) {
+      const range = options?.range;
+      const end =
+        range?.offset === undefined || range.length === undefined
+          ? ""
+          : String(range.offset + range.length - 1);
+      const response = await request({
+        method: "GET",
+        key,
+        range:
+          range?.offset === undefined
+            ? undefined
+            : `bytes=${range.offset}-${end}`,
+      });
+      if (response.status === 404) return null;
+      if (!response.ok) {
+        throw new Error(`OSS download failed (${response.status})`);
+      }
+      const etag = response.headers.get("etag") ?? "";
+      return {
+        body: response.body,
+        size: Number(response.headers.get("content-length") ?? 0),
+        etag,
+        httpEtag: etag,
+        range,
+        httpMetadata: {
+          contentType:
+            response.headers.get("content-type") ??
+            "application/octet-stream",
+        },
+      };
+    },
+    async delete(key) {
+      if (Array.isArray(key)) {
+        await Promise.all(
+          key.map(async (item) => {
+            const response = await request({ method: "DELETE", key: item });
+            if (!response.ok && response.status !== 404) {
+              throw new Error(`OSS delete failed (${response.status})`);
+            }
+          }),
+        );
+        return;
+      }
+      const response = await request({ method: "DELETE", key });
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`OSS delete failed (${response.status})`);
+      }
+    },
+  };
 }
 
 export function assetKindFromMime(mimeType: string): AssetKind {
@@ -127,14 +313,15 @@ export function serializeFileAsset(row: AssetRow): FileSystemAsset {
     sourceType: row.sourceType,
     sourceRef: row.sourceRef,
     contentHash: row.contentHash,
+    favorite: row.favorite,
     currentVersion: row.currentVersion,
     versionCount: row.versionCount,
     status: row.status as FileSystemAsset["status"],
     trashedAt: row.trashedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    contentUrl: `/api/v2/files/content?assetId=${encodeURIComponent(row.id)}`,
-    downloadUrl: `/api/v2/files/content?assetId=${encodeURIComponent(row.id)}&download=1`,
+    contentUrl: `/api/v2/files/content?assetId=${encodeURIComponent(row.id)}&workspaceId=${encodeURIComponent(row.workspaceId)}`,
+    downloadUrl: `/api/v2/files/content?assetId=${encodeURIComponent(row.id)}&workspaceId=${encodeURIComponent(row.workspaceId)}&download=1`,
   };
 }
 
@@ -149,6 +336,7 @@ function searchableText(bytes: ArrayBuffer, mimeType: string) {
 }
 
 export interface StoreAssetInput {
+  workspaceId: string;
   name: string;
   mimeType: string;
   bytes: ArrayBuffer;
@@ -169,7 +357,7 @@ export async function storeAsset(
   if (input.bytes.byteLength > MAX_FILE_BYTES) {
     throw new Error("单个文件暂时不能超过 100 MB");
   }
-  const now = new Date().toISOString();
+  const now = mysqlNow();
   const hash = await sha256Hex(input.bytes);
   const [existingBlob] = await db
     .select({ blobKey: assetVersions.blobKey })
@@ -204,6 +392,7 @@ export async function storeAsset(
     .join("\n");
   const saved: AssetRow = {
     id: assetId,
+    workspaceId: input.workspaceId,
     uri,
     name,
     kind,
@@ -219,7 +408,9 @@ export async function storeAsset(
     sourceType: input.sourceType ?? "upload",
     sourceRef: input.sourceRef ?? null,
     contentHash: hash,
+    favorite: false,
     status: "ready",
+    missingAt: null,
     trashedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -237,10 +428,10 @@ export async function storeAsset(
     metadataJson: JSON.stringify(input.metadata ?? {}),
     createdAt: now,
   };
-  await db.batch([
-    db.insert(assets).values(saved),
-    db.insert(assetVersions).values(version),
-  ]);
+  await db.transaction(async (transaction) => {
+    await transaction.insert(assets).values(saved);
+    await transaction.insert(assetVersions).values(version);
+  });
   return serializeFileAsset(saved);
 }
 
@@ -248,13 +439,16 @@ export async function storeAssetVersion(
   db: Database,
   bucket: FileBucket,
   asset: AssetRow,
-  input: Omit<StoreAssetInput, "folderId" | "tags" | "description">,
+  input: Omit<
+    StoreAssetInput,
+    "workspaceId" | "folderId" | "tags" | "description"
+  >,
 ) {
   if (!input.bytes.byteLength) throw new Error("文件内容为空");
   if (input.bytes.byteLength > MAX_FILE_BYTES) {
     throw new Error("单个文件暂时不能超过 100 MB");
   }
-  const now = new Date().toISOString();
+  const now = mysqlNow();
   const hash = await sha256Hex(input.bytes);
   const [existingBlob] = await db
     .select({ blobKey: assetVersions.blobKey })
@@ -270,8 +464,8 @@ export async function storeAssetVersion(
   }
   const nextVersion = asset.currentVersion + 1;
   const versionId = `aver_${crypto.randomUUID()}`;
-  const [, updatedRows] = await db.batch([
-    db.insert(assetVersions).values({
+  await db.transaction(async (transaction) => {
+    await transaction.insert(assetVersions).values({
       id: versionId,
       assetId: asset.id,
       version: nextVersion,
@@ -283,8 +477,8 @@ export async function storeAssetVersion(
       sourceRef: input.sourceRef ?? null,
       metadataJson: JSON.stringify(input.metadata ?? {}),
       createdAt: now,
-    }),
-    db
+    });
+    await transaction
       .update(assets)
       .set({
         name: sanitizeAssetName(input.name || asset.name),
@@ -304,9 +498,13 @@ export async function storeAssetVersion(
           .slice(0, 240_000),
         updatedAt: now,
       })
-      .where(eq(assets.id, asset.id))
-      .returning(),
-  ]);
-  const [updated] = updatedRows;
+      .where(eq(assets.id, asset.id));
+  });
+  const [updated] = await db
+    .select()
+    .from(assets)
+    .where(eq(assets.id, asset.id))
+    .limit(1);
+  if (!updated) throw new Error("文件版本保存后无法读取资产");
   return serializeFileAsset(updated);
 }

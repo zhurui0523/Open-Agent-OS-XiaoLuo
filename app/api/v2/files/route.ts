@@ -19,10 +19,13 @@ import {
   serializeFileAsset,
   storeAsset,
 } from "../../../lib/asset-kernel";
+import { requireWorkspaceContext } from "../../../lib/cloud-context";
+import { mysqlNow } from "../../../lib/mysql";
 import { validateExternalEndpoint } from "../../../lib/model-adapters";
 import type { NodeKind } from "../../../types";
 
 function errorResponse(error: unknown, status = 400) {
+  if (error instanceof Response) return error;
   return Response.json(
     { error: error instanceof Error ? error.message : "文件系统操作失败" },
     { status },
@@ -89,16 +92,20 @@ async function generatedBytes(payload: {
 
 export async function GET(request: Request) {
   try {
+    const { home } = await requireWorkspaceContext(request);
     const url = new URL(request.url);
     const query = url.searchParams.get("q")?.trim() ?? "";
     const kind = url.searchParams.get("kind")?.trim() ?? "";
     const folder = url.searchParams.get("folder");
     const trashed = url.searchParams.get("trash") === "1";
+    const favorite = url.searchParams.get("favorite") === "1";
     const conditions = [
+      eq(assets.workspaceId, home.workspaceId),
       trashed ? isNotNull(assets.trashedAt) : isNull(assets.trashedAt),
     ];
     if (query) conditions.push(like(assets.searchText, `%${query}%`));
     if (kind) conditions.push(eq(assets.kind, kind));
+    if (favorite) conditions.push(eq(assets.favorite, true));
     if (folder === "root") conditions.push(isNull(assets.folderId));
     else if (folder) conditions.push(eq(assets.folderId, folder));
     const db = await getDb();
@@ -119,6 +126,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const { user, home } = await requireWorkspaceContext(request);
     const contentType = request.headers.get("content-type") ?? "";
     let input: Parameters<typeof storeAsset>[2];
     if (contentType.includes("multipart/form-data")) {
@@ -129,6 +137,7 @@ export async function POST(request: Request) {
         throw new Error("单个文件暂时不能超过 100 MB");
       }
       input = {
+        workspaceId: home.workspaceId,
         name: file.name,
         mimeType: file.type || "application/octet-stream",
         bytes: await file.arrayBuffer(),
@@ -154,6 +163,7 @@ export async function POST(request: Request) {
       }
       const generated = await generatedBytes(payload);
       input = {
+        workspaceId: home.workspaceId,
         name: generatedName(payload.kind ?? "text", payload.title),
         mimeType: generated.mimeType,
         bytes: generated.bytes,
@@ -169,6 +179,8 @@ export async function POST(request: Request) {
     const asset = await storeAsset(db, bucket, input);
     await db.insert(registryEvents).values({
       id: crypto.randomUUID(),
+      workspaceId: home.workspaceId,
+      actorUserId: user.id,
       eventType: "asset.created",
       entityId: asset.id,
       detailJson: JSON.stringify({
@@ -185,12 +197,14 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    const { user, home } = await requireWorkspaceContext(request);
     const payload = (await request.json()) as {
       id?: string;
       name?: string;
       folderId?: string | null;
       tags?: string[];
       description?: string;
+      favorite?: boolean;
       action?: "trash" | "restore";
     };
     if (!payload.id) throw new Error("文件 ID 必填");
@@ -198,11 +212,16 @@ export async function PATCH(request: Request) {
     const [current] = await db
       .select()
       .from(assets)
-      .where(eq(assets.id, payload.id))
+      .where(
+        and(
+          eq(assets.id, payload.id),
+          eq(assets.workspaceId, home.workspaceId),
+        ),
+      )
       .limit(1);
     if (!current) return errorResponse(new Error("文件不存在"), 404);
-    const now = new Date().toISOString();
-    const [updated] = await db
+    const now = mysqlNow();
+    await db
       .update(assets)
       .set({
         ...(payload.name !== undefined
@@ -217,6 +236,9 @@ export async function PATCH(request: Request) {
         ...(payload.description !== undefined
           ? { description: payload.description.slice(0, 2000) }
           : {}),
+        ...(payload.favorite !== undefined
+          ? { favorite: payload.favorite }
+          : {}),
         ...(payload.action === "trash" ? { trashedAt: now } : {}),
         ...(payload.action === "restore" ? { trashedAt: null } : {}),
         searchText: [
@@ -230,10 +252,27 @@ export async function PATCH(request: Request) {
           .slice(0, 240_000),
         updatedAt: now,
       })
-      .where(eq(assets.id, current.id))
-      .returning();
+      .where(
+        and(
+          eq(assets.id, current.id),
+          eq(assets.workspaceId, home.workspaceId),
+        ),
+      );
+    const [updated] = await db
+      .select()
+      .from(assets)
+      .where(
+        and(
+          eq(assets.id, current.id),
+          eq(assets.workspaceId, home.workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!updated) return errorResponse(new Error("文件不存在"), 404);
     await db.insert(registryEvents).values({
       id: crypto.randomUUID(),
+      workspaceId: home.workspaceId,
+      actorUserId: user.id,
       eventType: `asset.${payload.action ?? "updated"}`,
       entityId: current.id,
       detailJson: "{}",
@@ -246,18 +285,27 @@ export async function PATCH(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const { user, home } = await requireWorkspaceContext(request);
     const id = new URL(request.url).searchParams.get("id")?.trim();
     if (!id) throw new Error("文件 ID 必填");
     const db = await getDb();
+    const [ownedAsset] = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(
+        and(eq(assets.id, id), eq(assets.workspaceId, home.workspaceId)),
+      )
+      .limit(1);
+    if (!ownedAsset) return errorResponse(new Error("文件不存在"), 404);
     const versions = await db
       .select()
       .from(assetVersions)
       .where(eq(assetVersions.assetId, id));
-    const deleted = await db
+    await db
       .delete(assets)
-      .where(eq(assets.id, id))
-      .returning({ id: assets.id });
-    if (!deleted.length) return errorResponse(new Error("文件不存在"), 404);
+      .where(
+        and(eq(assets.id, id), eq(assets.workspaceId, home.workspaceId)),
+      );
     const bucket = await getFileBucket();
     for (const blobKey of [...new Set(versions.map((version) => version.blobKey))]) {
       const [remaining] = await db
@@ -269,6 +317,8 @@ export async function DELETE(request: Request) {
     }
     await db.insert(registryEvents).values({
       id: crypto.randomUUID(),
+      workspaceId: home.workspaceId,
+      actorUserId: user.id,
       eventType: "asset.deleted",
       entityId: id,
       detailJson: "{}",

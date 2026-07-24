@@ -9,6 +9,7 @@ import type {
 } from "../../db/schema";
 import type { XiaoLuoPackageManifest } from "./package-contract";
 import { validateExternalEndpoint } from "./model-adapters";
+import { resolveSecret } from "./secret-vault";
 
 type ModelRow = typeof modelConnections.$inferSelect;
 type PackageRow = typeof packages.$inferSelect;
@@ -119,6 +120,17 @@ function textFrom(value: unknown): string | undefined {
     }
     if (typeof first?.text === "string") return first.text;
   }
+  const candidates = record.candidates;
+  if (Array.isArray(candidates)) {
+    const parts = (
+      candidates[0] as { content?: { parts?: Array<{ text?: string }> } }
+    )?.content?.parts;
+    const joined = parts
+      ?.map((part) => part.text ?? "")
+      .filter(Boolean)
+      .join("\n");
+    if (joined) return joined;
+  }
   const content = record.content;
   if (Array.isArray(content)) {
     const joined = content
@@ -195,15 +207,19 @@ export async function executeModel(
   signal?: AbortSignal,
 ): Promise<ExecutorResult> {
   const endpoint = validateExternalEndpoint(model.baseUrl);
-  const credential = model.credentialRef
-    ? process.env[model.credentialRef]
-    : undefined;
+  const credential = model.secretRefId
+    ? await resolveSecret(model.secretRefId, model.workspaceId)
+    : model.credentialRef
+      ? process.env[model.credentialRef]
+      : undefined;
   const headers = new Headers({
     accept: "application/json",
     "content-type": "application/json",
   });
   if (credential) {
-    if (model.protocol === "anthropic-compatible") {
+    if (model.protocol === "gemini") {
+      headers.set("x-goog-api-key", credential);
+    } else if (model.protocol === "anthropic-compatible") {
       headers.set("x-api-key", credential);
       headers.set("anthropic-version", "2023-06-01");
     } else {
@@ -215,8 +231,16 @@ export async function executeModel(
   let url = base;
   let body: Record<string, unknown>;
 
-  if (model.protocol === "generic-rest") {
+  if (model.protocol === "generic-rest" || model.protocol === "async-video") {
     body = { model: model.modelName, node, inputs, prompt };
+  } else if (model.protocol === "gemini") {
+    if (node.kind !== "text") {
+      throw new Error("Gemini 连接当前仅支持文本节点");
+    }
+    url = `${base}/models/${encodeURIComponent(model.modelName)}:generateContent`;
+    body = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    };
   } else if (model.protocol === "anthropic-compatible") {
     if (node.kind !== "text") {
       throw new Error("Anthropic 兼容连接当前只支持文本节点");

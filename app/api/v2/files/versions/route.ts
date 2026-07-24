@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   assets,
@@ -10,8 +10,10 @@ import {
   MAX_FILE_BYTES,
   storeAssetVersion,
 } from "../../../../lib/asset-kernel";
+import { requireWorkspaceContext } from "../../../../lib/cloud-context";
 
 function errorResponse(error: unknown, status = 400) {
+  if (error instanceof Response) return error;
   return Response.json(
     { error: error instanceof Error ? error.message : "版本操作失败" },
     { status },
@@ -20,9 +22,21 @@ function errorResponse(error: unknown, status = 400) {
 
 export async function GET(request: Request) {
   try {
+    const { home } = await requireWorkspaceContext(request);
     const assetId = new URL(request.url).searchParams.get("assetId")?.trim();
     if (!assetId) throw new Error("文件 ID 必填");
     const db = await getDb();
+    const [asset] = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(
+        and(
+          eq(assets.id, assetId),
+          eq(assets.workspaceId, home.workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!asset) return errorResponse(new Error("文件不存在"), 404);
     const versions = await db
       .select({
         id: assetVersions.id,
@@ -45,6 +59,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const { user, home } = await requireWorkspaceContext(request);
     const form = await request.formData();
     const assetId = String(form.get("assetId") ?? "").trim();
     const file = form.get("file");
@@ -58,7 +73,12 @@ export async function POST(request: Request) {
     const [asset] = await db
       .select()
       .from(assets)
-      .where(eq(assets.id, assetId))
+      .where(
+        and(
+          eq(assets.id, assetId),
+          eq(assets.workspaceId, home.workspaceId),
+        ),
+      )
       .limit(1);
     if (!asset) return errorResponse(new Error("文件不存在"), 404);
     const bucket = await getFileBucket();
@@ -71,6 +91,8 @@ export async function POST(request: Request) {
     });
     await db.insert(registryEvents).values({
       id: crypto.randomUUID(),
+      workspaceId: home.workspaceId,
+      actorUserId: user.id,
       eventType: "asset.version.created",
       entityId: asset.id,
       detailJson: JSON.stringify({ version: updated.currentVersion }),

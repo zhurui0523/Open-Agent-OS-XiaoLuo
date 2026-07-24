@@ -18,7 +18,6 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { canvasList } from "../data";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import {
   centeredPortPoint,
@@ -105,14 +104,32 @@ function expandBounds(bounds: WorldBounds, amount: number): WorldBounds {
   };
 }
 
-export function CanvasView({ os }: CanvasViewProps) {
+export function CanvasView(props: CanvasViewProps) {
+  return (
+    <CanvasWorkspace
+      key={props.os.activeCanvasId || "cloud-canvas-loading"}
+      {...props}
+    />
+  );
+}
+
+function CanvasWorkspace({ os }: CanvasViewProps) {
   const activeCanvas =
-    canvasList.find((canvas) => canvas.id === os.activeCanvasId) ?? canvasList[0];
+    os.canvases.find((canvas) => canvas.id === os.activeCanvasId) ?? {
+      id: "",
+      title: "正在加载云画布",
+      project: os.projectName,
+      nodes: 0,
+      updatedAt: new Date().toISOString(),
+    };
   const workspaceRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadAnchorRef = useRef({ x: 0, y: 0 });
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [pan, setPan] = useState({
+    x: os.canvasViewport.x,
+    y: os.canvasViewport.y,
+  });
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
   const [isPanning, setIsPanning] = useState(false);
@@ -136,7 +153,6 @@ export function CanvasView({ os }: CanvasViewProps) {
     y: pan.y,
     zoom: os.zoom,
   });
-  viewportRef.current = { x: pan.x, y: pan.y, zoom: os.zoom };
 
   const nodeBounds = useMemo<WorldBounds>(() => {
     if (!os.nodes.length) {
@@ -170,9 +186,9 @@ export function CanvasView({ os }: CanvasViewProps) {
     (next: ViewportTransform) => {
       viewportRef.current = next;
       setPan({ x: next.x, y: next.y });
-      os.setZoom(next.zoom);
+      os.setCanvasViewport(next);
     },
-    [os.setZoom],
+    [os.setCanvasViewport],
   );
 
   const fitView = useCallback(() => {
@@ -245,6 +261,7 @@ export function CanvasView({ os }: CanvasViewProps) {
       };
       viewportRef.current = next;
       setPan({ x: next.x, y: next.y });
+      os.setCanvasViewport(next);
     }
     canvasStage.addEventListener("wheel", wheel, { passive: false });
     return () => canvasStage.removeEventListener("wheel", wheel);
@@ -437,6 +454,7 @@ export function CanvasView({ os }: CanvasViewProps) {
     };
     viewportRef.current = next;
     setPan({ x: next.x, y: next.y });
+    os.setCanvasViewport(next);
   }
 
   function endStagePan(event: React.PointerEvent<HTMLDivElement>) {
@@ -462,6 +480,7 @@ export function CanvasView({ os }: CanvasViewProps) {
     }
     panGesture.current = null;
     setIsPanning(false);
+    os.setCanvasViewport(viewportRef.current);
   }
 
   function cancelStagePointer(event: React.PointerEvent<HTMLDivElement>) {
@@ -556,7 +575,10 @@ export function CanvasView({ os }: CanvasViewProps) {
     transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${scale})`,
   };
 
-  const visibleBounds = visibleWorldBounds(viewportRef.current, stageSize);
+  const visibleBounds = visibleWorldBounds(
+    { x: pan.x, y: pan.y, zoom: os.zoom },
+    stageSize,
+  );
   const minimapBounds = expandBounds(
     unionBounds(nodeBounds, visibleBounds),
     80,
@@ -620,8 +642,12 @@ export function CanvasView({ os }: CanvasViewProps) {
       <CanvasDrawer
         open={os.drawerOpen}
         activeCanvasId={os.activeCanvasId}
+        canvases={os.canvases}
+        workspaceName={os.workspaceName}
+        projectName={os.projectName}
         onClose={() => os.setDrawerOpen(false)}
         onSelect={os.setActiveCanvasId}
+        onCreate={() => void os.createCanvas()}
       />
 
       <section
@@ -636,11 +662,20 @@ export function CanvasView({ os }: CanvasViewProps) {
                 <PanelLeftOpen size={17} />
               </IconButton>
             )}
-            <span>品牌内容实验室</span>
+            <span>{os.workspaceName || "云端工作空间"}</span>
             <ChevronsLeft size={13} className="breadcrumb-chevron" />
             <strong>{activeCanvas.title}</strong>
-            <span className="save-indicator">
-              <Check size={13} /> 已保存
+            <span className={`save-indicator is-${os.cloudStatus}`}>
+              <Check size={13} />{" "}
+              {os.cloudStatus === "saving"
+                ? "保存中"
+                : os.cloudStatus === "loading"
+                  ? "同步中"
+                  : os.cloudStatus === "conflict"
+                    ? "存在版本冲突"
+                    : os.cloudStatus === "error"
+                      ? "云端保存失败"
+                      : "已保存到云端"}
             </span>
           </div>
           <div className="canvas-header-actions">
