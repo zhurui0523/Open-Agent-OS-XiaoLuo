@@ -3,7 +3,6 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Check,
   LoaderCircle,
   ShieldCheck,
   Sparkles,
@@ -164,16 +163,12 @@ export function AuthScreen({
           <div><b>XiaoLuo AI</b><small>Intent OS · V2</small></div>
         </div>
         <div className="auth-story-copy">
-          <span className="auth-kicker">CONNECTED AI OPERATING SYSTEM</span>
-          <h1>把一个想法，变成一条清晰可控的创作工作流。</h1>
-          <p>
-            表达目标、检查计划、调整节点，然后让每次执行沉淀为可以继续复用的云端资产。
-          </p>
-          <ul>
-            <li><Check size={15} /> AI 计划先确认，再执行</li>
-            <li><Check size={15} /> 节点状态透明、可暂停和重试</li>
-            <li><Check size={15} /> 个人与企业工作空间完全隔离</li>
-          </ul>
+          <span className="auth-kicker">Connected AI Operating System</span>
+          <h1>让每一个想法，都可以被理解。</h1>
+          <div className="auth-manifesto">
+            <p>让每一个目标，都可以被执行。</p>
+            <p>让每一次创造，都可以沉淀为可复用的智能资产。</p>
+          </div>
         </div>
         <div className="auth-orbit" aria-hidden="true"><i /><i /><i /><span /></div>
       </section>
@@ -338,4 +333,3 @@ export function AuthScreen({
     </main>
   );
 }
-
