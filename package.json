@@ -20,7 +20,10 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file=.env.local scripts/migrate-v2.mjs",
     "db:migrate:dry": "node --env-file=.env.local scripts/migrate-v2.mjs --dry-run",
-    "db:verify": "node --env-file=.env.local scripts/migrate-v2.mjs --verify"
+    "db:verify": "node --env-file=.env.local scripts/migrate-v2.mjs --verify",
+    "legacy:migrate:dry": "node --env-file=.env.local scripts/legacy-data-migration.mjs --dry-run",
+    "legacy:migrate": "node --env-file=.env.local scripts/legacy-data-migration.mjs --apply",
+    "legacy:verify": "node --env-file=.env.local scripts/legacy-data-migration.mjs --verify"
   },
   "dependencies": {
     "ali-oss": "^6.23.0",

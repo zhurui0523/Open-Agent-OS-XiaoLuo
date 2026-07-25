@@ -1,7 +1,17 @@
 "use client";
 
-import { Database, HardDrive, RefreshCcw, ServerCog } from "lucide-react";
+import {
+  Boxes,
+  Database,
+  HardDrive,
+  MessageSquareText,
+  RefreshCcw,
+  ServerCog,
+  ShieldCheck,
+  TimerReset,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { PackageTrustAdmin } from "./package-trust-admin";
 
 interface Overview {
   metrics: {
@@ -14,6 +24,28 @@ interface Overview {
     failedTasks: number;
   };
   dependencies: { mysql: boolean; oss: boolean };
+  services: {
+    sms: { provider: string; configured: boolean; missing: string[] };
+    scheduler: { configured: boolean };
+    isolatedWorker: {
+      configured: boolean;
+      endpointOrigin: string | null;
+    };
+    packageTrust: { signaturesRequired: boolean };
+  };
+  trust: {
+    publishers: number;
+    pendingReviews: number;
+    quarantinedReviews: number;
+    trustedPackages: number;
+  };
+  heartbeats: Array<{
+    component: string;
+    instanceId: string;
+    status: string;
+    lastSeenAt: string;
+    detail: Record<string, unknown>;
+  }>;
   events: Array<{ eventType: string; entityId: string; createdAt: string }>;
 }
 
@@ -73,6 +105,54 @@ export function AdminOperations() {
               <span><b>阿里云 OSS</b><small>{overview.dependencies.oss ? "连接正常" : "不可用"}</small></span>
               <i className={overview.dependencies.oss ? "healthy" : "failed"} />
             </article>
+            <article>
+              <MessageSquareText size={18} />
+              <span>
+                <b>短信服务</b>
+                <small>
+                  {overview.services.sms.configured
+                    ? `${overview.services.sms.provider} 已配置`
+                    : `待配置 ${overview.services.sms.missing.length} 项凭证`}
+                </small>
+              </span>
+              <i className={overview.services.sms.configured ? "healthy" : "failed"} />
+            </article>
+            <article>
+              <TimerReset size={18} />
+              <span>
+                <b>常驻任务调度</b>
+                <small>
+                  {overview.heartbeats[0]
+                    ? `最后心跳 ${new Date(overview.heartbeats[0].lastSeenAt).toLocaleString("zh-CN")}`
+                    : overview.services.scheduler.configured
+                      ? "接入端已就绪，等待首次调度"
+                      : "调度令牌未配置"}
+                </small>
+              </span>
+              <i className={overview.heartbeats[0]?.status === "healthy" ? "healthy" : "failed"} />
+            </article>
+            <article>
+              <Boxes size={18} />
+              <span>
+                <b>隔离 Worker</b>
+                <small>
+                  {overview.services.isolatedWorker.configured
+                    ? overview.services.isolatedWorker.endpointOrigin
+                    : "等待绑定隔离执行集群"}
+                </small>
+              </span>
+              <i className={overview.services.isolatedWorker.configured ? "healthy" : "failed"} />
+            </article>
+            <article>
+              <ShieldCheck size={18} />
+              <span>
+                <b>Package 信任</b>
+                <small>
+                  {overview.trust.trustedPackages} 个可信 · {overview.trust.pendingReviews} 个待审
+                </small>
+              </span>
+              <i className={overview.trust.quarantinedReviews === 0 ? "healthy" : "failed"} />
+            </article>
           </div>
           <div className="admin-metric-grid">
             <div><b>{overview.metrics.users}</b><span>用户</span></div>
@@ -96,6 +176,7 @@ export function AdminOperations() {
           </section>
         </>
       )}
+      <PackageTrustAdmin />
     </section>
   );
 }

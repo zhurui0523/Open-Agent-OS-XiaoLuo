@@ -46,6 +46,7 @@ export interface XiaoLuoPackageManifest {
   runtime: {
     type: PluginRuntimeType;
     entry?: string;
+    language?: "node" | "python" | "cli";
     healthPath?: string;
     invokePath?: string;
   };
@@ -89,6 +90,9 @@ const exactPermissions = new Set([
   "tasks:write",
   "models:list",
   "models:invoke",
+  "worker:node",
+  "worker:python",
+  "worker:cli",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -111,6 +115,18 @@ function validRemoteUrl(value: string) {
   } catch {
     return false;
   }
+}
+
+function validPackageEntry(value: string) {
+  return (
+    value.length > 0 &&
+    value.length <= 240 &&
+    !value.startsWith("/") &&
+    !value.startsWith("\\") &&
+    !value.includes("..") &&
+    !value.includes(":") &&
+    /^[A-Za-z0-9_./-]+$/.test(value)
+  );
 }
 
 function validateContribution(
@@ -156,6 +172,10 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
   const runtime = isRecord(maybeEnvelope.runtime) ? maybeEnvelope.runtime : {};
   const runtimeType = safeString(runtime.type) as PluginRuntimeType;
   const runtimeEntry = safeString(runtime.entry);
+  const runtimeLanguage = safeString(runtime.language) as
+    | "node"
+    | "python"
+    | "cli";
   const contributes = isRecord(maybeEnvelope.contributes)
     ? maybeEnvelope.contributes
     : {};
@@ -175,8 +195,17 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
       "type 只支持 skill、agent、workflow、plugin、model-provider 或 adapter",
     );
   }
-  if (!["declarative", "sandbox-ui", "remote-api"].includes(runtimeType)) {
-    issues.push("runtime.type 只支持 declarative、sandbox-ui 或 remote-api");
+  if (
+    ![
+      "declarative",
+      "sandbox-ui",
+      "remote-api",
+      "isolated-worker",
+    ].includes(runtimeType)
+  ) {
+    issues.push(
+      "runtime.type 只支持 declarative、sandbox-ui、remote-api 或 isolated-worker",
+    );
   }
   if (
     ["skill", "agent", "workflow"].includes(type) &&
@@ -186,8 +215,22 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
       "Skill、Agent 与 Workflow Package 默认无代码执行权，runtime.type 必须是 declarative",
     );
   }
-  if (runtimeType !== "declarative" && !validRemoteUrl(runtimeEntry)) {
+  if (
+    (runtimeType === "sandbox-ui" || runtimeType === "remote-api") &&
+    !validRemoteUrl(runtimeEntry)
+  ) {
     issues.push("沙盒 UI 或远程 API 必须提供安全的 HTTPS runtime.entry");
+  }
+  if (runtimeType === "isolated-worker") {
+    if (!["plugin", "adapter"].includes(type)) {
+      issues.push("isolated-worker 仅允许 plugin 或 adapter Package 使用");
+    }
+    if (!["node", "python", "cli"].includes(runtimeLanguage)) {
+      issues.push("isolated-worker 必须声明 runtime.language");
+    }
+    if (!validPackageEntry(runtimeEntry)) {
+      issues.push("isolated-worker runtime.entry 必须是安全的包内相对路径");
+    }
   }
 
   const permissions = Array.isArray(maybeEnvelope.permissions)
@@ -209,6 +252,15 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     if (origin && !permissions.includes(`network:${origin}`)) {
       issues.push(`远程 API 必须声明精确网络权限 network:${origin}`);
     }
+  }
+  if (
+    runtimeType === "isolated-worker" &&
+    runtimeLanguage &&
+    !permissions.includes(`worker:${runtimeLanguage}`)
+  ) {
+    issues.push(
+      `isolated-worker 必须声明执行权限 worker:${runtimeLanguage}`,
+    );
   }
 
   const skills = Array.isArray(contributes.skills) ? contributes.skills : [];
@@ -293,6 +345,7 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     runtime: {
       type: runtimeType,
       ...(runtimeEntry ? { entry: runtimeEntry } : {}),
+      ...(runtimeLanguage ? { language: runtimeLanguage } : {}),
       ...(safeString(runtime.healthPath)
         ? { healthPath: safeString(runtime.healthPath) }
         : {}),

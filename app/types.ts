@@ -164,7 +164,11 @@ export type PackageType =
   | "plugin"
   | "model-provider"
   | "adapter";
-export type PluginRuntimeType = "declarative" | "sandbox-ui" | "remote-api";
+export type PluginRuntimeType =
+  | "declarative"
+  | "sandbox-ui"
+  | "remote-api"
+  | "isolated-worker";
 export type ModelProtocol =
   | "openai-compatible"
   | "anthropic-compatible"
@@ -186,6 +190,7 @@ export interface InstalledPackage {
   enabled: boolean;
   lifecycleState?: string;
   healthStatus?: string;
+  trustState?: string;
   integritySha256?: string;
   installedAt: string;
   updatedAt: string;

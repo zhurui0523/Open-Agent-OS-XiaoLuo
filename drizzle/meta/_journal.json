@@ -64,6 +64,13 @@
       "when": 1784927824242,
       "tag": "0008_kind_arclight",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1784967949860,
+      "tag": "0009_wealthy_magma",
+      "breakpoints": true
     }
   ]
 }

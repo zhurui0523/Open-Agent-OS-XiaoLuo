@@ -49,6 +49,12 @@ export async function POST(request: Request) {
     if (!row || !row.enabled) {
       return Response.json({ error: "插件不存在或已停用" }, { status: 404 });
     }
+    if (!["trusted", "reviewed"].includes(row.trustState)) {
+      return Response.json(
+        { error: "插件尚未通过 Package 信任审核" },
+        { status: 403 },
+      );
+    }
     if (row.runtimeType !== "remote-api" || !row.runtimeUrl) {
       return Response.json(
         { error: "只有 remote-api 插件可由服务端 Runtime Router 调用" },

@@ -13,9 +13,9 @@ REQ-011,P0,开发文档16,用户云存储决定,implement,remote-only AI file sy
 REQ-012,P0,开发文档16,task center UI,implement,unified workflow and generation task center,E2E-015,verified,yes,yes,yes,yes
 REQ-013,P0,开发文档19,迁移脚本,implement,versioned checksum migration ledger,E2E-021,verified,yes,yes,yes,yes
 REQ-014,P0,开发文档18,health routes,implement,live and dependency readiness,E2E-017,verified,yes,yes,yes,yes
-REQ-015,P1,开发文档17,无长连接基础设施,external dependency,WebSocket-CRDT collaboration,E2E-022,external_blocked,yes,yes,yes,yes
+REQ-015,P1,开发文档17,协作事件与评论实现,implement,event-log presence comments mentions and permission disconnect,E2E-022,verified,yes,yes,yes,yes
 REQ-016,P1,开发文档22,audit and outbox tables,implement,immutable audit and retryable outbox delivery,E2E-018,verified,yes,yes,yes,yes
-REQ-017,P0,开发文档33,缺少旧库和OSS样本,input dependency,legacy dry-run and golden comparison,E2E-024,input_blocked,yes,yes,yes,yes
+REQ-017,P0,开发文档33,旧数据迁移工具,input dependency,chunked legacy copy dry-run and SHA256 golden comparison,E2E-024,input_blocked,yes,yes,yes,yes
 REQ-018,P1,开发文档17,share route and page,implement,read-only and workflow snapshot links,E2E-011,verified,yes,yes,yes,yes
 REQ-019,P0,开发文档9,用户个人中心要求,implement,profile phone password security sessions,E2E-008,verified,yes,yes,yes,yes
 REQ-020,P0,用户设置要求,settings UI,implement,API keys gestures shortcuts personal center,E2E-007,verified,yes,yes,yes,yes
@@ -26,8 +26,8 @@ REQ-024,P0,开发文档7.5,Schema renderer tests,implement,registry-driven recur
 REQ-025,P0,开发文档15,用户异步视频要求,implement,persistent async video jobs,E2E-015,verified,yes,yes,yes,yes
 REQ-026,P1,开发文档14,unified package source,implement,agent-workflow through package contract,E2E-006,verified,yes,yes,yes,yes
 REQ-027,P0,开发文档13.4,rate limiter test,implement,persistent rate limits and model audit,E2E-016,verified,yes,yes,yes,yes
-REQ-028,P2,开发文档14和34,缺少发布者审核签名服务,external dependency,marketplace trust service,E2E-020,external_blocked,yes,yes,yes,yes
-REQ-029,P2,开发文档14.9,缺少独立容器执行集群,external dependency,isolated worker pool,E2E-023,external_blocked,yes,yes,yes,yes
+REQ-028,P2,开发文档14和34,发布者与审核实现,implement,publisher key signature scan review quarantine revoke,E2E-020,verified,yes,yes,yes,yes
+REQ-029,P2,开发文档14.9,隔离执行接入层,external dependency,signed external worker protocol and hard policy,E2E-023,external_blocked,yes,yes,yes,yes
 REQ-030,P0,开发文档32,用户明确不创建文档Skill,user excluded,package import contract only,E2E-019,user_excluded,yes,yes,yes,yes
 REQ-031,P0,用户明确取消自定义接口UI,settings source,user excluded,no custom HTTP editor,E2E-007,user_excluded,yes,yes,yes,yes
 REQ-032,P0,用户明确删除积分系统,product source,user excluded,no credits quota or billing,E2E-026,verified,yes,yes,yes,yes

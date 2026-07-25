@@ -481,6 +481,115 @@ export const resourcePermissions = mysqlTable(
   ],
 );
 
+export const canvasPresence = mysqlTable(
+  "xiaoluo_v2_canvas_presence",
+  {
+    canvasId: id("canvas_id", 36)
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: id("user_id", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: id("session_id", 80).notNull(),
+    cursorX: double("cursor_x"),
+    cursorY: double("cursor_y"),
+    selectedNodeIdsJson: longtext("selected_node_ids_json").notNull(),
+    clientRevision: bigint("client_revision", {
+      mode: "number",
+      unsigned: true,
+    })
+      .notNull()
+      .default(0),
+    state: varchar("state", { length: 24 }).notNull().default("active"),
+    lastSeenAt: timestamp("last_seen_at"),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    primaryKey({
+      name: "canvas_presence_pk",
+      columns: [table.canvasId, table.userId, table.sessionId],
+    }),
+    index("canvas_presence_canvas_seen_idx").on(
+      table.canvasId,
+      table.lastSeenAt,
+    ),
+    index("canvas_presence_user_idx").on(table.userId),
+  ],
+);
+
+export const canvasComments = mysqlTable(
+  "xiaoluo_v2_canvas_comments",
+  {
+    id: id("id", 120).primaryKey(),
+    canvasId: id("canvas_id", 36)
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    nodeId: id("node_id", 120),
+    authorUserId: id("author_user_id", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    content: text("content").notNull(),
+    mentionsJson: longtext("mentions_json").notNull(),
+    status: mysqlEnum("status", ["open", "resolved"])
+      .notNull()
+      .default("open"),
+    resolvedBy: id("resolved_by", 36).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    resolvedAt: datetime("resolved_at", { mode: "string", fsp: 3 }),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    index("canvas_comments_canvas_status_idx").on(
+      table.canvasId,
+      table.status,
+      table.createdAt,
+    ),
+    index("canvas_comments_author_idx").on(table.authorUserId),
+  ],
+);
+
+export const canvasCollaborationEvents = mysqlTable(
+  "xiaoluo_v2_canvas_collaboration_events",
+  {
+    sequence: bigint("sequence", { mode: "number", unsigned: true })
+      .autoincrement()
+      .primaryKey(),
+    id: id("id", 120).notNull().unique(),
+    canvasId: id("canvas_id", 36)
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    actorUserId: id("actor_user_id", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    sessionId: id("session_id", 80),
+    eventType: varchar("event_type", { length: 80 }).notNull(),
+    payloadJson: longtext("payload_json").notNull(),
+    canvasRevision: bigint("canvas_revision", {
+      mode: "number",
+      unsigned: true,
+    }),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    index("canvas_collab_canvas_sequence_idx").on(
+      table.canvasId,
+      table.sequence,
+    ),
+    index("canvas_collab_actor_idx").on(table.actorUserId, table.createdAt),
+  ],
+);
+
 export const intentConversations = mysqlTable(
   "xiaoluo_v2_intent_conversations",
   {
@@ -558,6 +667,115 @@ export const intentPlans = mysqlTable(
   ],
 );
 
+export const trustedPublishers = mysqlTable(
+  "xiaoluo_v2_trusted_publishers",
+  {
+    id: id("id", 120).primaryKey(),
+    slug: varchar("slug", { length: 160 }).notNull().unique(),
+    displayName: varchar("display_name", { length: 180 }).notNull(),
+    website: text("website"),
+    contactEmail: varchar("contact_email", { length: 254 }),
+    status: mysqlEnum("status", [
+      "pending",
+      "approved",
+      "suspended",
+      "revoked",
+    ])
+      .notNull()
+      .default("pending"),
+    createdBy: id("created_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    reviewedBy: id("reviewed_by", 36).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: datetime("reviewed_at", { mode: "string", fsp: 3 }),
+    reason: text("reason"),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [index("trusted_publishers_status_idx").on(table.status)],
+);
+
+export const publisherKeys = mysqlTable(
+  "xiaoluo_v2_publisher_keys",
+  {
+    id: id("id", 120).primaryKey(),
+    publisherId: id("publisher_id", 120)
+      .notNull()
+      .references(() => trustedPublishers.id, { onDelete: "cascade" }),
+    algorithm: varchar("algorithm", { length: 40 })
+      .notNull()
+      .default("ECDSA_P256_SHA256"),
+    publicKeyPem: longtext("public_key_pem").notNull(),
+    fingerprintSha256: varchar("fingerprint_sha256", { length: 64 })
+      .notNull()
+      .unique(),
+    status: mysqlEnum("status", ["active", "revoked", "expired"])
+      .notNull()
+      .default("active"),
+    expiresAt: datetime("expires_at", { mode: "string", fsp: 3 }),
+    revokedAt: datetime("revoked_at", { mode: "string", fsp: 3 }),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    index("publisher_keys_publisher_status_idx").on(
+      table.publisherId,
+      table.status,
+    ),
+  ],
+);
+
+export const packageReviews = mysqlTable(
+  "xiaoluo_v2_package_reviews",
+  {
+    id: id("id", 120).primaryKey(),
+    packageKey: id("package_key", 160).notNull(),
+    version: varchar("version", { length: 80 }).notNull(),
+    publisherId: id("publisher_id", 120).references(
+      () => trustedPublishers.id,
+      { onDelete: "set null" },
+    ),
+    publisherKeyId: id("publisher_key_id", 120).references(
+      () => publisherKeys.id,
+      { onDelete: "set null" },
+    ),
+    manifestSha256: varchar("manifest_sha256", { length: 64 }).notNull(),
+    signature: text("signature"),
+    signatureVerified: boolean("signature_verified")
+      .notNull()
+      .default(false),
+    status: mysqlEnum("status", [
+      "pending",
+      "approved",
+      "rejected",
+      "quarantined",
+      "revoked",
+    ])
+      .notNull()
+      .default("pending"),
+    scanJson: longtext("scan_json").notNull(),
+    reason: text("reason"),
+    submittedBy: id("submitted_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    reviewedBy: id("reviewed_by", 36).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: datetime("reviewed_at", { mode: "string", fsp: 3 }),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    uniqueIndex("package_reviews_package_version_unique").on(
+      table.packageKey,
+      table.version,
+    ),
+    index("package_reviews_status_idx").on(table.status, table.createdAt),
+    index("package_reviews_publisher_idx").on(table.publisherId),
+  ],
+);
+
 export const packages = mysqlTable("xiaoluo_v2_packages", {
   id: id("id", 120).primaryKey(),
   packageKey: id("package_key", 160).notNull(),
@@ -583,6 +801,16 @@ export const packages = mysqlTable("xiaoluo_v2_packages", {
     .default("unchecked"),
   integritySha256: varchar("integrity_sha256", { length: 64 }).notNull(),
   signature: text("signature"),
+  publisherId: id("publisher_id", 120).references(
+    () => trustedPublishers.id,
+    { onDelete: "set null" },
+  ),
+  reviewId: id("review_id", 120).references(() => packageReviews.id, {
+    onDelete: "set null",
+  }),
+  trustState: varchar("trust_state", { length: 32 })
+    .notNull()
+    .default("unverified"),
   enabled: boolean("enabled").notNull().default(true),
   installedAt: timestamp("installed_at"),
   updatedAt: timestamp("updated_at"),
@@ -1003,6 +1231,65 @@ export const generationJobs = mysqlTable(
     ),
     index("generation_jobs_run_idx").on(table.runId),
   ],
+);
+
+export const isolatedWorkerJobs = mysqlTable(
+  "xiaoluo_v2_isolated_worker_jobs",
+  {
+    id: id("id", 120).primaryKey(),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    requestedBy: id("requested_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    packageId: id("package_id", 120).references(() => packages.id, {
+      onDelete: "set null",
+    }),
+    runtime: mysqlEnum("runtime", ["node", "python", "cli"]).notNull(),
+    status: mysqlEnum("status", [
+      "queued",
+      "dispatched",
+      "running",
+      "succeeded",
+      "failed",
+      "canceled",
+    ])
+      .notNull()
+      .default("queued"),
+    endpointOrigin: varchar("endpoint_origin", { length: 300 }),
+    externalExecutionId: varchar("external_execution_id", { length: 240 }),
+    requestJson: longtext("request_json").notNull(),
+    responseJson: longtext("response_json"),
+    policyJson: longtext("policy_json").notNull(),
+    error: text("error"),
+    createdAt: timestamp("created_at"),
+    startedAt: datetime("started_at", { mode: "string", fsp: 3 }),
+    completedAt: datetime("completed_at", { mode: "string", fsp: 3 }),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    index("isolated_jobs_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+      table.createdAt,
+    ),
+    index("isolated_jobs_external_idx").on(table.externalExecutionId),
+  ],
+);
+
+export const systemHeartbeats = mysqlTable(
+  "xiaoluo_v2_system_heartbeats",
+  {
+    component: varchar("component", { length: 80 }).primaryKey(),
+    instanceId: varchar("instance_id", { length: 160 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("healthy"),
+    detailJson: longtext("detail_json").notNull(),
+    lastSeenAt: timestamp("last_seen_at"),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [index("system_heartbeats_seen_idx").on(table.lastSeenAt)],
 );
 
 export const assetFolders = mysqlTable(

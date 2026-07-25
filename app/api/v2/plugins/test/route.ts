@@ -7,6 +7,7 @@ import {
 import { validateExternalEndpoint } from "../../../../lib/model-adapters";
 import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
+import { runtimeServiceReadiness } from "../../../../lib/server-runtime-config";
 
 function joinUrl(base: string, path: string) {
   const normalized = `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
@@ -41,6 +42,12 @@ export async function POST(request: Request) {
       )
       .limit(1);
     if (!row) return Response.json({ error: "插件不存在" }, { status: 404 });
+    if (!["trusted", "reviewed"].includes(row.trustState)) {
+      return Response.json(
+        { error: "Package 尚未通过信任审核" },
+        { status: 403 },
+      );
+    }
     const manifest = JSON.parse(row.manifestJson) as XiaoLuoPackageManifest;
 
     if (row.runtimeType === "declarative") {
@@ -55,6 +62,18 @@ export async function POST(request: Request) {
         message: "UI 将在无同源权限的 iframe 沙盒中运行。",
         previewUrl: row.runtimeUrl,
       });
+    }
+    if (row.runtimeType === "isolated-worker") {
+      const readiness = runtimeServiceReadiness().isolatedWorker;
+      return Response.json(
+        {
+          ok: readiness.configured,
+          message: readiness.configured
+            ? `隔离 Worker 已绑定：${readiness.endpointOrigin}`
+            : "应用端隔离执行协议已就绪，等待绑定外部 Worker 集群。",
+        },
+        { status: readiness.configured ? 200 : 503 },
+      );
     }
 
     const runtimeUrl = row.runtimeUrl;

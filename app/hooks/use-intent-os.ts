@@ -95,6 +95,8 @@ export function useIntentOS() {
   const [selectedNodeId, setSelectedNodeIdState] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [activeCanvasId, setActiveCanvasIdState] = useState("");
+  const [canvasRevision, setCanvasRevision] = useState(0);
+  const [collaborationSessionId] = useState(() => crypto.randomUUID());
   const [canvases, setCanvases] = useState<CanvasSummary[]>([]);
   const [workspaceName, setWorkspaceName] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
@@ -175,6 +177,7 @@ export function useIntentOS() {
         zoom: Number(canvas.viewport.zoom ?? 92),
       };
       revisions.current.set(canvas.id, canvas.revision);
+      setCanvasRevision(canvas.revision);
       setActiveCanvasIdState(canvas.id);
       setNodes(canvas.nodes);
       setEdges(canvas.edges);
@@ -303,9 +306,13 @@ export function useIntentOS() {
               savedAt: string;
             }>("/api/v2/canvases", {
               method: "PUT",
+              headers: {
+                "x-collaboration-session": collaborationSessionId,
+              },
               body: JSON.stringify({ ...snapshot, revision }),
             });
             revisions.current.set(canvasId, saved.revision);
+            setCanvasRevision(saved.revision);
             setCanvases((current) =>
               current.map((canvas) =>
                 canvas.id === canvasId
@@ -338,6 +345,7 @@ export function useIntentOS() {
     edges,
     nodes,
     zoom,
+    collaborationSessionId,
   ]);
 
   const setCanvasViewport = useCallback(
@@ -379,6 +387,11 @@ export function useIntentOS() {
   async function setActiveCanvasId(id: string) {
     if (!id || id === activeCanvasId) return;
     await loadCanvas(id);
+  }
+
+  async function reloadActiveCanvas() {
+    if (!activeCanvasId) return;
+    await loadCanvas(activeCanvasId);
   }
 
   async function createCanvas(title = "未命名画布") {
@@ -1614,6 +1627,8 @@ export function useIntentOS() {
     selectNode,
     selectNodes,
     activeCanvasId,
+    canvasRevision,
+    collaborationSessionId,
     canvases,
     workspaceName,
     workspaceId,
@@ -1626,6 +1641,7 @@ export function useIntentOS() {
     canvasViewport,
     setCanvasViewport,
     setActiveCanvasId,
+    reloadActiveCanvas,
     createCanvas,
     duplicateCanvas,
     restoreCanvas,

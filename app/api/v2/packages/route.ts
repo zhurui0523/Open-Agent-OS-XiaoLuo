@@ -4,11 +4,14 @@ import {
   packageCapabilities,
   packages,
   packageVersions,
+  packageReviews,
+  publisherKeys,
   registryEvents,
   auditLogs,
   outboxEvents,
+  trustedPublishers,
 } from "../../../../db/schema";
-import { requireUser, sha256 } from "../../../lib/auth";
+import { requireUser } from "../../../lib/auth";
 import {
   ManifestValidationError,
   parsePackagePayload,
@@ -17,6 +20,12 @@ import { serializePackage } from "../../../lib/registry-serialization";
 import { mysqlNow } from "../../../lib/mysql";
 import { domainEventRows } from "../../../lib/domain-events";
 import { requireRequestedWorkspace } from "../../../lib/workspace-context";
+import {
+  canonicalPackageManifest,
+  packageManifestSha256,
+  scanPackageManifest,
+  verifyPackageSignature,
+} from "../../../lib/package-trust";
 
 function errorResponse(error: unknown) {
   if (error instanceof Response) return error;
@@ -55,6 +64,7 @@ export async function POST(request: Request) {
       workspaceId?: string;
       manifest?: unknown;
       signature?: string;
+      publisherKeyId?: string;
     };
     const workspaceId = await requireRequestedWorkspace(
       request,
@@ -63,20 +73,98 @@ export async function POST(request: Request) {
       payload,
     );
     const manifest = parsePackagePayload(payload);
-    const manifestJson = JSON.stringify(manifest);
-    const integritySha256 = await sha256(manifestJson);
+    const manifestJson = canonicalPackageManifest(manifest);
+    const integritySha256 = packageManifestSha256(manifestJson);
     const signature = payload.signature?.trim() || null;
+    const db = await getDb();
+    const scan = scanPackageManifest(manifest);
+    const publisherKeyId = payload.publisherKeyId?.trim() || null;
+    const [publisherIdentity] = publisherKeyId
+      ? await db
+          .select({
+            keyId: publisherKeys.id,
+            keyStatus: publisherKeys.status,
+            publicKeyPem: publisherKeys.publicKeyPem,
+            expiresAt: publisherKeys.expiresAt,
+            publisherId: trustedPublishers.id,
+            publisherStatus: trustedPublishers.status,
+          })
+          .from(publisherKeys)
+          .innerJoin(
+            trustedPublishers,
+            eq(trustedPublishers.id, publisherKeys.publisherId),
+          )
+          .where(eq(publisherKeys.id, publisherKeyId))
+          .limit(1)
+      : [];
+    const keyExpired =
+      Boolean(publisherIdentity?.expiresAt) &&
+      new Date(publisherIdentity!.expiresAt!).getTime() <= Date.now();
+    const signatureVerified = Boolean(
+      signature &&
+        publisherIdentity &&
+        publisherIdentity.keyStatus === "active" &&
+        publisherIdentity.publisherStatus === "approved" &&
+        !keyExpired &&
+        verifyPackageSignature({
+          manifestJson,
+          signature,
+          publicKeyPem: publisherIdentity.publicKeyPem,
+        }),
+    );
     if (
       process.env.REQUIRE_PACKAGE_SIGNATURES === "true" &&
-      !signature
+      !signatureVerified
     ) {
       return Response.json(
-        { error: "当前服务器要求 Package 签名" },
+        { error: "当前服务器要求由可信发布者签名的 Package" },
         { status: 400 },
       );
     }
-
-    const db = await getDb();
+    const [existingReview] = await db
+      .select()
+      .from(packageReviews)
+      .where(
+        and(
+          eq(packageReviews.packageKey, manifest.id),
+          eq(packageReviews.version, manifest.version),
+        ),
+      )
+      .limit(1);
+    if (
+      existingReview &&
+      existingReview.manifestSha256 !== integritySha256
+    ) {
+      return Response.json(
+        { error: "相同 Package 版本的 Manifest 已存在且摘要不同，请提升版本号" },
+        { status: 409 },
+      );
+    }
+    const automaticReviewStatus =
+      scan.risk === "high"
+        ? "quarantined"
+        : signatureVerified ||
+            (manifest.runtime.type === "declarative" && scan.risk === "low")
+          ? "approved"
+          : "pending";
+    const reviewStatus =
+      existingReview &&
+      ["approved", "rejected", "quarantined", "revoked"].includes(
+        existingReview.status,
+      )
+        ? existingReview.status
+        : automaticReviewStatus;
+    const reviewId =
+      existingReview?.id ?? `package_review_${crypto.randomUUID()}`;
+    const effectiveSignatureVerified =
+      signatureVerified || existingReview?.signatureVerified === true;
+    const trustState =
+      reviewStatus === "approved"
+        ? effectiveSignatureVerified
+          ? "trusted"
+          : "reviewed"
+        : reviewStatus;
+    const packageEnabled = reviewStatus === "approved";
     const [existing] = await db
       .select()
       .from(packages)
@@ -101,12 +189,16 @@ export async function POST(request: Request) {
       runtimeUrl: manifest.runtime.entry ?? null,
       manifestJson,
       permissionsJson: JSON.stringify(manifest.permissions ?? []),
-      lifecycleState: "active",
+      lifecycleState: packageEnabled ? "active" : reviewStatus,
       healthStatus:
         manifest.runtime.type === "declarative" ? "healthy" : "unchecked",
       integritySha256,
-      signature,
-      enabled: true,
+      signature: signature ?? existingReview?.signature ?? null,
+      publisherId:
+        publisherIdentity?.publisherId ?? existingReview?.publisherId ?? null,
+      reviewId,
+      trustState,
+      enabled: packageEnabled,
       updatedAt: now,
     };
 
@@ -139,6 +231,57 @@ export async function POST(request: Request) {
     };
     const domainRows = domainEventRows(domainInput);
     await db.transaction(async (tx) => {
+      if (existingReview) {
+        await tx
+          .update(packageReviews)
+          .set({
+            publisherId:
+              publisherIdentity?.publisherId ??
+              existingReview.publisherId ??
+              null,
+            publisherKeyId:
+              publisherIdentity?.keyId ??
+              existingReview.publisherKeyId ??
+              null,
+            signature: signature ?? existingReview.signature,
+            signatureVerified:
+              effectiveSignatureVerified,
+            status: reviewStatus,
+            scanJson: JSON.stringify(scan),
+            reason:
+              reviewStatus === "quarantined"
+                ? "自动扫描判定为高风险"
+                : existingReview.reason,
+            updatedAt: now,
+          })
+          .where(eq(packageReviews.id, reviewId));
+      } else {
+        await tx.insert(packageReviews).values({
+          id: reviewId,
+          packageKey: manifest.id,
+          version: manifest.version,
+          publisherId: publisherIdentity?.publisherId ?? null,
+          publisherKeyId: publisherIdentity?.keyId ?? null,
+          manifestSha256: integritySha256,
+          signature,
+          signatureVerified: effectiveSignatureVerified,
+          status: reviewStatus,
+          scanJson: JSON.stringify(scan),
+          reason:
+            reviewStatus === "approved"
+              ? effectiveSignatureVerified
+                ? "可信发布者签名与安全扫描通过"
+                : "低风险声明式 Package 自动审核通过"
+              : reviewStatus === "quarantined"
+                ? "自动扫描判定为高风险"
+                : "等待系统管理员审核",
+          submittedBy: user.id,
+          reviewedAt:
+            reviewStatus === "approved" ? now : null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
       if (existing) {
         await tx
           .update(packages)
@@ -210,6 +353,8 @@ export async function POST(request: Request) {
             version: manifest.version,
             runtime: manifest.runtime.type,
             integritySha256,
+            trustState,
+            reviewStatus,
           },
         ),
       );
@@ -231,6 +376,13 @@ export async function POST(request: Request) {
       {
         package: serializePackage(saved),
         action: existing ? "updated" : "installed",
+        review: {
+          id: reviewId,
+          status: reviewStatus,
+          trustState,
+          signatureVerified: effectiveSignatureVerified,
+          scan,
+        },
       },
       { status: existing ? 200 : 201 },
     );
@@ -257,6 +409,27 @@ export async function PATCH(request: Request) {
       return Response.json({ error: "id 和 enabled 必填" }, { status: 400 });
     }
     const db = await getDb();
+    if (payload.enabled) {
+      const [candidate] = await db
+        .select({ trustState: packages.trustState })
+        .from(packages)
+        .where(
+          and(
+            eq(packages.id, payload.id),
+            eq(packages.workspaceId, workspaceId),
+          ),
+        )
+        .limit(1);
+      if (
+        !candidate ||
+        !["trusted", "reviewed"].includes(candidate.trustState)
+      ) {
+        return Response.json(
+          { error: "Package 尚未通过信任审核，不能启用" },
+          { status: 403 },
+        );
+      }
+    }
     const eventType = payload.enabled ? "package.enabled" : "package.disabled";
     const domainRows = domainEventRows({
       workspaceId,

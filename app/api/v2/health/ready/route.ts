@@ -1,6 +1,7 @@
 import type { RowDataPacket } from "mysql2/promise";
 import { getFileBucket } from "../../../../lib/asset-kernel";
 import { mysqlRows } from "../../../../lib/mysql";
+import { runtimeServiceReadiness } from "../../../../lib/server-runtime-config";
 
 export async function GET() {
   const checks = {
@@ -29,8 +30,9 @@ export async function GET() {
   ]);
 
   const ok = checks.mysql && checks.oss;
+  const services = runtimeServiceReadiness();
   return Response.json(
-    { ok, checks, time: new Date().toISOString() },
+    { ok, checks, services, time: new Date().toISOString() },
     { status: ok ? 200 : 503 },
   );
 }

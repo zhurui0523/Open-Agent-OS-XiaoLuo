@@ -486,6 +486,9 @@ export async function executeRemotePackage(
   inputs: KernelUpstreamInput[],
   signal?: AbortSignal,
 ): Promise<ExecutorResult> {
+  if (!["trusted", "reviewed"].includes(pkg.trustState)) {
+    throw new Error("该插件尚未通过 Package 信任审核");
+  }
   if (pkg.runtimeType !== "remote-api" || !pkg.runtimeUrl) {
     throw new Error("该插件没有可执行的远程 Runtime");
   }

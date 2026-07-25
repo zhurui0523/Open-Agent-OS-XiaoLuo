@@ -47,6 +47,7 @@ export function serializePackage(row: PackageRow): InstalledPackage {
     enabled: row.enabled,
     lifecycleState: row.lifecycleState,
     healthStatus: row.healthStatus,
+    trustState: row.trustState,
     integritySha256: row.integritySha256,
     installedAt: row.installedAt,
     updatedAt: row.updatedAt,

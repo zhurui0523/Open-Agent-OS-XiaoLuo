@@ -6,7 +6,8 @@ JOB-004,asset-kernel,OSS内容寻址存储签名读取版本和来源,"sha256 UR
 JOB-005,intent-planner,服务端计划生成与Schema检查,"persistent conversation and plan revision",REQ-005,app/lib/server-intent-planner.ts,E2E-004,verified
 JOB-006,rate-limiter,模型测试与运行调用持久化限流,"atomic MySQL bucket",REQ-027,app/lib/rate-limit.ts,E2E-016,verified
 JOB-007,mysql-migrations,编号迁移校验和和结构验证,"ledger|checksum|repeatable verify",REQ-013,scripts/migrate-v2.mjs,E2E-021,verified
-JOB-008,realtime-collaboration,多人光标评论和权限撤销断连需要长连接服务,"WebSocket or CRDT service",REQ-015,docs/implementation-status.md,E2E-022,external_blocked
-JOB-009,isolated-worker,第三方CLI Node Python强隔离需要独立容器运行集群,"read-only root|network allowlist|CPU memory timeout",REQ-029,docs/implementation-status.md,E2E-023,external_blocked
-JOB-010,legacy-migration,旧库与OSS正式迁移需要脱敏旧库样本和对象清单,"dry run|count compare|rollback",REQ-017,scripts/migrate-v2.mjs,E2E-024,input_blocked
-JOB-011,runtime-worker-scheduler,独立轮询可运行DAG和到期异步任务,"worker token|lease claim|expired lease recovery|API fallback",REQ-006,app/api/v2/worker/tick/route.ts,E2E-014,verified
+JOB-008,realtime-collaboration,多人光标评论提及和权限撤销断连,"authoritative event polling|presence TTL|revision sync",REQ-015,app/api/v2/collaboration/route.ts,E2E-022,verified
+JOB-009,isolated-worker,可信Package通过签名协议提交外部CLI Node Python隔离集群,"read-only package|ephemeral filesystem|network allowlist|CPU memory timeout",REQ-029,app/lib/isolated-worker.ts,E2E-023,external_pool_required
+JOB-010,legacy-migration,旧库按块复制并执行逐行SHA256黄金数据比对,"dry run|count compare|idempotent insert|verify",REQ-017,scripts/legacy-data-migration.mjs,E2E-024,input_blocked
+JOB-011,runtime-worker-scheduler,独立轮询可运行DAG和到期异步任务,"worker token|bearer auth|heartbeat|lease recovery",REQ-006,app/api/v2/worker/tick/route.ts,E2E-014,external_trigger_required
+JOB-012,package-trust,发布者公钥签名扫描审核隔离撤销,"ECDSA P256|canonical manifest|review queue|capability disable",REQ-028,app/lib/package-trust.ts,E2E-020,verified

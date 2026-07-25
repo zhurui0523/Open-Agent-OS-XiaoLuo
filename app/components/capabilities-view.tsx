@@ -61,6 +61,7 @@ const runtimeMeta = {
   declarative: { label: "声明式", icon: Braces },
   "sandbox-ui": { label: "iframe 沙盒", icon: PanelsTopLeft },
   "remote-api": { label: "远程 API", icon: Server },
+  "isolated-worker": { label: "隔离 Worker", icon: Cpu },
 };
 
 const starterManifest = `{
@@ -369,6 +370,7 @@ function PackagesPanel({
                       <span>{packageTypeLabel[item.packageType]}</span>
                       <span>{runtimeMeta[item.runtimeType].label}</span>
                       <span>{item.contributionCount} 项贡献</span>
+                      <span>信任：{item.trustState ?? "unverified"}</span>
                     </div>
                   </div>
 
@@ -464,6 +466,12 @@ function PackagesPanel({
           title="远程 API"
           detail="仅访问 Manifest 精确声明的 HTTPS Origin。"
           status="网络白名单"
+        />
+        <RuntimeCard
+          icon={Cpu}
+          title="隔离 Worker"
+          detail="可信签名 Package 才能进入外部 Node / Python / CLI 隔离集群。"
+          status="资源硬限制"
         />
         <div className="audit-card">
           <div className="audit-heading">

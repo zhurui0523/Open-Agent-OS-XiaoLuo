@@ -15,6 +15,24 @@ export interface OssRuntimeConfig {
   endpoint: string | null;
 }
 
+export interface RuntimeServiceReadiness {
+  sms: {
+    provider: string;
+    configured: boolean;
+    missing: string[];
+  };
+  scheduler: {
+    configured: boolean;
+  };
+  isolatedWorker: {
+    configured: boolean;
+    endpointOrigin: string | null;
+  };
+  packageTrust: {
+    signaturesRequired: boolean;
+  };
+}
+
 function required(name: string) {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -80,5 +98,65 @@ export function redactedRuntimeSummary() {
     mysqlDatabase: config.database.mysql.database,
     ossRegion: config.storage.oss.region,
     ossBucket: config.storage.oss.bucket,
+  };
+}
+
+function configured(name: string) {
+  return Boolean(process.env[name]?.trim());
+}
+
+function safeOrigin(value: string | undefined) {
+  if (!value?.trim()) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+export function runtimeServiceReadiness(): RuntimeServiceReadiness {
+  const smsProvider =
+    process.env.SMS_PROVIDER?.trim().toLowerCase() ||
+    (process.env.NODE_ENV === "production" ? "aliyun" : "development");
+  const smsRequirements =
+    smsProvider === "aliyun"
+      ? [
+          "ALIYUN_SMS_ACCESS_KEY_ID",
+          "ALIYUN_SMS_ACCESS_KEY_SECRET",
+          "ALIYUN_SMS_SIGN_NAME",
+        ]
+      : [];
+  const hasSmsTemplate =
+    configured("ALIYUN_SMS_TEMPLATE_CODE") ||
+    (configured("ALIYUN_SMS_REGISTER_TEMPLATE_CODE") &&
+      configured("ALIYUN_SMS_PASSWORD_RESET_TEMPLATE_CODE"));
+  const smsMissing = smsRequirements.filter((name) => !configured(name));
+  if (smsProvider === "aliyun" && !hasSmsTemplate) {
+    smsMissing.push("ALIYUN_SMS_TEMPLATE_CODE");
+  }
+
+  const isolatedEndpoint = process.env.ISOLATED_WORKER_ENDPOINT?.trim();
+  return {
+    sms: {
+      provider: smsProvider,
+      configured:
+        smsProvider === "development"
+          ? process.env.NODE_ENV !== "production"
+          : smsProvider === "aliyun" && smsMissing.length === 0,
+      missing: smsMissing,
+    },
+    scheduler: {
+      configured: configured("RUNTIME_WORKER_TOKEN"),
+    },
+    isolatedWorker: {
+      configured:
+        Boolean(safeOrigin(isolatedEndpoint)) &&
+        configured("ISOLATED_WORKER_TOKEN"),
+      endpointOrigin: safeOrigin(isolatedEndpoint),
+    },
+    packageTrust: {
+      signaturesRequired:
+        process.env.REQUIRE_PACKAGE_SIGNATURES?.trim().toLowerCase() === "true",
+    },
   };
 }

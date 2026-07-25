@@ -27,3 +27,7 @@ assets,/api/v2/files/reconcile,POST,session,member,implemented
 assets,/api/v2/files/bulk,POST,session,member,implemented
 health,/api/v2/health/live,GET,public,no,implemented
 health,/api/v2/health/ready,GET,public,no,implemented
+collaboration,/api/v2/collaboration,GET|POST,session,resource,implemented
+runtime,/api/v2/runtime/isolated,GET|POST|DELETE,session,member,implemented
+admin,/api/v2/admin/package-trust,GET|POST,system_admin,no,implemented
+worker,/api/v2/worker/tick,POST,worker_token,no,implemented

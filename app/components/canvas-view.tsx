@@ -3,6 +3,7 @@
 import {
   Check,
   ChevronsLeft,
+  CircleAlert,
   Map as MapIcon,
   Maximize2,
   PanelLeftOpen,
@@ -33,6 +34,10 @@ import type {
   PortDataType,
 } from "../types";
 import { CanvasContextMenu } from "./canvas-context-menu";
+import {
+  CanvasCollaborationPanel,
+  useCanvasCollaboration,
+} from "./canvas-collaboration";
 import { CanvasDrawer } from "./canvas-drawer";
 import { CanvasEdgeLayer } from "./canvas-edge-layer";
 import { IconButton } from "./icon-button";
@@ -150,6 +155,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   });
   const panFrame = useRef<number | null>(null);
   const pendingPan = useRef<{ x: number; y: number } | null>(null);
+  const collaborationCursorRef = useRef<{ x: number; y: number } | null>(
+    null,
+  );
+  const collaboration = useCanvasCollaboration({
+    canvasId: os.activeCanvasId,
+    sessionId: os.collaborationSessionId,
+    selectedNodeIds: os.selectedNodeIds,
+    canvasRevision: os.canvasRevision,
+    cursorRef: collaborationCursorRef,
+  });
 
   const nodeBounds = useMemo<WorldBounds>(() => {
     if (!os.nodes.length) {
@@ -534,6 +549,11 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   }
 
   function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const collaborationCursor = clientToWorld(event.clientX, event.clientY);
+    if (collaborationCursor) {
+      collaborationCursorRef.current = collaborationCursor;
+      collaboration.scheduleHeartbeat();
+    }
     if (connectionDraft) {
       const current = clientToWorld(event.clientX, event.clientY);
       if (current) {
@@ -904,6 +924,22 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             </span>
           </div>
           <div className="canvas-header-actions">
+            <CanvasCollaborationPanel
+              presence={collaboration.presence}
+              comments={collaboration.comments}
+              selfId={collaboration.selfId}
+              remoteRevision={collaboration.remoteRevision}
+              accessRevoked={collaboration.accessRevoked}
+              error={collaboration.error}
+              selectedNodeId={os.selectedNodeId}
+              onRefresh={collaboration.refresh}
+              onReloadCanvas={os.reloadActiveCanvas}
+              onAcknowledgeRemoteRevision={
+                collaboration.acknowledgeRemoteRevision
+              }
+              onCreateComment={collaboration.createComment}
+              onResolveComment={collaboration.resolveComment}
+            />
             <button
               type="button"
               className="secondary-button compact"
@@ -947,8 +983,38 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               {os.cloudError}
             </div>
           )}
+          {collaboration.accessRevoked && (
+            <div className="canvas-access-revoked" role="alert">
+              <CircleAlert size={18} />
+              <div>
+                <b>画布权限已撤销</b>
+                <span>协作连接已经停止，请返回画布管理选择仍可访问的画布。</span>
+              </div>
+              <button type="button" onClick={() => os.setDrawerOpen(true)}>
+                打开画布管理
+              </button>
+            </div>
+          )}
 
           <div className="canvas-content" style={worldStyle}>
+            {collaboration.presence
+              .filter(
+                (item) =>
+                  item.userId !== collaboration.selfId &&
+                  item.sessionId !== os.collaborationSessionId &&
+                  item.cursorX !== null &&
+                  item.cursorY !== null,
+              )
+              .map((item) => (
+                <div
+                  className="remote-collaboration-cursor"
+                  key={`${item.userId}-${item.sessionId}`}
+                  style={{ left: item.cursorX ?? 0, top: item.cursorY ?? 0 }}
+                >
+                  <i />
+                  <span>{item.displayName}</span>
+                </div>
+              ))}
             <CanvasEdgeLayer
               nodes={os.nodes}
               edges={os.edges}

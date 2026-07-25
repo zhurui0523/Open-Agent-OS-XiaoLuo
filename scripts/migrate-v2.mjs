@@ -34,6 +34,7 @@ const migrations = [
   "0006_unknown_havok",
   "0007_living_mole_man",
   "0008_kind_arclight",
+  "0009_wealthy_magma",
 ];
 
 async function tableExists(name) {
@@ -197,6 +198,14 @@ async function verify() {
     "xiaoluo_v2_rate_limit_buckets",
     "xiaoluo_v2_audit_logs",
     "xiaoluo_v2_outbox_events",
+    "xiaoluo_v2_canvas_presence",
+    "xiaoluo_v2_canvas_comments",
+    "xiaoluo_v2_canvas_collaboration_events",
+    "xiaoluo_v2_trusted_publishers",
+    "xiaoluo_v2_publisher_keys",
+    "xiaoluo_v2_package_reviews",
+    "xiaoluo_v2_isolated_worker_jobs",
+    "xiaoluo_v2_system_heartbeats",
   ];
   const absent = [];
   for (const table of expectedTables) {
@@ -220,11 +229,14 @@ async function verify() {
          OR (TABLE_NAME = 'xiaoluo_v2_canvas_edges' AND COLUMN_NAME = 'data_type')
          OR (TABLE_NAME = 'xiaoluo_v2_audit_logs' AND COLUMN_NAME = 'request_id')
          OR (TABLE_NAME = 'xiaoluo_v2_outbox_events' AND COLUMN_NAME = 'status')
+         OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'publisher_id')
+         OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'review_id')
+         OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'trust_state')
        )`,
   );
-  if (absent.length || columns.length !== 13) {
+  if (absent.length || columns.length !== 16) {
     throw new Error(
-      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/13`,
+      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/16`,
     );
   }
   const [nodeKindColumns] = await connection.execute(
@@ -243,7 +255,7 @@ async function verify() {
     JSON.stringify({
       ok: true,
       tables: expectedTables.length,
-      keyColumns: 13,
+      keyColumns: 16,
       canvasNodeKinds: 5,
     }),
   );

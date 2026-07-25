@@ -16,6 +16,7 @@ import {
   compileWorkflow,
   WorkflowCompileError,
 } from "../../../lib/workflow-kernel";
+import { appendCanvasCollaborationEvent } from "../../../lib/canvas-collaboration";
 
 interface ProjectRow extends RowDataPacket {
   name: string;
@@ -241,7 +242,7 @@ export async function PUT(request: Request) {
     ) {
       return Response.json({ error: "画布视口数据无效" }, { status: 400 });
     }
-    await requireCanvasAccess(user.id, id, "edit");
+    const access = await requireCanvasAccess(user.id, id, "edit");
     const revision = await replaceCanvasGraph({
       canvasId: id,
       revision: body.revision as number,
@@ -256,10 +257,26 @@ export async function PUT(request: Request) {
         { status: 409 },
       );
     }
+    await appendCanvasCollaborationEvent({
+      canvasId: id,
+      workspaceId: access.workspaceId,
+      actorUserId: user.id,
+      sessionId: cleanSessionId(request.headers.get("x-collaboration-session")),
+      eventType: "canvas.updated",
+      payload: {
+        nodeCount: body.nodes.length,
+        edgeCount: body.edges.length,
+      },
+      canvasRevision: revision,
+    });
     return Response.json({ ok: true, revision, savedAt: new Date().toISOString() });
   } catch (error) {
     return jsonError(error, "保存画布失败");
   }
+}
+
+function cleanSessionId(value: string | null) {
+  return value?.trim().replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 80) || null;
 }
 
 export async function PATCH(request: Request) {
