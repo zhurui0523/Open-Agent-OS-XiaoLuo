@@ -4,6 +4,7 @@ import {
   Blocks,
   Hand,
   Library,
+  ListTree,
   MousePointer2,
   PanelsTopLeft,
   Play,
@@ -85,6 +86,13 @@ export function CanvasToolbar({
         onClick={() => onNavigate("capabilities")}
       >
         <Blocks size={18} />
+      </IconButton>
+      <IconButton
+        label="运行详情"
+        active={currentView === "runs"}
+        onClick={() => onNavigate("runs")}
+      >
+        <ListTree size={18} />
       </IconButton>
       <span className="tool-separator" />
       <IconButton

@@ -5,6 +5,7 @@ import {
   ChevronsLeft,
   CircleAlert,
   Map as MapIcon,
+  Layers3,
   Maximize2,
   PanelLeftOpen,
   Share2,
@@ -29,6 +30,7 @@ import {
   type ViewportTransform,
   type WorldBounds,
 } from "../lib/canvas-geometry";
+import { CanvasSpatialIndex } from "../lib/canvas-spatial-index";
 import type {
   NodeKind,
   PortDataType,
@@ -127,6 +129,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
   const [isPanning, setIsPanning] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
+  const [layersOpen, setLayersOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [connectionDraft, setConnectionDraft] =
@@ -807,17 +810,21 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     stageSize,
   );
   const renderBounds = expandBounds(visibleBounds, 420);
-  const visibleNodes = os.nodes.filter(
-    (node) =>
-      os.selectedNodeIds.includes(node.id) ||
-      node.id === connectionDraft?.sourceId ||
-      !(
-        node.x + NODE_WIDTH < renderBounds.minX ||
-        node.x > renderBounds.maxX ||
-        node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT) < renderBounds.minY ||
-        node.y > renderBounds.maxY
-      ),
+  const spatialIndex = useMemo(
+    () => new CanvasSpatialIndex(os.nodes, os.edges, nodeHeights),
+    [nodeHeights, os.edges, os.nodes],
   );
+  const visibleNodeIds = spatialIndex.queryNodeIds(renderBounds);
+  os.selectedNodeIds.forEach((id) => visibleNodeIds.add(id));
+  if (connectionDraft?.sourceId) visibleNodeIds.add(connectionDraft.sourceId);
+  const visibleNodes = [...visibleNodeIds]
+    .map((id) => spatialIndex.nodeById.get(id))
+    .filter((node): node is NonNullable<typeof node> => Boolean(node));
+  const visibleEdgeIds = spatialIndex.queryEdgeIds(expandBounds(visibleBounds, 360));
+  if (selectedEdgeId) visibleEdgeIds.add(selectedEdgeId);
+  const visibleEdges = [...visibleEdgeIds]
+    .map((id) => spatialIndex.edgeById.get(id))
+    .filter((edge): edge is NonNullable<typeof edge> => Boolean(edge));
   const minimapBounds = expandBounds(
     unionBounds(nodeBounds, visibleBounds),
     80,
@@ -882,6 +889,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         canvases={os.canvases}
         workspaceName={os.workspaceName}
         projectName={os.projectName}
+        projects={os.projects}
         onClose={() => os.setDrawerOpen(false)}
         onSelect={os.setActiveCanvasId}
         onCreate={() => void os.createCanvas()}
@@ -893,6 +901,10 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         onStar={os.toggleCanvasStar}
         onCreateSnapshot={os.createCanvasSnapshot}
         onRestoreSnapshot={os.restoreCanvasSnapshot}
+        onSwitchProject={os.switchProject}
+        onCreateProject={os.createProject}
+        onRenameProject={os.renameProject}
+        onArchiveProject={os.archiveProject}
       />
 
       <section
@@ -953,12 +965,65 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             >
               <Maximize2 size={17} />
             </IconButton>
+            <IconButton
+              label="图层"
+              active={layersOpen}
+              onClick={() => setLayersOpen((current) => !current)}
+            >
+              <Layers3 size={17} />
+            </IconButton>
           </div>
         </header>
+
+        {layersOpen && (
+          <aside className="canvas-layers-panel" aria-label="图层管理">
+            <header><Layers3 size={14} /><b>图层</b><small>{os.nodes.length}</small></header>
+            <div>
+              {[...os.nodes]
+                .sort((first, second) => (second.layer ?? 0) - (first.layer ?? 0))
+                .map((node) => (
+                  <button
+                    type="button"
+                    key={node.id}
+                    className={os.selectedNodeIds.includes(node.id) ? "is-active" : ""}
+                    onClick={() => os.setSelectedNodeId(node.id)}
+                  >
+                    <span>{node.title}</span>
+                    <small>{node.kind} · L{node.layer ?? 0}{node.collapsed ? " · 已折叠" : ""}</small>
+                  </button>
+                ))}
+            </div>
+          </aside>
+        )}
 
         <div
           ref={stageRef}
           className={stageClass}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes("application/x-xiaoluo-asset")) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+            }
+          }}
+          onDrop={(event) => {
+            const serialized = event.dataTransfer.getData("application/x-xiaoluo-asset");
+            if (!serialized) return;
+            event.preventDefault();
+            try {
+              const asset = JSON.parse(serialized) as import("../types").FileSystemAsset;
+              const rect = event.currentTarget.getBoundingClientRect();
+              const position = screenToWorld(
+                {
+                  x: event.clientX - rect.left,
+                  y: event.clientY - rect.top,
+                },
+                viewportRef.current,
+              );
+              os.addAssetToCanvas(asset, position);
+            } catch {
+              window.alert("无法读取拖入的资产");
+            }
+          }}
           onPointerDown={handleStagePointerDown}
           onPointerMove={handleStagePointerMove}
           onPointerUp={endStagePan}
@@ -1017,7 +1082,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               ))}
             <CanvasEdgeLayer
               nodes={os.nodes}
-              edges={os.edges}
+              edges={visibleEdges}
               nodeHeights={nodeHeights}
               visibleBounds={visibleBounds}
               selectedEdgeId={selectedEdgeId}

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   intentConversations,
@@ -17,6 +17,11 @@ import {
 } from "../../../../lib/intent-store";
 import { mysqlNow } from "../../../../lib/mysql";
 import { planIntent } from "../../../../lib/server-intent-planner";
+import {
+  detectIntentGaps,
+  formatGapQuestion,
+} from "../../../../lib/intent-analysis";
+import type { IntentGap } from "../../../../types";
 
 const encoder = new TextEncoder();
 
@@ -138,6 +143,29 @@ export async function POST(request: Request) {
       title: content.slice(0, 80),
     });
     const db = await getDb();
+    const [previousMessage] = await db
+      .select({
+        role: intentMessages.role,
+        metadataJson: intentMessages.metadataJson,
+      })
+      .from(intentMessages)
+      .where(eq(intentMessages.conversationId, conversation.id))
+      .orderBy(desc(intentMessages.createdAt))
+      .limit(1);
+    let originalIntent = content;
+    if (previousMessage?.role === "assistant") {
+      try {
+        const metadata = JSON.parse(previousMessage.metadataJson) as {
+          pendingGaps?: IntentGap[];
+          originalIntent?: string;
+        };
+        if (metadata.pendingGaps?.length && metadata.originalIntent) {
+          originalIntent = `${metadata.originalIntent}\n\n用户补充：${content}`;
+        }
+      } catch {
+        // Historical messages may contain metadata from older versions.
+      }
+    }
     const now = mysqlNow();
     const userMessage = {
       id: `message_${crypto.randomUUID()}`,
@@ -171,11 +199,33 @@ export async function POST(request: Request) {
             controller.enqueue(
               event("planner.status", { status: "planning" }),
             );
+            const gaps = detectIntentGaps(originalIntent);
+            if (gaps.some((gap) => gap.required)) {
+              const assistantMessage = {
+                id: `message_${crypto.randomUUID()}`,
+                conversationId: conversation.id,
+                role: "assistant" as const,
+                content: formatGapQuestion(gaps),
+                metadataJson: JSON.stringify({
+                  pendingGaps: gaps,
+                  originalIntent,
+                  planner: "kernel.information-gap-detector",
+                }),
+                createdAt: mysqlNow(),
+              };
+              await db.insert(intentMessages).values(assistantMessage);
+              controller.enqueue(event("message.created", assistantMessage));
+              controller.enqueue(
+                event("planner.questions", { gaps, status: "awaiting_input" }),
+              );
+              controller.enqueue(event("done", { ok: true, needsInput: true }));
+              return;
+            }
             const planningInput = validAttachments.length
-              ? `${content}\n\n参考附件：${validAttachments
+              ? `${originalIntent}\n\n参考附件：${validAttachments
                   .map((attachment) => `${attachment.name} (${attachment.uri})`)
                   .join("；")}`
-              : content;
+              : originalIntent;
             const planned = await planIntent(
               access.workspaceId,
               preferredCapabilityTitle

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "description": "将旧系统数据按主键顺序复制，并对来源与目标执行逐行 SHA-256 黄金数据校验。",
   "entities": [
     {
@@ -24,6 +24,14 @@
       },
       "copy": false,
       "expectedSourceCount": 0
+    }
+  ],
+  "objects": [
+    {
+      "id": "legacy-assets",
+      "sourcePrefix": "legacy/",
+      "targetPrefix": "v2/migrated/",
+      "copy": false
     }
   ]
 }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import mysql from "mysql2/promise";
+import OSS from "ali-oss";
 
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
@@ -18,8 +19,8 @@ if (!manifestPath) {
 }
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.entities)) {
-  throw new Error("Legacy migration manifest must use schemaVersion 1.");
+if (![1, 2].includes(manifest.schemaVersion) || !Array.isArray(manifest.entities)) {
+  throw new Error("Legacy migration manifest must use schemaVersion 1 or 2.");
 }
 
 const identifier = /^[A-Za-z0-9_]+$/;
@@ -79,6 +80,95 @@ const chunkSize = Math.max(
   100,
   Math.min(2_000, Number(process.env.LEGACY_MIGRATION_CHUNK_SIZE ?? 500)),
 );
+
+function ossConfig(prefix) {
+  const values = {
+    region: process.env[`${prefix}_REGION`],
+    accessKeyId: process.env[`${prefix}_ACCESS_KEY_ID`],
+    accessKeySecret: process.env[`${prefix}_ACCESS_KEY_SECRET`],
+    bucket: process.env[`${prefix}_BUCKET`],
+    endpoint: process.env[`${prefix}_ENDPOINT`],
+  };
+  const missing = Object.entries(values)
+    .filter(([key, value]) => key !== "endpoint" && !value)
+    .map(([key]) => key);
+  if (missing.length) {
+    throw new Error(`Missing ${prefix} OSS configuration: ${missing.join(", ")}`);
+  }
+  return new OSS({
+    region: values.region,
+    accessKeyId: values.accessKeyId,
+    accessKeySecret: values.accessKeySecret,
+    bucket: values.bucket,
+    ...(values.endpoint ? { endpoint: values.endpoint } : {}),
+    secure: true,
+  });
+}
+
+async function listOss(client, prefix) {
+  const objects = [];
+  let marker;
+  do {
+    const page = await client.list({ prefix, marker, "max-keys": 1000 });
+    for (const object of page.objects ?? []) {
+      objects.push({
+        name: object.name,
+        size: Number(object.size ?? 0),
+        etag: String(object.etag ?? "").replaceAll('"', ""),
+      });
+    }
+    marker = page.nextMarker;
+  } while (marker);
+  return objects;
+}
+
+async function migrateObjects(specification) {
+  const sourceClient = ossConfig("LEGACY_OSS");
+  const targetClient = ossConfig("OSS");
+  const sourcePrefix = String(specification.sourcePrefix ?? "");
+  const targetPrefix = String(specification.targetPrefix ?? "");
+  const sourceObjects = await listOss(sourceClient, sourcePrefix);
+  let targetObjects = await listOss(targetClient, targetPrefix);
+  const targetByName = new Map(targetObjects.map((object) => [object.name, object]));
+  const expectedTargetName = (name) =>
+    `${targetPrefix}${name.slice(sourcePrefix.length)}`;
+  const beforeMissing = sourceObjects.filter((object) => {
+    const targetObject = targetByName.get(expectedTargetName(object.name));
+    return !targetObject || targetObject.size !== object.size || targetObject.etag !== object.etag;
+  });
+  let copied = 0;
+  if (apply && specification.copy === true) {
+    for (const object of beforeMissing) {
+      const sourceStream = await sourceClient.getStream(object.name);
+      await targetClient.put(expectedTargetName(object.name), sourceStream.stream);
+      copied += 1;
+    }
+    targetObjects = await listOss(targetClient, targetPrefix);
+  }
+  const finalTargetByName = new Map(targetObjects.map((object) => [object.name, object]));
+  const missing = sourceObjects.filter((object) => {
+    const targetObject = finalTargetByName.get(expectedTargetName(object.name));
+    return !targetObject || targetObject.size !== object.size || targetObject.etag !== object.etag;
+  });
+  const expectedNames = new Set(sourceObjects.map((object) => expectedTargetName(object.name)));
+  const orphaned = targetObjects.filter((object) => !expectedNames.has(object.name));
+  const digest = (objects) => {
+    const hash = createHash("sha256");
+    for (const object of [...objects].sort((first, second) => first.name.localeCompare(second.name))) {
+      hash.update(`${object.name}\0${object.size}\0${object.etag}\n`);
+    }
+    return hash.digest("hex");
+  };
+  return {
+    id: specification.id ?? "legacy-oss",
+    source: { count: sourceObjects.length, fingerprint: digest(sourceObjects) },
+    target: { count: targetObjects.length, fingerprint: digest(targetObjects) },
+    copied,
+    missing: missing.map((object) => object.name),
+    orphaned: orphaned.map((object) => object.name),
+    matched: missing.length === 0,
+  };
+}
 
 function canonicalRow(row, columns) {
   return JSON.stringify(
@@ -235,6 +325,7 @@ const report = {
   manifest: manifestPath,
   startedAt: new Date().toISOString(),
   entities: [],
+  objects: [],
 };
 
 try {
@@ -274,6 +365,13 @@ try {
     });
     if ((apply || verify) && !matched) {
       throw new Error(`${entity.id}: golden-data comparison failed.`);
+    }
+  }
+  for (const specification of manifest.objects ?? []) {
+    const objectReport = await migrateObjects(specification);
+    report.objects.push(objectReport);
+    if ((apply || verify) && !objectReport.matched) {
+      throw new Error(`${objectReport.id}: OSS inventory comparison failed.`);
     }
   }
   report.ok = true;

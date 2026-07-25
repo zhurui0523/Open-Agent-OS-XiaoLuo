@@ -1,6 +1,7 @@
 "use client";
 
 import type { KeyboardEvent, PointerEvent } from "react";
+import { useMemo } from "react";
 import { indexedPortPoint } from "../lib/canvas-geometry";
 import {
   portColor,
@@ -109,7 +110,10 @@ export function CanvasEdgeLayer({
   onSelect,
   onDelete,
 }: CanvasEdgeLayerProps) {
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const nodeMap = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes],
+  );
   const bounds = {
     minX: visibleBounds.minX - 360,
     minY: visibleBounds.minY - 360,

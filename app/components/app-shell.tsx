@@ -22,6 +22,7 @@ import { CanvasView } from "./canvas-view";
 import { CapabilitiesView } from "./capabilities-view";
 import { IconButton } from "./icon-button";
 import { SettingsCenter } from "./settings-center";
+import { TaskCenter } from "./task-center";
 
 function AuthenticatedShell({
   user,
@@ -199,6 +200,12 @@ function AuthenticatedShell({
           />
         )}
         {os.view === "capabilities" && <CapabilitiesView os={os} />}
+        {os.view === "runs" && (
+          <TaskCenter
+            workspaceId={os.workspaceId}
+            onBack={() => os.setView("canvas")}
+          />
+        )}
       </main>
       {accountOpen && (
         <AccountCenter user={user} onClose={() => setAccountOpen(false)} />

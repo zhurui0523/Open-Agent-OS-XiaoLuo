@@ -201,12 +201,62 @@ export function IntentConsole({
                             })
                           }
                         />
+                        <select
+                          aria-label={`任务 ${index + 1} 模态`}
+                          value={task.kind}
+                          onChange={(event) =>
+                            setPlanDraft({
+                              ...planDraft,
+                              tasks: planDraft.tasks.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? { ...item, kind: event.target.value as typeof item.kind }
+                                  : item,
+                              ),
+                            })
+                          }
+                        >
+                          <option value="text">文本</option>
+                          <option value="image">图片</option>
+                          <option value="video">视频</option>
+                          <option value="audio">音频</option>
+                          <option value="document">文档</option>
+                        </select>
+                        <label className="plan-dependency-editor">
+                          <small>依赖（可多选）</small>
+                          <select
+                            multiple
+                            aria-label={`任务 ${index + 1} 依赖`}
+                            value={task.dependsOn}
+                            onChange={(event) => {
+                              const dependsOn = [...event.target.selectedOptions].map(
+                                (option) => option.value,
+                              );
+                              setPlanDraft({
+                                ...planDraft,
+                                tasks: planDraft.tasks.map((item, itemIndex) =>
+                                  itemIndex === index ? { ...item, dependsOn } : item,
+                                ),
+                              });
+                            }}
+                          >
+                            {planDraft.tasks
+                              .filter((candidate) => candidate.id !== task.id)
+                              .map((candidate) => (
+                                <option key={candidate.id} value={candidate.id}>
+                                  {candidate.title}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
                       </>
                     ) : (
                       <>
                         <b>{task.title}</b>
                         <small>
-                          {task.capability} · {task.duration}
+                          {task.capability} · {task.kind} · {task.duration}
+                        </small>
+                        <small>
+                          依赖：{task.dependsOn.length ? task.dependsOn.join("、") : "无（起点）"}
                         </small>
                       </>
                     )}
@@ -218,9 +268,12 @@ export function IntentConsole({
                       onClick={() =>
                         setPlanDraft({
                           ...planDraft,
-                          tasks: planDraft.tasks.filter(
-                            (_, itemIndex) => itemIndex !== index,
-                          ),
+                          tasks: planDraft.tasks
+                            .filter((_, itemIndex) => itemIndex !== index)
+                            .map((item) => ({
+                              ...item,
+                              dependsOn: item.dependsOn.filter((id) => id !== task.id),
+                            })),
                         })
                       }
                     >

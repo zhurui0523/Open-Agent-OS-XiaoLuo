@@ -4,6 +4,8 @@ import {
   AlertCircle,
   AudioLines,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clapperboard,
   Clock3,
   FileText,
@@ -12,6 +14,7 @@ import {
   GripHorizontal,
   Image as ImageIcon,
   Layers3,
+  Minimize2,
   Pause,
   Play,
   RotateCcw,
@@ -120,7 +123,32 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         <small>{node.kind.toUpperCase()}</small>
       </header>
 
-      {node.kind === "text" && (
+      <div className={`workbench-preview schema-driven-preview preview-${node.kind}`}>
+        {node.kind === "text" && (
+          <><Type size={15} /><p>{kernelOutput?.text ?? node.result ?? "暂无输出"}</p></>
+        )}
+        {node.kind === "image" && mediaUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={mediaUrl} alt={`${node.title} 生成结果`} />
+        )}
+        {node.kind === "video" && mediaUrl && (
+          <video src={mediaUrl} controls aria-label={`${node.title} 生成结果`} />
+        )}
+        {node.kind === "audio" && mediaUrl && (
+          <audio src={mediaUrl} controls preload="metadata" />
+        )}
+        {node.kind === "document" && (
+          <><FileOutput size={22} /><span>{mediaUrl ? "文档已生成" : "暂无输出"}</span></>
+        )}
+        {!mediaUrl && !["text", "document"].includes(node.kind) && (
+          <div className="media-preview-art" aria-label="暂无输出"><span /><span /><span /></div>
+        )}
+        <span className="media-preview-badge">
+          <Sparkles size={11} /> {progressLabel}
+        </span>
+      </div>
+
+      {false && node.kind === "text" && (
         <>
           <div className="workbench-preview text-workbench-preview">
             <Type size={15} />
@@ -153,7 +181,7 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         </>
       )}
 
-      {node.kind === "image" && (
+      {false && node.kind === "image" && (
         <>
           <div className="workbench-preview image-workbench-preview">
             {mediaUrl ? (
@@ -205,7 +233,7 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         </>
       )}
 
-      {node.kind === "video" && (
+      {false && node.kind === "video" && (
         <>
           <div className="workbench-preview video-workbench-preview">
             {mediaUrl ? (
@@ -257,7 +285,7 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         </>
       )}
 
-      {node.kind === "audio" && (
+      {false && node.kind === "audio" && (
         <>
           <div className="workbench-preview audio-workbench-preview">
             {mediaUrl ? (
@@ -298,7 +326,7 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         </>
       )}
 
-      {node.kind === "document" && (
+      {false && node.kind === "document" && (
         <>
           <div className="workbench-preview document-workbench-preview">
             <FileOutput size={22} />
@@ -451,8 +479,8 @@ export function NodeCard({
   return (
     <article
       ref={cardRef}
-      className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""} ${multiSelected ? "is-multi-selected" : ""}`}
-      style={{ left: node.x, top: node.y }}
+      className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""} ${multiSelected ? "is-multi-selected" : ""} ${node.collapsed ? "is-collapsed" : ""}`}
+      style={{ left: node.x, top: node.y, zIndex: node.layer ?? 0 }}
       onPointerDown={(event) => {
         if (
           panMode ||
@@ -479,6 +507,13 @@ export function NodeCard({
           {kindMeta[node.kind].label}
         </span>
         <GripHorizontal size={16} aria-hidden="true" />
+        {node.collapsed && <strong className="collapsed-node-title">{node.title}</strong>}
+        <IconButton
+          label={node.collapsed ? "展开节点" : "折叠节点"}
+          onClick={() => onUpdate({ collapsed: !node.collapsed })}
+        >
+          <Minimize2 size={13} />
+        </IconButton>
         <span className={`node-status status-${node.status}`}>
           <StatusIcon size={13} aria-hidden="true" />
           {status.label}
@@ -669,6 +704,18 @@ export function NodeCard({
           </IconButton>
           <IconButton label="从此节点重跑下游分支" onClick={onRerunBranch}>
             <GitBranch size={15} />
+          </IconButton>
+          <IconButton
+            label="上移一层"
+            onClick={() => onUpdate({ layer: (node.layer ?? 0) + 1 })}
+          >
+            <ChevronUp size={15} />
+          </IconButton>
+          <IconButton
+            label="下移一层"
+            onClick={() => onUpdate({ layer: (node.layer ?? 0) - 1 })}
+          >
+            <ChevronDown size={15} />
           </IconButton>
           <span className="saved-state">
             {saveState === "conflict" || saveState === "error" ? (

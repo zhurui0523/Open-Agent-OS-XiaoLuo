@@ -50,6 +50,22 @@ interface TaskPayload {
   summary: { running: number; queued: number; failed: number };
 }
 
+interface RunDetailPayload {
+  run: RuntimeTask & {
+    graphJson: string;
+    createdAt?: string;
+    desiredStatus?: string;
+  };
+  tasks: TaskPayload["runTasks"];
+  events: Array<{
+    id: string;
+    eventType: string;
+    nodeId?: string | null;
+    payloadJson: string;
+    createdAt: string;
+  }>;
+}
+
 const statusLabels: Record<string, string> = {
   queued: "排队中",
   submitted: "已提交",
@@ -77,6 +93,25 @@ export function TaskCenter({
   const [status, setStatus] = useState("all");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const [runDetail, setRunDetail] = useState<RunDetailPayload | null>(null);
+
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let active = true;
+    void fetch(`/api/v2/kernel/runs?runId=${encodeURIComponent(selectedRunId)}`)
+      .then(async (response) => {
+        const next = (await response.json().catch(() => ({}))) as RunDetailPayload & { error?: string };
+        if (!response.ok) throw new Error(next.error ?? "运行详情读取失败");
+        if (active) setRunDetail(next);
+      })
+      .catch((cause) => {
+        if (active) setError(cause instanceof Error ? cause.message : "运行详情读取失败");
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedRunId, payload]);
 
   const load = useCallback(async () => {
     const query = new URLSearchParams({ workspaceId });
@@ -225,10 +260,76 @@ export function TaskCenter({
 
       {error && <div className="file-system-error" role="alert">{error}</div>}
       <div className="task-list">
+        {runDetail && (() => {
+          const graph = JSON.parse(runDetail.run.graphJson) as {
+            nodes: Array<{ id: string; title: string; kind: string }>;
+            edges: Array<{ id: string; source: string; target: string }>;
+          };
+          const taskByNode = new Map(runDetail.tasks.map((task) => [task.nodeId, task]));
+          return (
+            <section className="run-detail-page" aria-label="独立运行详情">
+              <header>
+                <div>
+                  <span className="eyebrow">RUN DETAIL · DAG · EVENT LOG</span>
+                  <h2>运行 {runDetail.run.id.slice(0, 18)}</h2>
+                  <p>
+                    {runDetail.run.startedAt ? new Date(runDetail.run.startedAt).toLocaleString("zh-CN") : "尚未开始"}
+                    {" → "}
+                    {runDetail.run.completedAt ? new Date(runDetail.run.completedAt).toLocaleString("zh-CN") : "进行中"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRunId("");
+                    setRunDetail(null);
+                  }}
+                >
+                  关闭详情
+                </button>
+              </header>
+              <div className="run-detail-grid">
+                <div className="run-dag">
+                  <h3>DAG 节点与依赖</h3>
+                  {graph.nodes.map((node) => {
+                    const task = taskByNode.get(node.id);
+                    const upstream = graph.edges.filter((edge) => edge.target === node.id);
+                    return (
+                      <article key={node.id} className={`run-node status-${task?.status ?? "queued"}`}>
+                        <b>{node.title}</b>
+                        <small>{node.kind} · {statusLabels[task?.status ?? "queued"] ?? task?.status}</small>
+                        <span>上游：{upstream.length ? upstream.map((edge) => edge.source).join("、") : "无"}</span>
+                        <span>尝试：{task?.attempt ?? 0}/{task?.maxAttempts ?? 0}</span>
+                        {task?.error && <code>{task.error}</code>}
+                      </article>
+                    );
+                  })}
+                </div>
+                <div className="run-event-log">
+                  <h3>事件与错误链</h3>
+                  {runDetail.events.map((event) => (
+                    <article key={event.id}>
+                      <time>{new Date(event.createdAt).toLocaleString("zh-CN")}</time>
+                      <b>{event.eventType}</b>
+                      <small>{event.nodeId ?? "RUN"}</small>
+                      <code>{event.payloadJson}</code>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </section>
+          );
+        })()}
         {tasks.map((task) => {
           const active = ["queued", "submitted", "running"].includes(task.status);
           return (
-            <article key={`${task.taskType}-${task.id}`} className="task-card">
+            <article
+              key={`${task.taskType}-${task.id}`}
+              className="task-card"
+              onDoubleClick={() => {
+                if (task.taskType === "run") setSelectedRunId(task.id);
+              }}
+            >
               <span className={`task-icon kind-${task.kind}`}>
                 {task.kind === "video" ? <Clapperboard size={19} /> : <LoaderCircle size={19} />}
               </span>
@@ -291,6 +392,15 @@ export function TaskCenter({
                         </div>
                       ))}
                   </details>
+                )}
+                {task.taskType === "run" && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setSelectedRunId(task.id)}
+                  >
+                    查看完整 DAG、事件与日志
+                  </button>
                 )}
               </div>
               <div className="task-actions">

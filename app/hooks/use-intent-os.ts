@@ -19,6 +19,7 @@ import type {
   KernelNodeOutput,
   ModelConnectionDraft,
   NodeKind,
+  ProjectSummary,
   RegistryEvent,
   RegistrySnapshot,
   RunState,
@@ -103,6 +104,7 @@ export function useIntentOS() {
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [cloudStatus, setCloudStatus] = useState<
     "loading" | "ready" | "saving" | "saved" | "conflict" | "error"
   >("loading");
@@ -202,6 +204,7 @@ export function useIntentOS() {
         workspace: { id: string; name: string };
         workspaces: WorkspaceOption[];
         project: { id: string; name: string };
+        projects: ProjectSummary[];
         canvases: CanvasSummary[];
         activeCanvas: {
           id: string;
@@ -221,6 +224,7 @@ export function useIntentOS() {
       setWorkspaces(payload.workspaces);
       setProjectId(payload.project.id);
       setProjectName(payload.project.name);
+      setProjects(payload.projects);
       setCanvases(payload.canvases);
       applyCloudCanvas(payload.activeCanvas);
       setCloudError("");
@@ -241,6 +245,73 @@ export function useIntentOS() {
     },
     [loadCloudWorkspace, workspaceId],
   );
+
+  async function switchProject(nextProjectId: string) {
+    if (!nextProjectId || nextProjectId === projectId) return;
+    const project = projects.find((item) => item.id === nextProjectId);
+    const payload = await requestJson<{ canvases: CanvasSummary[] }>(
+      `/api/v2/canvases?projectId=${encodeURIComponent(nextProjectId)}`,
+    );
+    if (!payload.canvases.length) throw new Error("项目中没有可打开的画布");
+    setProjectId(nextProjectId);
+    setProjectName(project?.name ?? "项目");
+    setCanvases(payload.canvases);
+    await setActiveCanvasId(payload.canvases[0].id);
+  }
+
+  async function createProject() {
+    const name = window.prompt("新项目名称", "新的项目")?.trim();
+    if (!name) return;
+    const payload = await requestJson<{
+      project: { id: string; name: string };
+      canvasId: string;
+    }>("/api/v2/projects", {
+      method: "POST",
+      body: JSON.stringify({ workspaceId, name }),
+    });
+    const list = await requestJson<{ projects: ProjectSummary[] }>(
+      `/api/v2/projects?workspaceId=${encodeURIComponent(workspaceId)}`,
+    );
+    setProjects(list.projects);
+    setProjectId(payload.project.id);
+    setProjectName(payload.project.name);
+    const canvasesPayload = await requestJson<{ canvases: CanvasSummary[] }>(
+      `/api/v2/canvases?projectId=${encodeURIComponent(payload.project.id)}`,
+    );
+    setCanvases(canvasesPayload.canvases);
+    await setActiveCanvasId(payload.canvasId);
+  }
+
+  async function renameProject(id: string) {
+    const current = projects.find((item) => item.id === id);
+    const name = window.prompt("项目名称", current?.name ?? "")?.trim();
+    if (!name || name === current?.name) return;
+    await requestJson("/api/v2/projects", {
+      method: "PATCH",
+      body: JSON.stringify({ id, action: "update", name }),
+    });
+    setProjects((items) =>
+      items.map((item) => (item.id === id ? { ...item, name } : item)),
+    );
+    if (id === projectId) setProjectName(name);
+  }
+
+  async function archiveProject(id: string) {
+    if (projects.filter((item) => item.status === "active").length <= 1) {
+      throw new Error("至少保留一个使用中的项目");
+    }
+    await requestJson("/api/v2/projects", {
+      method: "PATCH",
+      body: JSON.stringify({ id, action: "archive" }),
+    });
+    const remaining = projects.find(
+      (item) => item.id !== id && item.status === "active",
+    );
+    setProjects((items) =>
+      items.map((item) => (item.id === id ? { ...item, status: "archived" } : item)),
+    );
+    if (id === projectId && remaining) await switchProject(remaining.id);
+  }
 
   const refreshRegistry = useCallback(async () => {
     if (!workspaceId) return;
@@ -691,7 +762,10 @@ export function useIntentOS() {
     return id;
   }
 
-  function addAssetToCanvas(asset: FileSystemAsset) {
+  function addAssetToCanvas(
+    asset: FileSystemAsset,
+    position?: { x: number; y: number },
+  ) {
     const kind: NodeKind =
       asset.kind === "image" ||
       asset.kind === "video" ||
@@ -704,7 +778,7 @@ export function useIntentOS() {
         ? `${(asset.size / 1_048_576).toFixed(1)} MB`
         : `${Math.max(1, Math.round(asset.size / 1024))} KB`;
     setView("canvas");
-    return addNode(kind, undefined, {
+    return addNode(kind, position, {
       title: asset.name,
       prompt: asset.description || `使用资产 ${asset.name} 继续创作。`,
       result: `已引用 AI 文件系统资产 · ${sizeLabel}`,
@@ -1059,6 +1133,8 @@ export function useIntentOS() {
             setPlan(data.plan as IntentPlan);
             setActivePlanId(String(data.id ?? ""));
             setRunState("awaiting_confirmation");
+          } else if (name === "planner.questions") {
+            setRunState("idle");
           } else if (name === "error") {
             throw new Error(String(data.error ?? "Intent Planner 执行失败"));
           }
@@ -1085,39 +1161,71 @@ export function useIntentOS() {
     if (!plan) return;
     rememberCanvas();
     const startX = 122;
+    const levelByTask = new Map<string, number>();
+    const resolveLevel = (taskId: string, stack = new Set<string>()): number => {
+      if (levelByTask.has(taskId)) return levelByTask.get(taskId) ?? 0;
+      if (stack.has(taskId)) return 0;
+      stack.add(taskId);
+      const task = plan.tasks.find((item) => item.id === taskId);
+      const level = task?.dependsOn.length
+        ? 1 + Math.max(...task.dependsOn.map((id) => resolveLevel(id, stack)))
+        : 0;
+      stack.delete(taskId);
+      levelByTask.set(taskId, level);
+      return level;
+    };
+    plan.tasks.forEach((task) => resolveLevel(task.id));
+    const rowByLevel = new Map<number, number>();
+    const timestamp = Date.now();
+    const nodeIdByTask = new Map<string, string>();
     const plannedNodes: CanvasNode[] = plan.tasks.map((task, index) => {
-      const kind: NodeKind = index === 2 ? "image" : index === 3 ? "video" : "text";
+      const kind: NodeKind = task.kind;
       const cap = capabilities.find((item) => item.title === task.capability);
       const model = models.find((item) => item.modalities.includes(kind));
+      const level = levelByTask.get(task.id) ?? 0;
+      const row = rowByLevel.get(level) ?? 0;
+      rowByLevel.set(level, row + 1);
+      const nodeId = `planned_${task.id}_${timestamp}`;
+      nodeIdByTask.set(task.id, nodeId);
       return {
-        id: `planned_${index}_${Date.now()}`,
+        id: nodeId,
         title: task.title,
         prompt: `${plan.goal}｜${task.title}`,
         kind,
         status: "queued",
-        capabilityId: cap?.id ?? "manual.text",
+        capabilityId: cap?.id ?? `core.capability.${kind}`,
         modelId: model?.id ?? "unconfigured",
-        x: startX + index * 285,
-        y: index % 2 === 0 ? 160 : 330,
-        createdAt: Date.now() + index,
+        x: startX + level * 360,
+        y: 140 + row * 260,
+        createdAt: timestamp + index,
         progress: 0,
+        parameters: task.parameters ?? {},
+        layer: index,
       };
     });
     setNodes(plannedNodes);
-    setEdges(
-      plannedNodes.slice(0, -1).map((node, index) => ({
-        id: `planned_edge_${index}`,
-        source: node.id,
-        target: plannedNodes[index + 1].id,
-        sourcePort: defaultOutputPort(node).id,
-        targetPort:
-          compatibleInputPorts(
-            plannedNodes[index + 1],
-            defaultOutputPort(node).dataTypes[0],
-          )[0]?.id ?? "context",
-        dataType: defaultOutputPort(node).dataTypes[0],
-      })),
-    );
+    const nodeById = new Map(plannedNodes.map((node) => [node.id, node]));
+    setEdges(plan.tasks.flatMap((task) => {
+      const targetId = nodeIdByTask.get(task.id);
+      const target = targetId ? nodeById.get(targetId) : undefined;
+      if (!target) return [];
+      return task.dependsOn.flatMap((dependencyId, index) => {
+        const sourceId = nodeIdByTask.get(dependencyId);
+        const source = sourceId ? nodeById.get(sourceId) : undefined;
+        if (!source) return [];
+        const output = defaultOutputPort(source);
+        const input = compatibleInputPorts(target, output.dataTypes[0])[0];
+        if (!input) return [];
+        return [{
+          id: `planned_edge_${dependencyId}_${task.id}_${index}`,
+          source: source.id,
+          target: target.id,
+          sourcePort: output.id,
+          targetPort: input.id,
+          dataType: output.dataTypes[0],
+        }];
+      });
+    }));
     setSelectedNodeIdState(plannedNodes[0]?.id ?? null);
     setSelectedNodeIds(plannedNodes[0] ? [plannedNodes[0].id] : []);
     setPlan(null);
@@ -1636,6 +1744,11 @@ export function useIntentOS() {
     switchWorkspace,
     projectId,
     projectName,
+    projects,
+    switchProject,
+    createProject,
+    renameProject,
+    archiveProject,
     cloudStatus,
     cloudError,
     canvasViewport,

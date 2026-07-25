@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ChevronLeft,
   Archive,
   Copy,
   FolderOpen,
@@ -14,7 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { CanvasSummary } from "../types";
+import type { CanvasSummary, ProjectSummary } from "../types";
 import { CanvasVersionPanel } from "./canvas-version-panel";
 import { IconButton } from "./icon-button";
 
@@ -25,6 +24,7 @@ interface CanvasDrawerProps {
   canvases: CanvasSummary[];
   workspaceName: string;
   projectName: string;
+  projects: ProjectSummary[];
   onClose: () => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
@@ -36,6 +36,10 @@ interface CanvasDrawerProps {
   onStar: (id: string, starred: boolean) => Promise<void>;
   onCreateSnapshot: (label?: string) => Promise<void>;
   onRestoreSnapshot: (snapshotId: string) => Promise<void>;
+  onSwitchProject: (id: string) => Promise<void>;
+  onCreateProject: () => Promise<void>;
+  onRenameProject: (id: string) => Promise<void>;
+  onArchiveProject: (id: string) => Promise<void>;
 }
 
 export function CanvasDrawer({
@@ -45,6 +49,7 @@ export function CanvasDrawer({
   canvases,
   workspaceName,
   projectName,
+  projects,
   onClose,
   onSelect,
   onCreate,
@@ -56,6 +61,10 @@ export function CanvasDrawer({
   onStar,
   onCreateSnapshot,
   onRestoreSnapshot,
+  onSwitchProject,
+  onCreateProject,
+  onRenameProject,
+  onArchiveProject,
 }: CanvasDrawerProps) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"recent" | "name" | "nodes">("recent");
@@ -131,16 +140,27 @@ export function CanvasDrawer({
         </IconButton>
       </div>
 
-      <button type="button" className="project-switcher">
+      <div className="project-switcher">
         <span className="project-icon">
           <FolderOpen size={16} />
         </span>
-        <span>
-          <small>当前项目</small>
-          <b>{projectName || "正在加载"}</b>
-        </span>
-        <ChevronLeft size={16} className="rotate-down" />
-      </button>
+        <label>
+          <small>当前项目 · {projectName || "正在加载"}</small>
+          <select
+            value={projectId}
+            onChange={(event) => void onSwitchProject(event.target.value)}
+          >
+            {projects
+              .filter((project) => project.status === "active")
+              .map((project) => (
+                <option key={project.id} value={project.id}>{project.name}</option>
+              ))}
+          </select>
+        </label>
+        <button type="button" title="新建项目" onClick={() => void onCreateProject()}><Plus size={14} /></button>
+        <button type="button" title="重命名项目" onClick={() => void onRenameProject(projectId)}><Pencil size={14} /></button>
+        <button type="button" title="归档项目" onClick={() => void onArchiveProject(projectId)}><Archive size={14} /></button>
+      </div>
 
       <label className="drawer-search">
         <Search size={15} aria-hidden="true" />

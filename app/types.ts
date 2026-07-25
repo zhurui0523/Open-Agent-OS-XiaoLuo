@@ -1,4 +1,4 @@
-export type AppView = "canvas" | "assets" | "capabilities";
+export type AppView = "canvas" | "assets" | "capabilities" | "runs";
 
 export interface AccountUser {
   id: string;
@@ -72,6 +72,8 @@ export interface CanvasNode {
   progress?: number;
   result?: string;
   parameters?: Record<string, unknown>;
+  collapsed?: boolean;
+  layer?: number;
 }
 
 export interface KernelNodeOutput {
@@ -114,6 +116,16 @@ export interface CanvasSummary {
   nodes: number;
   updatedAt: string;
   starred?: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string;
+  status: "active" | "archived" | "trashed";
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Capability {
@@ -333,6 +345,16 @@ export interface PlanTask {
   title: string;
   capability: string;
   duration: string;
+  kind: NodeKind;
+  dependsOn: string[];
+  parameters?: Record<string, unknown>;
+}
+
+export interface IntentGap {
+  id: string;
+  field: "deliverable" | "audience" | "duration" | "format" | "constraints";
+  question: string;
+  required: boolean;
 }
 
 export interface IntentPlan {

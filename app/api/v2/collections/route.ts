@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import {
   assetCollectionItems,
@@ -22,7 +22,25 @@ export async function GET(request: Request) {
       .select()
       .from(assetCollections)
       .where(eq(assetCollections.workspaceId, workspaceId));
-    return Response.json({ collections });
+    const items = collections.length
+      ? await db
+          .select()
+          .from(assetCollectionItems)
+          .where(
+            inArray(
+              assetCollectionItems.collectionId,
+              collections.map((collection) => collection.id),
+            ),
+          )
+      : [];
+    return Response.json({
+      collections: collections.map((collection) => ({
+        ...collection,
+        assetIds: items
+          .filter((item) => item.collectionId === collection.id)
+          .map((item) => item.assetId),
+      })),
+    });
   } catch (error) {
     return jsonError(error, "读取集合失败");
   }

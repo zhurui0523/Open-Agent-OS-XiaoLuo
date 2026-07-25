@@ -17,25 +17,32 @@ export const createIntentPlan = (intent: string): IntentPlan => ({
       title: "提炼创作目标与受众洞察",
       capability: "标准文本生成",
       duration: "约 45 秒",
+      kind: "text",
+      dependsOn: [],
     },
     {
       id: "plan_script",
       title: "生成结构化脚本与镜头节拍",
       capability: "标准文本生成",
       duration: "约 1 分钟",
+      kind: "text",
+      dependsOn: ["plan_research"],
     },
     {
       id: "plan_visual",
       title: "设计关键帧视觉方向",
       capability: "标准图像生成",
       duration: "约 2 分钟",
+      kind: "image",
+      dependsOn: ["plan_research"],
     },
     {
       id: "plan_video",
       title: "生成动态预演并沉淀资产",
       capability: "标准视频生成",
       duration: "约 3–6 分钟",
+      kind: "video",
+      dependsOn: ["plan_script", "plan_visual"],
     },
   ],
 });
-

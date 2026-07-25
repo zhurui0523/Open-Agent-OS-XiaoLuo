@@ -88,6 +88,13 @@ interface AssetLineage {
   } | null;
 }
 
+interface AssetCollection {
+  id: string;
+  name: string;
+  description: string;
+  assetIds: string[];
+}
+
 async function requestJson<T>(
   workspaceId: string,
   url: string,
@@ -197,6 +204,8 @@ export function AssetsView({
   const [sourceFilter, setSourceFilter] = useState("all");
   const [sort, setSort] = useState<"updated" | "name" | "size">("updated");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [collections, setCollections] = useState<AssetCollection[]>([]);
+  const [collectionId, setCollectionId] = useState("all");
 
   const currentFolder = folders.find((folder) => folder.id === folderId) ?? null;
   const visibleFolders = useMemo(
@@ -212,8 +221,10 @@ export function AssetsView({
     [assets],
   );
   const visibleAssets = useMemo(() => {
+    const collection = collections.find((item) => item.id === collectionId);
     const filtered = assets.filter(
       (asset) =>
+        (!collection || collection.assetIds.includes(asset.id)) &&
         (statusFilter === "all" || asset.status === statusFilter) &&
         (sourceFilter === "all" || asset.sourceType === sourceFilter),
     );
@@ -222,7 +233,15 @@ export function AssetsView({
       if (sort === "size") return second.size - first.size;
       return Date.parse(second.updatedAt) - Date.parse(first.updatedAt);
     });
-  }, [assets, sort, sourceFilter, statusFilter]);
+  }, [assets, collectionId, collections, sort, sourceFilter, statusFilter]);
+
+  const loadCollections = useCallback(async () => {
+    const payload = await requestJson<{ collections: AssetCollection[] }>(
+      workspaceId,
+      "/api/v2/collections",
+    );
+    setCollections(payload.collections);
+  }, [workspaceId]);
 
   const loadAssets = useCallback(async (cursor?: string) => {
     setLoading(true);
@@ -283,6 +302,25 @@ export function AssetsView({
               ? loadError.message
               : "文件夹加载失败",
           );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [workspaceId]);
+
+  useEffect(() => {
+    let active = true;
+    void requestJson<{ collections: AssetCollection[] }>(
+      workspaceId,
+      "/api/v2/collections",
+    )
+      .then((payload) => {
+        if (active) setCollections(payload.collections);
+      })
+      .catch((cause) => {
+        if (active) {
+          setError(cause instanceof Error ? cause.message : "集合加载失败");
         }
       });
     return () => {
@@ -353,6 +391,47 @@ export function AssetsView({
       setError(
         folderError instanceof Error ? folderError.message : "新建文件夹失败",
       );
+    }
+  }
+
+  async function createCollection() {
+    const name = window.prompt("新集合名称")?.trim();
+    if (!name) return;
+    await requestJson(workspaceId, "/api/v2/collections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId, name }),
+    });
+    await loadCollections();
+  }
+
+  async function addSelectionToCollection() {
+    const target = collectionId === "all"
+      ? window.prompt(
+          `输入集合 ID：\n${collections.map((item) => `${item.name}: ${item.id}`).join("\n")}`,
+        )?.trim()
+      : collectionId;
+    if (!target) return;
+    setBusy(`正在加入集合`);
+    try {
+      await Promise.all(
+        [...selectedIds].map((assetId) =>
+          requestJson(workspaceId, "/api/v2/collections", {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              workspaceId,
+              collectionId: target,
+              assetId,
+              action: "add",
+            }),
+          }),
+        ),
+      );
+      await loadCollections();
+      setSelectedIds(new Set());
+    } finally {
+      setBusy("");
     }
   }
 
@@ -548,6 +627,9 @@ export function AssetsView({
           <button type="button" className="secondary-button" onClick={() => void createFolder()}>
             <FolderPlus size={16} /> 新建文件夹
           </button>
+          <button type="button" className="secondary-button" onClick={() => void createCollection()}>
+            <FolderPlus size={16} /> 新建集合
+          </button>
           <button
             type="button"
             className="primary-button"
@@ -575,6 +657,29 @@ export function AssetsView({
             <strong>{currentFolder.name}</strong>
           </>
         )}
+      </div>
+
+      <div className="collection-tabs" role="tablist" aria-label="资产集合">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={collectionId === "all"}
+          onClick={() => setCollectionId("all")}
+        >
+          全部集合
+        </button>
+        {collections.map((collection) => (
+          <button
+            type="button"
+            role="tab"
+            key={collection.id}
+            aria-selected={collectionId === collection.id}
+            className={collectionId === collection.id ? "is-active" : ""}
+            onClick={() => setCollectionId(collection.id)}
+          >
+            {collection.name} · {collection.assetIds.length}
+          </button>
+        ))}
       </div>
 
       <div className="asset-toolbar file-toolbar">
@@ -694,6 +799,7 @@ export function AssetsView({
                 设置标签
               </button>
               <button type="button" onClick={bulkDownload}>批量下载</button>
+              <button type="button" onClick={() => void addSelectionToCollection()}>加入集合</button>
               <button
                 type="button"
                 onClick={() => {
@@ -738,7 +844,19 @@ export function AssetsView({
 
       <div className={`asset-grid file-grid ${grid ? "" : "is-list"}`}>
         {visibleAssets.map((asset) => (
-          <article key={asset.id} className="asset-card file-card">
+          <article
+            key={asset.id}
+            className="asset-card file-card"
+            draggable={!trash}
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "copy";
+              event.dataTransfer.setData(
+                "application/x-xiaoluo-asset",
+                JSON.stringify(asset),
+              );
+              event.dataTransfer.setData("text/plain", asset.name);
+            }}
+          >
             <label className="file-select">
               <input
                 type="checkbox"
