@@ -1,6 +1,6 @@
 import type { RowDataPacket } from "mysql2/promise";
 import { getFileBucket } from "../../../../lib/asset-kernel";
-import { jsonError, requireUser } from "../../../../lib/auth";
+import { jsonError, requireSystemAdmin } from "../../../../lib/auth";
 import { mysqlRows } from "../../../../lib/mysql";
 import { runtimeServiceReadiness } from "../../../../lib/server-runtime-config";
 
@@ -37,10 +37,7 @@ interface TrustMetricsRow extends RowDataPacket {
 
 export async function GET(request: Request) {
   try {
-    const user = await requireUser(request);
-    if (user.platformRole !== "system_admin") {
-      return Response.json({ error: "仅系统管理员可访问" }, { status: 403 });
-    }
+    await requireSystemAdmin(request);
     const [metrics, events, heartbeats, trustMetrics, oss] = await Promise.all([
       mysqlRows<MetricsRow>(
         `SELECT

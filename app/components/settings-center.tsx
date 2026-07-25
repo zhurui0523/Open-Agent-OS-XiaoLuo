@@ -2,7 +2,6 @@
 
 import {
   Check,
-  Activity,
   ChevronRight,
   CircleAlert,
   KeyRound,
@@ -29,10 +28,9 @@ import type {
   UserPreferences,
 } from "../types";
 import { IconButton } from "./icon-button";
-import { AdminOperations } from "./admin-operations";
 import { PersonalSettings } from "./personal-settings";
 
-type SettingsTab = "account" | "api" | "gesture" | "shortcuts" | "kernel";
+type SettingsTab = "account" | "api" | "gesture" | "shortcuts";
 
 const emptyDraft: ModelConnectionDraft = {
   name: "",
@@ -334,17 +332,6 @@ export function SettingsCenter({
               <span>个人中心</span>
               <ChevronRight size={14} />
             </button>
-            {user.platformRole === "system_admin" && (
-              <button
-                type="button"
-                className={tab === "kernel" ? "active" : ""}
-                onClick={() => selectTab("kernel")}
-              >
-                <Activity size={17} />
-                <span>内核运维</span>
-                <ChevronRight size={14} />
-              </button>
-            )}
             <button
               type="button"
               className={tab === "api" ? "active" : ""}
@@ -401,8 +388,6 @@ export function SettingsCenter({
                 onOpenAccount={onOpenAccount}
               />
             )}
-            {tab === "kernel" && <AdminOperations />}
-
             {tab === "api" && !editorOpen && (
               <>
                 <div className="settings-section-heading">

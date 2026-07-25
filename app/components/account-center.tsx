@@ -5,7 +5,6 @@ import {
   Check,
   LoaderCircle,
   ShieldCheck,
-  UserRoundCog,
   UsersRound,
   X,
 } from "lucide-react";
@@ -23,26 +22,6 @@ interface OrganizationMember {
   email: string;
   phoneLast4: string | null;
   role: "admin" | "member";
-  status: "active" | "disabled";
-}
-
-interface EnterpriseApplication {
-  id: string;
-  organizationName: string;
-  registrationCode: string | null;
-  contactName: string;
-  note: string;
-  applicantName: string;
-  applicantEmail: string;
-  phoneLast4: string | null;
-}
-
-interface ManagedUser {
-  id: string;
-  email: string;
-  displayName: string;
-  phoneLast4: string | null;
-  platformRole: "system_admin" | "user";
   status: "active" | "disabled";
 }
 
@@ -65,8 +44,6 @@ export function AccountCenter({ user, onClose }: AccountCenterProps) {
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
   const [members, setMembers] = useState<OrganizationMember[]>([]);
-  const [applications, setApplications] = useState<EnterpriseApplication[]>([]);
-  const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [companyName, setCompanyName] = useState("");
   const [registrationCode, setRegistrationCode] = useState("");
   const [applicationNote, setApplicationNote] = useState("");
@@ -88,18 +65,6 @@ export function AccountCenter({ user, onClose }: AccountCenterProps) {
     if (activeAdmin) setSelectedOrganizationId(activeAdmin.id);
   }, []);
 
-  const loadAdminData = useCallback(async () => {
-    if (user.platformRole !== "system_admin") return;
-    const [applicationPayload, userPayload] = await Promise.all([
-      requestJson<{ applications: EnterpriseApplication[] }>(
-        "/api/v2/admin/enterprises",
-      ),
-      requestJson<{ users: ManagedUser[] }>("/api/v2/admin/users"),
-    ]);
-    setApplications(applicationPayload.applications);
-    setManagedUsers(userPayload.users);
-  }, [user.platformRole]);
-
   const loadMembers = useCallback(async (organizationId: string) => {
     if (!organizationId) {
       setMembers([]);
@@ -113,12 +78,12 @@ export function AccountCenter({ user, onClose }: AccountCenterProps) {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      void Promise.all([loadOrganizations(), loadAdminData()]).catch((loadError) =>
+      void loadOrganizations().catch((loadError) =>
         setError(loadError instanceof Error ? loadError.message : "账户信息加载失败"),
       );
     }, 0);
     return () => clearTimeout(timer);
-  }, [loadAdminData, loadOrganizations]);
+  }, [loadOrganizations]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -180,17 +145,6 @@ export function AccountCenter({ user, onClose }: AccountCenterProps) {
     });
   }
 
-  function reviewApplication(applicationId: string, decision: "approve" | "reject") {
-    void perform(async () => {
-      await requestJson("/api/v2/admin/enterprises", {
-        method: "PATCH",
-        body: JSON.stringify({ applicationId, decision }),
-      });
-      setMessage(decision === "approve" ? "企业已通过审核。" : "企业申请已拒绝。");
-      await loadAdminData();
-    });
-  }
-
   function updateMember(
     member: OrganizationMember,
     patch: { role?: "admin" | "member"; status?: "active" | "disabled" },
@@ -205,19 +159,6 @@ export function AccountCenter({ user, onClose }: AccountCenterProps) {
         }),
       });
       await loadMembers(selectedOrganizationId);
-    });
-  }
-
-  function updateUserStatus(target: ManagedUser) {
-    void perform(async () => {
-      await requestJson("/api/v2/admin/users", {
-        method: "PATCH",
-        body: JSON.stringify({
-          userId: target.id,
-          status: target.status === "active" ? "disabled" : "active",
-        }),
-      });
-      await loadAdminData();
     });
   }
 
@@ -333,46 +274,6 @@ export function AccountCenter({ user, onClose }: AccountCenterProps) {
             </section>
           )}
 
-          {user.platformRole === "system_admin" && (
-            <>
-              <section className="account-section system-section">
-                <div className="account-section-title">
-                  <div><ShieldCheck size={18} /><span><b>企业审核</b><small>系统管理员统一处理企业准入。</small></span></div>
-                </div>
-                <div className="admin-application-list">
-                  {applications.length === 0 && <p>当前没有待审核申请。</p>}
-                  {applications.map((application) => (
-                    <article key={application.id}>
-                      <div><b>{application.organizationName}</b><small>{application.applicantName} · {application.applicantEmail} · 尾号 {application.phoneLast4 ?? "—"}</small></div>
-                      <p>{application.note || "未填写申请说明"}</p>
-                      <span>
-                        <button type="button" className="secondary-button" onClick={() => reviewApplication(application.id, "reject")} disabled={pending}>拒绝</button>
-                        <button type="button" className="primary-button" onClick={() => reviewApplication(application.id, "approve")} disabled={pending}>通过</button>
-                      </span>
-                    </article>
-                  ))}
-                </div>
-              </section>
-              <section className="account-section system-section">
-                <div className="account-section-title">
-                  <div><UserRoundCog size={18} /><span><b>用户管理</b><small>系统管理员可启用或停用普通用户。</small></span></div>
-                </div>
-                <div className="account-table">
-                  {managedUsers.map((managedUser) => (
-                    <div key={managedUser.id}>
-                      <span><b>{managedUser.displayName}</b><small>{managedUser.email} · 尾号 {managedUser.phoneLast4 ?? "—"}</small></span>
-                      <em>{managedUser.platformRole === "system_admin" ? "系统管理员" : managedUser.status === "active" ? "正常" : "已停用"}</em>
-                      {managedUser.platformRole === "user" && (
-                        <button type="button" onClick={() => updateUserStatus(managedUser)} disabled={pending}>
-                          {managedUser.status === "active" ? "停用" : "启用"}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </>
-          )}
         </div>
         {pending && <div className="account-pending"><LoaderCircle className="spin" size={18} /> 正在处理</div>}
       </section>

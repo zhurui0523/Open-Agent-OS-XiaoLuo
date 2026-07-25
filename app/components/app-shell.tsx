@@ -8,6 +8,7 @@ import {
   CircleHelp,
   LoaderCircle,
   LogOut,
+  ShieldCheck,
   Sparkles,
   UserRound,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import { useEffect, useState } from "react";
 import { useIntentOS } from "../hooks/use-intent-os";
 import type { AccountUser } from "../types";
 import { AccountCenter } from "./account-center";
+import { AdminCenter } from "./admin-center";
 import { AssetsView } from "./assets-view";
 import { AuthScreen } from "./auth-screen";
 import { CanvasToolbar } from "./canvas-toolbar";
@@ -36,6 +38,7 @@ function AuthenticatedShell({
   const os = useIntentOS();
   const [profileOpen, setProfileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const avatar = user.displayName.trim().slice(0, 1) || "洛";
@@ -164,6 +167,17 @@ function AuthenticatedShell({
                 >
                   <UserRound size={15} /> 账户与企业管理
                 </button>
+                {user.platformRole === "system_admin" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      setAdminOpen(true);
+                    }}
+                  >
+                    <ShieldCheck size={15} /> 后台管理
+                  </button>
+                )}
                 <button type="button" onClick={onLogout}>
                   <LogOut size={15} /> 退出登录
                 </button>
@@ -209,6 +223,9 @@ function AuthenticatedShell({
       </main>
       {accountOpen && (
         <AccountCenter user={user} onClose={() => setAccountOpen(false)} />
+      )}
+      {adminOpen && (
+        <AdminCenter user={user} onClose={() => setAdminOpen(false)} />
       )}
       {settingsOpen && (
         <SettingsCenter

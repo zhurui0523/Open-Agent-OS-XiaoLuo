@@ -642,3 +642,61 @@ test("ships a secure personal center with profile and device management", async 
   assert.match(schema, /refreshTokenHash: varchar\("refresh_token_hash"/);
   assert.match(schema, /xiaoluo_v2_user_security_settings/);
 });
+
+test("isolates system administration from ordinary user settings", async () => {
+  const [
+    shell,
+    settings,
+    account,
+    adminCenter,
+    adminUsersRoute,
+    adminOverviewRoute,
+  ] = await Promise.all([
+    readFile(
+      new URL("../app/components/app-shell.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/components/settings-center.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/components/account-center.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/components/admin-center.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/admin/users/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/admin/overview/route.ts", import.meta.url),
+      "utf8",
+    ),
+  ]);
+
+  assert.match(shell, /user\.platformRole === "system_admin"/);
+  assert.match(shell, /后台管理/);
+  assert.match(shell, /<AdminCenter/);
+  assert.doesNotMatch(settings, /内核运维|AdminOperations|"kernel"/);
+  assert.doesNotMatch(account, /\/api\/v2\/admin\/users|企业审核/);
+  assert.match(adminCenter, /<AdminOperations/);
+  assert.match(adminCenter, /用户管理/);
+  assert.match(adminCenter, /企业审核/);
+  assert.match(adminCenter, /文本 \{managedUser\.textCount\}/);
+  assert.match(adminCenter, /图片 \{managedUser\.imageCount\}/);
+  assert.match(adminCenter, /视频 \{managedUser\.videoCount\}/);
+  assert.match(adminCenter, /OSS 存储量/);
+  assert.match(adminCenter, /修改密码/);
+  assert.match(adminCenter, /删除用户/);
+  assert.match(adminUsersRoute, /requireSystemAdmin/);
+  assert.match(adminUsersRoute, /xiaoluo_v2_model_execution_audits/);
+  assert.match(adminUsersRoute, /xiaoluo_v2_assets/);
+  assert.match(adminUsersRoute, /hashPassword/);
+  assert.match(adminUsersRoute, /export async function DELETE/);
+  assert.match(adminUsersRoute, /deletionMode: "anonymized"/);
+  assert.match(adminOverviewRoute, /requireSystemAdmin/);
+});
