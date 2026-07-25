@@ -16,11 +16,9 @@ import {
   PanelsTopLeft,
   Play,
   PlugZap,
-  Power,
   RefreshCw,
   Server,
   ShieldCheck,
-  Sparkles,
   Trash2,
   Type,
   Upload,
@@ -34,10 +32,6 @@ import type { IntentOSController } from "../hooks/use-intent-os";
 import type {
   Capability,
   InstalledPackage,
-  ModelConnection,
-  ModelConnectionDraft,
-  ModelProtocol,
-  NodeKind,
 } from "../types";
 
 const modalityIcon = {
@@ -90,12 +84,11 @@ interface CapabilitiesViewProps {
   os: IntentOSController;
 }
 
-type RegistryTab = "capabilities" | "packages" | "models";
+type RegistryTab = "capabilities" | "packages";
 
 export function CapabilitiesView({ os }: CapabilitiesViewProps) {
   const [tab, setTab] = useState<RegistryTab>("packages");
   const [packageDialog, setPackageDialog] = useState(false);
-  const [modelDialog, setModelDialog] = useState(false);
   const [sandbox, setSandbox] = useState<{
     title: string;
     url: string;
@@ -125,16 +118,9 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         <div>
           <span className="eyebrow">EXTENSION PLATFORM · CONTRACT V2</span>
           <h1>扩展中心</h1>
-          <p>Skill、模型与插件共用注册表、权限边界和运行时路由。</p>
+          <p>Skill、Agent、Workflow 与插件共用注册表、权限边界和运行时路由。</p>
         </div>
         <div className="header-button-group">
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => setModelDialog(true)}
-          >
-            <Cpu size={16} /> 添加模型
-          </button>
           <button
             type="button"
             className="primary-button"
@@ -155,7 +141,7 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         </div>
       )}
 
-      <div className="registry-stats registry-stats-four">
+      <div className="registry-stats registry-stats-three">
         <button type="button" onClick={() => setTab("capabilities")}>
           <span className="stat-icon stat-indigo">
             <Box size={19} />
@@ -171,14 +157,6 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
           <p>扩展包</p>
           <strong>{extensionCount}</strong>
           <small>Agent · Workflow · Plugin</small>
-        </button>
-        <button type="button" onClick={() => setTab("models")}>
-          <span className="stat-icon stat-green">
-            <Cpu size={19} />
-          </span>
-          <p>模型连接</p>
-          <strong>{os.models.length}</strong>
-          <small>{os.models.filter((model) => model.state === "healthy").length} 个健康</small>
         </button>
         <button type="button" onClick={() => setTab("packages")}>
           <span className="stat-icon stat-amber">
@@ -209,15 +187,6 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         >
           <Database size={15} /> 能力投影
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "models"}
-          className={tab === "models" ? "is-active" : ""}
-          onClick={() => setTab("models")}
-        >
-          <Cpu size={15} /> 模型 Provider
-        </button>
       </div>
 
       {tab === "packages" && (
@@ -232,13 +201,6 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         />
       )}
       {tab === "capabilities" && <CapabilitiesPanel os={os} />}
-      {tab === "models" && (
-        <ModelsPanel
-          os={os}
-          onAdd={() => setModelDialog(true)}
-          onNotice={showNotice}
-        />
-      )}
 
       {notice && (
         <div className={`extension-toast is-${notice.tone}`} role="status">
@@ -266,17 +228,6 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
             showNotice(
               `${result.package.name} 已${result.action === "installed" ? "安装" : "更新"}，能力投影已刷新。`,
             );
-          }}
-        />
-      )}
-      {modelDialog && (
-        <ModelDialog
-          onClose={() => setModelDialog(false)}
-          onCreate={async (draft) => {
-            const model = await os.createModel(draft);
-            setModelDialog(false);
-            setTab("models");
-            showNotice(`${model.name} 已接入，请运行连接测试。`);
           }}
         />
       )}
@@ -536,122 +487,6 @@ function CapabilitiesPanel({ os }: { os: IntentOSController }) {
   );
 }
 
-function ModelsPanel({
-  os,
-  onAdd,
-  onNotice,
-}: {
-  os: IntentOSController;
-  onAdd: () => void;
-  onNotice: (
-    text: string,
-    tone?: "success" | "error" | "info",
-  ) => void;
-}) {
-  const [busyId, setBusyId] = useState("");
-
-  async function test(model: ModelConnection) {
-    setBusyId(model.id);
-    try {
-      const message = await os.testModel(model.id);
-      onNotice(message);
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : "测试失败", "error");
-    } finally {
-      setBusyId("");
-    }
-  }
-
-  return (
-    <div className="registry-column">
-      <div className="section-title-row">
-        <div>
-          <h2>模型 Provider Adapter</h2>
-          <p>统一 listModels、generate、stream、cancel 与健康检测入口。</p>
-        </div>
-        <button type="button" className="primary-button" onClick={onAdd}>
-          <Cpu size={15} /> 添加连接
-        </button>
-      </div>
-      {!os.models.length ? (
-        <div className="extension-empty model-empty">
-          <span><Cpu size={24} /></span>
-          <h3>还没有真实模型连接</h3>
-          <p>添加 OpenAI Compatible、Anthropic Compatible、Gemini 或异步视频 Provider。</p>
-          <button type="button" className="primary-button" onClick={onAdd}>
-            添加第一个模型
-          </button>
-        </div>
-      ) : (
-        <div className="model-adapter-grid">
-          {os.models.map((model) => (
-            <article key={model.id} className="model-adapter-card">
-              <div className="model-card-heading">
-                <span className="model-logo"><Sparkles size={17} /></span>
-                <div>
-                  <h3>{model.name}</h3>
-                  <p>{model.protocol ?? model.provider}</p>
-                </div>
-                <ModelState model={model} />
-              </div>
-              <dl className="adapter-details">
-                <div><dt>Endpoint</dt><dd>{model.baseUrl}</dd></div>
-                <div><dt>Model ID</dt><dd>{model.modelName}</dd></div>
-                <div><dt>Secret Ref</dt><dd>{model.credentialRef ?? "未配置"}</dd></div>
-                <div><dt>路由策略</dt><dd>P{model.priority ?? 100} · 并发 {model.maxConcurrency ?? 2}</dd></div>
-                <div><dt>可靠性</dt><dd>尝试 {model.retryLimit ?? 3} · 熔断 {model.circuitState ?? "closed"}</dd></div>
-                <div>
-                  <dt>动态目录</dt>
-                  <dd>{model.catalogSyncedAt ? "已同步" : "尚未同步"}</dd>
-                </div>
-              </dl>
-              <div className="model-meta">
-                <span>{model.modalities.join(" · ")}</span>
-                <span>{model.latency}</span>
-              </div>
-              <div className="model-actions">
-                <button
-                  type="button"
-                  className="secondary-button compact"
-                  disabled={busyId === model.id}
-                  onClick={() => void test(model)}
-                >
-                  {busyId === model.id ? (
-                    <LoaderCircle size={14} className="spin" />
-                  ) : (
-                    <RefreshCw size={14} />
-                  )}
-                  测试连接
-                </button>
-                <button
-                  type="button"
-                  className="danger-text-button"
-                  onClick={() => {
-                    if (!window.confirm(`删除模型连接 ${model.name}？`)) return;
-                    setBusyId(model.id);
-                    void os
-                      .deleteModel(model.id)
-                      .then(() => onNotice(`${model.name} 已删除。`))
-                      .catch((error) =>
-                        onNotice(
-                          error instanceof Error ? error.message : "删除失败",
-                          "error",
-                        ),
-                      )
-                      .finally(() => setBusyId(""));
-                  }}
-                >
-                  <Trash2 size={14} /> 删除
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CapabilityContract({ capability }: { capability: Capability }) {
   const Icon = modalityIcon[capability.modality];
   return (
@@ -670,25 +505,6 @@ function CapabilityContract({ capability }: { capability: Capability }) {
         <span>v{capability.packageVersion}</span>
       </div>
     </article>
-  );
-}
-
-function ModelState({ model }: { model: ModelConnection }) {
-  return (
-    <span className={`model-state state-${model.state}`}>
-      {model.state === "checking" ? (
-        <LoaderCircle size={13} className="spin" />
-      ) : model.state === "healthy" ? (
-        <Check size={13} />
-      ) : (
-        <CircleAlert size={13} />
-      )}
-      {model.state === "checking"
-        ? "检测中"
-        : model.state === "healthy"
-          ? "健康"
-          : "待检测"}
-    </span>
   );
 }
 
@@ -815,148 +631,6 @@ function PackageDialog({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function ModelDialog({
-  onClose,
-  onCreate,
-}: {
-  onClose: () => void;
-  onCreate: (draft: ModelConnectionDraft) => Promise<void>;
-}) {
-  const [name, setName] = useState("");
-  const [protocol, setProtocol] =
-    useState<ModelProtocol>("openai-compatible");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [modelName, setModelName] = useState("");
-  const [credentialRef, setCredentialRef] = useState("");
-  const [secretValue, setSecretValue] = useState("");
-  const [modalities, setModalities] = useState<NodeKind[]>(["text"]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  function toggleModality(value: NodeKind) {
-    setModalities((current) =>
-      current.includes(value)
-        ? current.filter((item) => item !== value)
-        : [...current, value],
-    );
-  }
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await onCreate({
-        name,
-        protocol,
-        baseUrl,
-        modelName,
-        modalities,
-        credentialRef: credentialRef || undefined,
-        secretValue: secretValue || undefined,
-        secretName: secretValue ? `${name || modelName} API Key` : undefined,
-      });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "创建失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="extension-modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="extension-modal model-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="model-dialog-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={submit}
-      >
-        <div className="modal-heading">
-          <div>
-            <span className="eyebrow">MODEL PROVIDER ADAPTER</span>
-            <h2 id="model-dialog-title">添加模型连接</h2>
-            <p>核心只保存凭据引用，不保存 API Key 明文。</p>
-          </div>
-          <button type="button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
-        </div>
-        <div className="form-grid">
-          <label>
-            <span>显示名称</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：生产文本模型" />
-          </label>
-          <label>
-            <span>协议 Adapter</span>
-            <select value={protocol} onChange={(event) => setProtocol(event.target.value as ModelProtocol)}>
-              <option value="openai-compatible">OpenAI Compatible</option>
-              <option value="anthropic-compatible">Anthropic Compatible</option>
-              <option value="gemini">Google Gemini</option>
-              <option value="ark">Volcengine Ark</option>
-              <option value="async-video">Async Video API</option>
-            </select>
-          </label>
-          <label className="form-span-two">
-            <span>HTTPS Endpoint</span>
-            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
-          </label>
-          <label>
-            <span>Model ID</span>
-            <input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="例如：model-pro" />
-          </label>
-          <label>
-            <span>Secret Ref</span>
-            <input value={credentialRef} onChange={(event) => setCredentialRef(event.target.value.toUpperCase())} placeholder="MODEL_API_KEY" />
-          </label>
-          <label className="form-span-two">
-            <span>API Key（服务器加密保存）</span>
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={secretValue}
-              onChange={(event) => setSecretValue(event.target.value)}
-              placeholder="也可以只填写上面的环境变量引用"
-            />
-          </label>
-        </div>
-        <fieldset className="modality-fieldset">
-          <legend>支持模态</legend>
-          {(["text", "image", "video", "audio", "document"] as NodeKind[]).map((item) => {
-            const Icon = modalityIcon[item];
-            return (
-              <button
-                type="button"
-                key={item}
-                className={modalities.includes(item) ? "is-selected" : ""}
-                aria-pressed={modalities.includes(item)}
-                onClick={() => toggleModality(item)}
-              >
-                <Icon size={15} /> {item}
-              </button>
-            );
-          })}
-        </fieldset>
-        <div className="security-note">
-          <ShieldCheck size={16} />
-          <p>生产环境仅接受 HTTPS。私网、回环地址和自动重定向会被 Runtime Router 拒绝。</p>
-        </div>
-        {error && <div className="modal-error"><CircleAlert size={14} /> {error}</div>}
-        <div className="modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>取消</button>
-          <button
-            type="submit"
-            className="primary-button"
-            disabled={busy || !name || !baseUrl || !modelName || !modalities.length}
-          >
-            {busy ? <LoaderCircle size={15} className="spin" /> : <Power size={15} />}
-            创建连接
-          </button>
-        </div>
-      </form>
     </div>
   );
 }

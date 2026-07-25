@@ -4600,8 +4600,8 @@ button:disabled {
   font-weight: 800;
 }
 
-.registry-stats-four {
-  grid-template-columns: repeat(4, 1fr);
+.registry-stats-three {
+  grid-template-columns: repeat(3, 1fr);
 }
 
 .registry-stats > button {
@@ -7129,7 +7129,7 @@ button:disabled {
   .top-status .status-pill { display: none; }
   .capability-layout { grid-template-columns: 1fr; }
   .model-list { grid-template-columns: repeat(3, 1fr); }
-  .registry-stats-four { grid-template-columns: repeat(2, 1fr); }
+  .registry-stats-three { grid-template-columns: repeat(2, 1fr); }
   .extension-panel-grid { grid-template-columns: 1fr; }
   .runtime-column {
     display: grid;

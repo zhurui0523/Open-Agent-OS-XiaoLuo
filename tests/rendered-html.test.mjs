@@ -61,9 +61,17 @@ test("ships without a credits, points, quota, or billing system", async () => {
 });
 
 test("ships the extension engine without creating user SKILL content", async () => {
-  const [data, capabilityView, packageJson, contract, schemaRenderer] = await Promise.all([
+  const [
+    data,
+    capabilityView,
+    settingsCenter,
+    packageJson,
+    contract,
+    schemaRenderer,
+  ] = await Promise.all([
     readFile(new URL("../app/data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/capabilities-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/settings-center.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/package-contract.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/schema-fields.tsx", import.meta.url), "utf8"),
@@ -77,6 +85,15 @@ test("ships the extension engine without creating user SKILL content", async () 
   assert.doesNotMatch(data, /core\.skill\.|analyze-script|create-script|video-dissect/);
   assert.match(capabilityView, /Skill 引擎已经就位，内容保持为空/);
   assert.match(capabilityView, /程序不会预装或创建任何具体 Skill/);
+  assert.doesNotMatch(
+    capabilityView,
+    /添加模型|模型 Provider Adapter|modelDialog|tab === "models"/,
+  );
+  assert.match(settingsCenter, /添加 API/);
+  assert.match(settingsCenter, /os\.createModel/);
+  assert.match(settingsCenter, /os\.updateModel/);
+  assert.match(settingsCenter, /os\.deleteModel/);
+  assert.match(settingsCenter, /os\.testModel/);
   assert.match(capabilityView, /sandbox="allow-scripts"/);
   assert.doesNotMatch(capabilityView, /sandbox="[^"]*allow-same-origin/);
   assert.match(contract, /Skill、Agent 与 Workflow Package 默认无代码执行权/);
