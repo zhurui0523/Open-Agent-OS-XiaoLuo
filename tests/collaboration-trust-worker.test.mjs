@@ -66,14 +66,23 @@ test("isolated runtime never executes Node Python or CLI inside the web process"
 });
 
 test("scheduler heartbeats and redacted service readiness are observable", async () => {
-  const [workerRoute, readiness, overview] = await Promise.all([
+  const [workerRoute, workerEntry, viteConfig, asyncJobs, readiness, overview] = await Promise.all([
     source("app/api/v2/worker/tick/route.ts"),
+    source("worker/index.ts"),
+    source("vite.config.ts"),
+    source("app/lib/model-async-jobs.ts"),
     source("app/lib/server-runtime-config.ts"),
     source("app/api/v2/admin/overview/route.ts"),
   ]);
   assert.match(workerRoute, /recordHeartbeat/);
   assert.match(workerRoute, /runtime-scheduler/);
   assert.match(workerRoute, /authorization/);
+  assert.match(workerEntry, /scheduled\(/);
+  assert.match(workerEntry, /runRuntimeScheduler/);
+  assert.match(workerEntry, /authorization: `Bearer \$\{token\}`/);
+  assert.match(viteConfig, /crons: \["\* \* \* \* \*"\]/);
+  assert.match(asyncJobs, /generation-poller:/);
+  assert.match(asyncJobs, /lease_expires_at/);
   assert.match(readiness, /runtimeServiceReadiness/);
   assert.match(overview, /xiaoluo_v2_system_heartbeats/);
   assert.match(overview, /xiaoluo_v2_package_reviews/);

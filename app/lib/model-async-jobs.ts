@@ -25,7 +25,7 @@ import {
   storeAsset,
 } from "./asset-kernel";
 import { validateExternalEndpoint } from "./model-adapters";
-import { mysqlNow } from "./mysql";
+import { mysqlExecute, mysqlNow } from "./mysql";
 import { artifactFormat, artifactName } from "./artifact-format";
 
 function futureMysql(milliseconds: number) {
@@ -150,23 +150,41 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
     .limit(1);
   if (!job) throw new Response("生成任务不存在", { status: 404 });
   if (["succeeded", "failed", "canceled"].includes(job.status)) return job;
-  if (!job.modelConnectionId || !job.pollUrl) {
-    throw new Error("异步任务缺少模型连接或查询地址");
-  }
-  const [model] = await db
-    .select()
-    .from(modelConnections)
-    .where(
-      and(
-        eq(modelConnections.id, job.modelConnectionId),
-        eq(modelConnections.workspaceId, workspaceId),
-      ),
-    )
-    .limit(1);
-  if (!model) throw new Error("异步任务对应的模型连接不存在");
-  const { node, inputs } = parsedInput(job.inputJson);
+  const leaseOwner = `generation-poller:${crypto.randomUUID()}`;
+  const lease = await mysqlExecute(
+    `UPDATE xiaoluo_v2_generation_jobs
+     SET lease_owner = ?,
+         lease_expires_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 90 SECOND),
+         updated_at = CURRENT_TIMESTAMP(3)
+     WHERE id = ?
+       AND workspace_id = ?
+       AND status IN ('submitted', 'running')
+       AND (
+         lease_owner IS NULL
+         OR lease_expires_at IS NULL
+         OR lease_expires_at <= CURRENT_TIMESTAMP(3)
+       )`,
+    [leaseOwner, jobId, workspaceId],
+  );
+  if (lease.affectedRows !== 1) return job;
   const now = mysqlNow();
+  let model: typeof modelConnections.$inferSelect | undefined;
   try {
+    if (!job.modelConnectionId || !job.pollUrl) {
+      throw new Error("异步任务缺少模型连接或查询地址");
+    }
+    [model] = await db
+      .select()
+      .from(modelConnections)
+      .where(
+        and(
+          eq(modelConnections.id, job.modelConnectionId),
+          eq(modelConnections.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!model) throw new Error("异步任务对应的模型连接不存在");
+    const { node, inputs } = parsedInput(job.inputJson);
     if (job.pollCount >= job.maxPolls) {
       throw new Error("异步任务超过最大查询次数");
     }
@@ -182,6 +200,8 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
           pollCount: job.pollCount + 1,
           lastPolledAt: now,
           nextPollAt: futureMysql(delay),
+          leaseOwner: null,
+          leaseExpiresAt: null,
           outputJson: JSON.stringify(result.execution.output),
           updatedAt: now,
         })
@@ -214,6 +234,8 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
           pollCount: job.pollCount + 1,
           lastPolledAt: now,
           nextPollAt: null,
+          leaseOwner: null,
+          leaseExpiresAt: null,
           outputJson,
           completedAt: now,
           updatedAt: now,
@@ -289,6 +311,8 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
           providerStatus: "failed",
           lastPolledAt: now,
           nextPollAt: null,
+          leaseOwner: null,
+          leaseExpiresAt: null,
           completedAt: now,
           updatedAt: now,
         })
@@ -311,19 +335,21 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
               ),
             )
         : Promise.resolve(),
-      recordAsyncModelCompletion({
-        context: {
-          workspaceId,
-          userId: job.requestedBy,
-          runId: job.runId,
-          nodeId: job.nodeId,
-        },
-        connectionId: model.id,
-        modelName: model.modelName,
-        modality: job.kind as NodeKind,
-        succeeded: false,
-        error: message,
-      }),
+      model
+        ? recordAsyncModelCompletion({
+            context: {
+              workspaceId,
+              userId: job.requestedBy,
+              runId: job.runId,
+              nodeId: job.nodeId,
+            },
+            connectionId: model.id,
+            modelName: model.modelName,
+            modality: job.kind as NodeKind,
+            succeeded: false,
+            error: message,
+          })
+        : Promise.resolve(),
     ]);
     if (job.runId) {
       await db
@@ -375,6 +401,8 @@ export async function cancelGenerationJob(jobId: string, workspaceId: string) {
       status: "canceled",
       providerStatus: "canceled",
       nextPollAt: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
       completedAt: now,
       updatedAt: now,
     })

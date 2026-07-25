@@ -1216,6 +1216,8 @@ export const generationJobs = mysqlTable(
     maxPolls: int("max_polls", { unsigned: true }).notNull().default(180),
     nextPollAt: datetime("next_poll_at", { mode: "string", fsp: 3 }),
     lastPolledAt: datetime("last_polled_at", { mode: "string", fsp: 3 }),
+    leaseOwner: varchar("lease_owner", { length: 160 }),
+    leaseExpiresAt: datetime("lease_expires_at", { mode: "string", fsp: 3 }),
     inputJson: longtext("input_json").notNull(),
     outputJson: longtext("output_json"),
     error: text("error"),
@@ -1228,6 +1230,11 @@ export const generationJobs = mysqlTable(
     index("generation_jobs_workspace_status_idx").on(
       table.workspaceId,
       table.status,
+    ),
+    index("generation_jobs_due_idx").on(
+      table.status,
+      table.nextPollAt,
+      table.leaseExpiresAt,
     ),
     index("generation_jobs_run_idx").on(table.runId),
   ],

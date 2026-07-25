@@ -81,6 +81,10 @@ export async function POST(request: Request) {
         and(
           inArray(generationJobs.status, ["submitted", "running"]),
           lte(generationJobs.nextPollAt, now),
+          or(
+            isNull(generationJobs.leaseExpiresAt),
+            lte(generationJobs.leaseExpiresAt, now),
+          ),
         ),
       )
       .orderBy(asc(generationJobs.nextPollAt))

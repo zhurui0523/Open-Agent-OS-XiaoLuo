@@ -35,6 +35,7 @@ const migrations = [
   "0007_living_mole_man",
   "0008_kind_arclight",
   "0009_wealthy_magma",
+  "0010_equal_layla_miller",
 ];
 
 async function tableExists(name) {
@@ -232,11 +233,13 @@ async function verify() {
          OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'publisher_id')
          OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'review_id')
          OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'trust_state')
+         OR (TABLE_NAME = 'xiaoluo_v2_generation_jobs' AND COLUMN_NAME = 'lease_owner')
+         OR (TABLE_NAME = 'xiaoluo_v2_generation_jobs' AND COLUMN_NAME = 'lease_expires_at')
        )`,
   );
-  if (absent.length || columns.length !== 16) {
+  if (absent.length || columns.length !== 18) {
     throw new Error(
-      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/16`,
+      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/18`,
     );
   }
   const [nodeKindColumns] = await connection.execute(
@@ -255,7 +258,7 @@ async function verify() {
     JSON.stringify({
       ok: true,
       tables: expectedTables.length,
-      keyColumns: 16,
+      keyColumns: 18,
       canvasNodeKinds: 5,
     }),
   );

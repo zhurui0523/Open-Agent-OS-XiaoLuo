@@ -4,6 +4,7 @@ import handler from "vinext/server/app-router-entry";
 
 interface Env {
   ASSETS: Fetcher;
+  RUNTIME_WORKER_TOKEN?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -16,6 +17,46 @@ interface Env {
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
+}
+
+interface ScheduledController {
+  scheduledTime: number;
+  cron: string;
+  noRetry(): void;
+}
+
+async function runRuntimeScheduler(
+  controller: ScheduledController,
+  env: Env,
+  ctx: ExecutionContext,
+) {
+  const token = env.RUNTIME_WORKER_TOKEN?.trim();
+  if (!token) {
+    console.error("[runtime-scheduler] RUNTIME_WORKER_TOKEN is not configured");
+    throw new Error("Runtime scheduler token is not configured");
+  }
+  const response = await handler.fetch(
+    new Request("https://xiaoluo.internal/api/v2/worker/tick", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-runtime-scheduled-at": String(controller.scheduledTime),
+        "x-runtime-schedule": controller.cron,
+      },
+    }),
+    env,
+    ctx,
+  );
+  const body = await response.text();
+  if (!response.ok) {
+    console.error(
+      `[runtime-scheduler] tick failed: HTTP ${response.status} ${body.slice(0, 500)}`,
+    );
+    throw new Error(`Runtime scheduler tick failed: HTTP ${response.status}`);
+  }
+  console.log(
+    `[runtime-scheduler] tick completed at ${new Date(controller.scheduledTime).toISOString()}`,
+  );
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the
@@ -40,6 +81,13 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+  scheduled(
+    controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): void {
+    ctx.waitUntil(runRuntimeScheduler(controller, env, ctx));
   },
 };
 

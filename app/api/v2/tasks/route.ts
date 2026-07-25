@@ -253,6 +253,8 @@ export async function PATCH(request: Request) {
               status: "canceled",
               providerStatus: "superseded",
               nextPollAt: null,
+              leaseOwner: null,
+              leaseExpiresAt: null,
               completedAt: now,
               updatedAt: now,
             })
