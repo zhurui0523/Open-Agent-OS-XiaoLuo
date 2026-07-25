@@ -72,14 +72,17 @@ test("ships the extension engine without creating user SKILL content", async () 
   assert.match(data, /core\.capability\.text/);
   assert.match(data, /core\.capability\.image/);
   assert.match(data, /core\.capability\.video/);
+  assert.match(data, /core\.capability\.audio/);
+  assert.match(data, /core\.capability\.document/);
   assert.doesNotMatch(data, /core\.skill\.|analyze-script|create-script|video-dissect/);
   assert.match(capabilityView, /Skill 引擎已经就位，内容保持为空/);
   assert.match(capabilityView, /程序不会预装或创建任何具体 Skill/);
   assert.match(capabilityView, /sandbox="allow-scripts"/);
   assert.doesNotMatch(capabilityView, /sandbox="[^"]*allow-same-origin/);
-  assert.match(contract, /Skill Package 默认无代码执行权/);
+  assert.match(contract, /Skill、Agent 与 Workflow Package 默认无代码执行权/);
   assert.match(contract, /network:https:\/\//);
-  assert.match(schemaRenderer, /Schema 自动渲染/);
+  assert.match(schemaRenderer, /Schema 校验通过/);
+  assert.match(schemaRenderer, /<SchemaField/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
@@ -136,14 +139,36 @@ test("validates Package Contract namespaces, permissions, and runtime isolation"
       error instanceof ManifestValidationError &&
       error.issues.some((issue) => issue.includes("无代码执行权")),
   );
+
+  const agent = parsePackagePayload({
+    schemaVersion: "2.0",
+    id: "com.example.agent",
+    name: "Review Agent",
+    version: "1.0.0",
+    type: "agent",
+    runtime: { type: "declarative" },
+    contributes: {
+      agents: [
+        {
+          id: "com.example.agent.review",
+          title: "Review Agent",
+          modality: "text",
+          inputSchema: { type: "object" },
+          outputSchema: { type: "object" },
+        },
+      ],
+    },
+  });
+  assert.equal(agent.contributes?.agents?.length, 1);
 });
 
 test("uses an unbounded world-coordinate canvas with pointer-centered zoom", async () => {
   const geometry = await import("../app/lib/canvas-geometry.ts");
-  const [appShell, canvasView, canvasToolbar, contextMenu, nodeCard, controller, styles] =
+  const [appShell, canvasView, edgeLayer, canvasToolbar, contextMenu, nodeCard, controller, styles] =
     await Promise.all([
     readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/canvas-edge-layer.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-toolbar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-context-menu.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/node-card.tsx", import.meta.url), "utf8"),
@@ -234,7 +259,8 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(nodeCard, /function NodeWorkbench/);
   assert.match(nodeCard, /workbench-\$\{node\.kind\}/);
   assert.match(nodeCard, /语气|参考素材|首帧素材/);
-  assert.match(canvasView, /nodeHeights\[source\.id\]/);
+  assert.match(canvasView, /nodeHeights\[node\.id\]/);
+  assert.match(canvasView, /<CanvasEdgeLayer/);
   assert.match(nodeCard, /node-workbench-content/);
   assert.doesNotMatch(styles, /\.node-workbench-content[\s\S]{0,180}overflow/);
   assert.match(styles, /\.image-workbench-preview[\s\S]*height:\s*108px;/);
@@ -244,7 +270,7 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(nodeCard, /data-node-id=\{node\.id\}/);
   assert.match(canvasView, /connectionDraft/);
   assert.match(canvasView, /document[\s\S]*\.elementFromPoint/);
-  assert.match(canvasView, /edge-remove-button/);
+  assert.match(edgeLayer, /canvas-edge-remove/);
   assert.match(styles, /\.edge-line\.is-selected/);
   assert.match(styles, /\.canvas-stage\.is-connecting \.port-input\.is-available/);
 });
@@ -279,9 +305,10 @@ test("compiles and executes workflows through the AI microkernel contract", asyn
       error.code === "CYCLE_DETECTED",
   );
 
-  const [controller, runRoute, executeRoute, executors, schema, appShell] =
+  const [controller, worker, runRoute, executeRoute, executors, schema, appShell] =
     await Promise.all([
       readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/lib/kernel-worker.ts", import.meta.url), "utf8"),
       readFile(new URL("../app/api/v2/kernel/runs/route.ts", import.meta.url), "utf8"),
       readFile(new URL("../app/api/v2/kernel/execute/route.ts", import.meta.url), "utf8"),
       readFile(new URL("../app/lib/kernel-executors.ts", import.meta.url), "utf8"),
@@ -289,8 +316,9 @@ test("compiles and executes workflows through the AI microkernel contract", asyn
       readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
     ]);
   assert.match(controller, /compileWorkflow/);
-  assert.match(controller, /Promise\.allSettled/);
   assert.match(controller, /kernelOutput/);
+  assert.match(worker, /Promise\.allSettled/);
+  assert.match(worker, /sourceType: "kernel-output"/);
   assert.doesNotMatch(controller, /function startRun\(\)[\s\S]{0,500}setTimeout/);
   assert.match(runRoute, /kernel\.run\.created/);
   assert.match(executeRoute, /kernel\.node\.succeeded/);
@@ -350,7 +378,7 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   assert.doesNotMatch(assetsView, /initialAssets/);
   assert.match(canvasView, /os\.uploadAsset/);
   assert.match(canvasView, /source: "asset-kernel"/);
-  assert.match(controller, /sourceType: "kernel-output"/);
+  assert.match(kernel, /sourceType: input\.sourceType \?\? "upload"/);
   assert.match(controller, /async function uploadAsset/);
   assert.match(runtimeConfig, /driver: "mysql"/);
   assert.match(runtimeConfig, /driver: "oss"/);
@@ -410,6 +438,11 @@ test("keeps identity, canvases, and files on authenticated cloud services", asyn
 
   assert.match(auth, /PBKDF2/);
   assert.match(auth, /token_hash/);
+  assert.match(auth, /xiaoluo_access/);
+  assert.match(auth, /xiaoluo_refresh/);
+  assert.match(auth, /ACCESS_TOKEN_SECONDS = 15 \* 60/);
+  assert.match(auth, /refresh_token_hash = \?/);
+  assert.match(auth, /refresh_rotated_at = CURRENT_TIMESTAMP/);
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Lax/);
   assert.match(schema, /export const users/);
@@ -429,6 +462,7 @@ test("ships phone recovery and the deliberately small membership model", async (
     schema,
     phoneAuth,
     sms,
+    loginRoute,
     registerRoute,
     resetRoute,
     organizationRoute,
@@ -437,10 +471,12 @@ test("ships phone recovery and the deliberately small membership model", async (
     authScreen,
     accountCenter,
     mysql,
+    adminBootstrap,
   ] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/phone-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/sms.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/v2/auth/login/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v2/auth/register/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v2/auth/password/reset/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/v2/organizations/route.ts", import.meta.url), "utf8"),
@@ -449,6 +485,7 @@ test("ships phone recovery and the deliberately small membership model", async (
     readFile(new URL("../app/components/auth-screen.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/account-center.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/mysql.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/bootstrap-system-admin.mjs", import.meta.url), "utf8"),
   ]);
 
   assert.match(schema, /platformRole: mysqlEnum\("platform_role", \["system_admin", "user"\]\)/);
@@ -459,18 +496,129 @@ test("ships phone recovery and the deliberately small membership model", async (
   assert.match(phoneAuth, /consumed_at = CURRENT_TIMESTAMP/);
   assert.match(sms, /生产环境禁止使用开发短信模式/);
   assert.match(sms, /dysmsapi\.aliyuncs\.com/);
+  assert.match(loginRoute, /userByLoginIdentifier/);
   assert.match(registerRoute, /verifyPhoneChallenge/);
+  assert.match(registerRoute, /normalizeUsername/);
+  assert.match(registerRoute, /id, email, username, display_name/);
+  assert.match(registerRoute, /password\.length < 6/);
   assert.match(resetRoute, /DELETE FROM xiaoluo_v2_auth_sessions/);
+  assert.match(resetRoute, /password\.length < 6/);
   assert.match(organizationRoute, /enterprise_applications/);
   assert.match(membersRoute, /企业必须至少保留一名启用的管理员/);
   assert.match(adminRoute, /requireSystemAdmin/);
   assert.match(authScreen, /通过手机号找回密码/);
+  assert.match(authScreen, /邮箱或用户名/);
+  assert.match(authScreen, /用于登录，全局唯一/);
+  assert.match(authScreen, /minLength=\{6\}/);
+  assert.match(adminBootstrap, /password\.length < 6/);
   assert.match(accountCenter, /仅企业管理员与企业普通用户两种角色/);
   assert.match(mysql, /disableEval: true/);
+  assert.match(mysql, /await database\.end\(\)/);
+  assert.doesNotMatch(mysql, /pool \?\?=/);
   assert.doesNotMatch(
     mysql,
     /\b(?:FROM|JOIN|INTO|UPDATE|REFERENCES|ALTER TABLE|DELETE FROM)\s+users\b/,
   );
   assert.match(schema, /xiaoluo_v2_users/);
   assert.doesNotMatch(mysql, /\bCREATE\s+TABLE\b|\bALTER\s+TABLE\b/i);
+});
+
+test("ships settings for API keys, canvas gestures, and shortcuts", async () => {
+  const [toolbar, settings, canvas, preferencesRoute, schema] =
+    await Promise.all([
+      readFile(
+        new URL("../app/components/canvas-toolbar.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/components/settings-center.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/components/canvas-view.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/api/v2/preferences/route.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(toolbar, /label="设置"/);
+  assert.match(settings, /API Key/);
+  assert.match(settings, /画布手势/);
+  assert.match(settings, /快捷键/);
+  assert.doesNotMatch(settings, /自定义接口|请求体 JSON|响应示例 JSON/);
+  assert.match(canvas, /gesturePreset === "zoom-wheel"/);
+  assert.match(canvas, /keyboardShortcuts/);
+  assert.match(preferencesRoute, /onDuplicateKeyUpdate/);
+  assert.match(schema, /xiaoluo_v2_user_preferences/);
+});
+
+test("ships a secure personal center with profile and device management", async () => {
+  const [
+    settings,
+    personal,
+    profileRoute,
+    phoneRoute,
+    passwordRoute,
+    securityRoute,
+    sessionsRoute,
+    auth,
+    schema,
+  ] = await Promise.all([
+    readFile(
+      new URL("../app/components/settings-center.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/components/personal-settings.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/account/profile/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/account/phone/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/account/password/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/account/security/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/v2/account/sessions/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../app/lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(settings, /个人中心/);
+  assert.match(personal, /编辑资料/);
+  assert.match(personal, /改绑手机号/);
+  assert.match(personal, /修改密码/);
+  assert.match(personal, /安全设置/);
+  assert.match(personal, /登录设备/);
+  assert.match(profileRoute, /requireUser/);
+  assert.match(phoneRoute, /verifyPhoneChallenge/);
+  assert.match(phoneRoute, /verifyPassword/);
+  assert.match(passwordRoute, /hashPassword/);
+  assert.match(passwordRoute, /id <> \?/);
+  assert.match(securityRoute, /allow_multiple_sessions/);
+  assert.match(sessionsRoute, /currentSessionId/);
+  assert.match(sessionsRoute, /clearAuthCookieHeaders/);
+  assert.match(auth, /device_name, user_agent, ip_address/);
+  assert.match(auth, /email = \? OR username = \?/);
+  assert.doesNotMatch(auth, /email = \? OR display_name = \?/);
+  assert.match(profileRoute, /SET username = \?/);
+  assert.match(schema, /username: varchar\("username"/);
+  assert.match(schema, /refreshTokenHash: varchar\("refresh_token_hash"/);
+  assert.match(schema, /xiaoluo_v2_user_security_settings/);
 });

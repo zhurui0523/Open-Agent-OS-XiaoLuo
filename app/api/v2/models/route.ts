@@ -1,7 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { modelConnections, registryEvents } from "../../../../db/schema";
-import type { ModelConnectionDraft, ModelProtocol, NodeKind } from "../../../types";
+import type {
+  ModelConnectionDraft,
+  ModelProtocol,
+  NodeKind,
+} from "../../../types";
 import { validateExternalEndpoint } from "../../../lib/model-adapters";
 import { serializeModel } from "../../../lib/registry-serialization";
 import { mysqlNow } from "../../../lib/mysql";
@@ -18,6 +22,17 @@ const protocols = new Set<ModelProtocol>([
   "generic-rest",
 ]);
 const modalities = new Set<NodeKind>(["text", "image", "video"]);
+
+function boundedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.trunc(parsed)));
+}
 
 function validateDraft(value: unknown): ModelConnectionDraft {
   if (!value || typeof value !== "object") throw new Error("连接配置必须是对象");
@@ -44,8 +59,47 @@ function validateDraft(value: unknown): ModelConnectionDraft {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     modelName,
     modalities: [...new Set(selected)],
+    priority: boundedInteger(draft.priority, 100, 1, 1000),
+    fallbackModelId: draft.fallbackModelId?.trim() || null,
+    maxConcurrency: boundedInteger(draft.maxConcurrency, 2, 1, 20),
+    retryLimit: boundedInteger(draft.retryLimit, 3, 1, 5),
+    circuitFailureThreshold: boundedInteger(
+      draft.circuitFailureThreshold,
+      5,
+      2,
+      20,
+    ),
+    circuitCooldownSeconds: boundedInteger(
+      draft.circuitCooldownSeconds,
+      60,
+      10,
+      600,
+    ),
     ...(credentialRef ? { credentialRef } : {}),
   };
+}
+
+async function validateFallback(
+  workspaceId: string,
+  fallbackModelId: string | null | undefined,
+  currentModelId?: string,
+) {
+  if (!fallbackModelId) return;
+  if (fallbackModelId === currentModelId) {
+    throw new Error("备用模型不能选择当前连接");
+  }
+  const db = await getDb();
+  const [fallback] = await db
+    .select({ id: modelConnections.id })
+    .from(modelConnections)
+    .where(
+      and(
+        eq(modelConnections.id, fallbackModelId),
+        eq(modelConnections.workspaceId, workspaceId),
+      ),
+    )
+    .limit(1);
+  if (!fallback) throw new Error("备用模型不存在或不属于当前工作空间");
 }
 
 function errorResponse(error: unknown, status = 400) {
@@ -69,6 +123,7 @@ export async function POST(request: Request) {
       payload,
     );
     const draft = validateDraft(payload);
+    await validateFallback(workspaceId, draft.fallbackModelId);
     const storedSecret = payload.secretValue
       ? await saveSecret({
           workspaceId,
@@ -93,6 +148,12 @@ export async function POST(request: Request) {
         modalitiesJson: JSON.stringify(draft.modalities),
         credentialRef: draft.credentialRef ?? null,
         secretRefId: storedSecret?.id ?? payload.secretRefId ?? null,
+        priority: draft.priority,
+        fallbackModelId: draft.fallbackModelId ?? null,
+        maxConcurrency: draft.maxConcurrency,
+        retryLimit: draft.retryLimit,
+        circuitFailureThreshold: draft.circuitFailureThreshold,
+        circuitCooldownSeconds: draft.circuitCooldownSeconds,
         state: "attention",
         enabled: true,
         createdAt: now,
@@ -110,7 +171,13 @@ export async function POST(request: Request) {
       actorUserId: user.id,
       eventType: "model.created",
       entityId: id,
-      detailJson: JSON.stringify({ protocol: draft.protocol }),
+      detailJson: JSON.stringify({
+        protocol: draft.protocol,
+        priority: draft.priority,
+        maxConcurrency: draft.maxConcurrency,
+        retryLimit: draft.retryLimit,
+        fallbackModelId: draft.fallbackModelId ?? null,
+      }),
     });
     return Response.json({ model: serializeModel(saved) }, { status: 201 });
   } catch (error) {
@@ -121,7 +188,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const user = await requireUser(request);
-    const payload = (await request.json()) as {
+    const payload = (await request.json()) as Partial<ModelConnectionDraft> & {
       id?: string;
       enabled?: boolean;
       workspaceId?: string;
@@ -132,13 +199,61 @@ export async function PATCH(request: Request) {
       "manage",
       payload,
     );
-    if (!payload.id || typeof payload.enabled !== "boolean") {
-      return errorResponse(new Error("id 和 enabled 必填"));
-    }
+    if (!payload.id) return errorResponse(new Error("id 必填"));
     const db = await getDb();
+    const [existing] = await db
+      .select()
+      .from(modelConnections)
+      .where(
+        and(
+          eq(modelConnections.id, payload.id),
+          eq(modelConnections.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!existing) return errorResponse(new Error("模型连接不存在"), 404);
+
+    let update: Partial<typeof modelConnections.$inferInsert>;
+    if (typeof payload.enabled === "boolean" && !payload.name) {
+      update = {
+        enabled: payload.enabled,
+        updatedAt: mysqlNow(),
+      };
+    } else {
+      const draft = validateDraft(payload);
+      await validateFallback(workspaceId, draft.fallbackModelId, existing.id);
+      const storedSecret = payload.secretValue
+        ? await saveSecret({
+            workspaceId,
+            userId: user.id,
+            name: payload.secretName || `${draft.name} API Key`,
+            value: payload.secretValue,
+          })
+        : null;
+      update = {
+        name: draft.name,
+        protocol: draft.protocol,
+        baseUrl: draft.baseUrl,
+        modelName: draft.modelName,
+        modalitiesJson: JSON.stringify(draft.modalities),
+        credentialRef: draft.credentialRef ?? null,
+        secretRefId:
+          storedSecret?.id ?? payload.secretRefId ?? existing.secretRefId,
+        priority: draft.priority,
+        fallbackModelId: draft.fallbackModelId ?? null,
+        maxConcurrency: draft.maxConcurrency,
+        retryLimit: draft.retryLimit,
+        circuitFailureThreshold: draft.circuitFailureThreshold,
+        circuitCooldownSeconds: draft.circuitCooldownSeconds,
+        state: "attention",
+        latencyMs: null,
+        lastCheckedAt: null,
+        updatedAt: mysqlNow(),
+      };
+    }
     await db
       .update(modelConnections)
-      .set({ enabled: payload.enabled, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .set(update)
       .where(
         and(
           eq(modelConnections.id, payload.id),
@@ -156,6 +271,25 @@ export async function PATCH(request: Request) {
       )
       .limit(1);
     if (!updated) return errorResponse(new Error("模型连接不存在"), 404);
+    await db.insert(registryEvents).values({
+      id: crypto.randomUUID(),
+      workspaceId,
+      actorUserId: user.id,
+      eventType:
+        typeof payload.enabled === "boolean" && !payload.name
+          ? payload.enabled
+            ? "model.enabled"
+            : "model.disabled"
+          : "model.updated",
+      entityId: updated.id,
+      detailJson: JSON.stringify({
+        protocol: updated.protocol,
+        priority: updated.priority,
+        maxConcurrency: updated.maxConcurrency,
+        retryLimit: updated.retryLimit,
+        fallbackModelId: updated.fallbackModelId,
+      }),
+    });
     return Response.json({ model: serializeModel(updated) });
   } catch (error) {
     return errorResponse(error);
@@ -184,6 +318,15 @@ export async function DELETE(request: Request) {
       )
       .limit(1);
     if (!existing) return errorResponse(new Error("模型连接不存在"), 404);
+    await db
+      .update(modelConnections)
+      .set({ fallbackModelId: null, updatedAt: mysqlNow() })
+      .where(
+        and(
+          eq(modelConnections.workspaceId, workspaceId),
+          eq(modelConnections.fallbackModelId, id),
+        ),
+      );
     await db
       .delete(modelConnections)
       .where(

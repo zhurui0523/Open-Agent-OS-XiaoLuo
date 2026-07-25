@@ -84,9 +84,30 @@ export const initialNodes: CanvasNode[] = [
 ];
 
 export const initialEdges: CanvasEdge[] = [
-  { id: "edge_1", source: "node_brief", target: "node_script" },
-  { id: "edge_2", source: "node_script", target: "node_visual" },
-  { id: "edge_3", source: "node_visual", target: "node_video" },
+  {
+    id: "edge_1",
+    source: "node_brief",
+    target: "node_script",
+    sourcePort: "text",
+    targetPort: "context",
+    dataType: "text",
+  },
+  {
+    id: "edge_2",
+    source: "node_script",
+    target: "node_visual",
+    sourcePort: "text",
+    targetPort: "prompt",
+    dataType: "text",
+  },
+  {
+    id: "edge_3",
+    source: "node_visual",
+    target: "node_video",
+    sourcePort: "image",
+    targetPort: "reference",
+    dataType: "image",
+  },
 ];
 
 export const coreCapabilities: Capability[] = [
@@ -99,6 +120,35 @@ export const coreCapabilities: Capability[] = [
     enabled: true,
     packageVersion: "2.0.0",
     parameterHint: "Prompt · 引用 · 模型",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tone: {
+          type: "string",
+          title: "语气",
+          enum: ["品牌叙事", "电影感", "自然口语"],
+          default: "品牌叙事",
+        },
+        length: {
+          type: "string",
+          title: "长度",
+          enum: ["精简", "标准", "详细"],
+          default: "标准",
+        },
+        references: {
+          type: "array",
+          title: "参考资料",
+          items: { type: "string", format: "file", title: "文件" },
+        },
+      },
+    },
+    uiSchema: {
+      tone: { "ui:widget": "segmented" },
+    },
+    outputSchema: {
+      type: "object",
+      properties: { text: { type: "string", title: "文本结果" } },
+    },
   },
   {
     id: "core.capability.image",
@@ -109,6 +159,45 @@ export const coreCapabilities: Capability[] = [
     enabled: true,
     packageVersion: "2.0.0",
     parameterHint: "Prompt · 参考图 · 画幅",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reference: {
+          type: "string",
+          format: "image",
+          title: "参考图",
+        },
+        ratio: {
+          type: "string",
+          title: "画幅",
+          enum: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+          default: "16:9",
+        },
+        quality: {
+          type: "string",
+          title: "质量",
+          enum: ["草图", "高清", "超清"],
+          default: "高清",
+        },
+        count: {
+          type: "integer",
+          title: "数量",
+          minimum: 1,
+          maximum: 8,
+          default: 1,
+        },
+      },
+    },
+    uiSchema: {
+      ratio: { "ui:widget": "segmented" },
+      count: { "ui:widget": "slider" },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "image", title: "图像结果" },
+      },
+    },
   },
   {
     id: "core.capability.video",
@@ -119,6 +208,125 @@ export const coreCapabilities: Capability[] = [
     enabled: true,
     packageVersion: "2.0.0",
     parameterHint: "Prompt · 时长 · 画幅",
+    inputSchema: {
+      type: "object",
+      properties: {
+        firstFrame: {
+          type: "string",
+          format: "image",
+          title: "首帧图片",
+        },
+        referenceVideo: {
+          type: "string",
+          format: "video",
+          title: "参考视频",
+        },
+        duration: {
+          type: "integer",
+          title: "时长（秒）",
+          minimum: 1,
+          maximum: 60,
+          default: 6,
+        },
+        ratio: {
+          type: "string",
+          title: "画幅",
+          enum: ["16:9", "9:16", "1:1"],
+          default: "16:9",
+        },
+        quality: {
+          type: "string",
+          title: "清晰度",
+          enum: ["720p", "1080p", "4K"],
+          default: "1080p",
+        },
+      },
+    },
+    uiSchema: {
+      duration: { "ui:widget": "slider" },
+      ratio: { "ui:widget": "segmented" },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "video", title: "视频结果" },
+      },
+    },
+  },
+  {
+    id: "core.capability.audio",
+    title: "标准音频生成",
+    description: "系统级音频模态接口，等待你接入具体 Provider。",
+    modality: "audio",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "Prompt · 参考音频 · 格式",
+    inputSchema: {
+      type: "object",
+      properties: {
+        referenceAudio: {
+          type: "string",
+          format: "audio",
+          title: "参考音频",
+        },
+        format: {
+          type: "string",
+          title: "格式",
+          enum: ["mp3", "wav", "flac"],
+          default: "mp3",
+        },
+        sampleRate: {
+          type: "integer",
+          title: "采样率",
+          enum: [22050, 44100, 48000],
+          default: 44100,
+        },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "audio", title: "音频结果" },
+      },
+    },
+  },
+  {
+    id: "core.capability.document",
+    title: "标准文档生成",
+    description: "系统级文档与 Office Artifact 接口。",
+    modality: "document",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "内容 · 模板 · 输出格式",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sourceDocument: {
+          type: "string",
+          format: "file",
+          title: "参考文档",
+        },
+        format: {
+          type: "string",
+          title: "输出格式",
+          enum: ["pdf", "docx", "pptx", "xlsx"],
+          default: "pdf",
+        },
+        template: {
+          type: "string",
+          title: "模板说明",
+          maxLength: 200,
+        },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "file", title: "文档结果" },
+      },
+    },
   },
 ];
 

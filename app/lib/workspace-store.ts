@@ -1,6 +1,7 @@
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import type { CanvasEdge, CanvasNode } from "../types";
 import { mysqlRows, mysqlTransaction } from "./mysql";
+import { normalizeEdgePorts } from "./node-ports";
 
 interface HomeRow extends RowDataPacket {
   workspaceId: string;
@@ -40,6 +41,7 @@ interface CanvasRow extends RowDataPacket {
   projectId: string;
   projectName: string;
   revision: number;
+  starred: boolean;
   arrangeMode: "free" | "time" | "type";
   viewportJson: string | { x?: number; y?: number; zoom?: number };
   nodeCount: number;
@@ -66,6 +68,9 @@ interface EdgeRow extends RowDataPacket {
   id: string;
   source: string;
   target: string;
+  sourcePort: string;
+  targetPort: string;
+  dataType: CanvasEdge["dataType"];
 }
 
 function parsedJson<T>(value: string | T, fallback: T): T {
@@ -215,7 +220,16 @@ export async function listUserWorkspaces(userId: string) {
   }));
 }
 
-export async function listCanvases(projectId: string) {
+export async function listCanvases(
+  projectId: string,
+  state: "active" | "archived" | "deleted" = "active",
+) {
+  const stateClause =
+    state === "deleted"
+      ? "c.deleted_at IS NOT NULL"
+      : state === "archived"
+        ? "c.deleted_at IS NULL AND c.archived_at IS NOT NULL"
+        : "c.deleted_at IS NULL AND c.archived_at IS NULL";
   const rows = await mysqlRows<CanvasRow>(
     `SELECT
        c.id,
@@ -223,6 +237,7 @@ export async function listCanvases(projectId: string) {
        c.project_id AS projectId,
        p.name AS projectName,
        c.revision,
+       c.starred,
        c.arrange_mode AS arrangeMode,
        c.viewport_json AS viewportJson,
        COUNT(n.id) AS nodeCount,
@@ -232,8 +247,7 @@ export async function listCanvases(projectId: string) {
      LEFT JOIN xiaoluo_v2_canvas_nodes n ON n.canvas_id = c.id
      WHERE c.project_id = ?
        AND p.status = 'active'
-       AND c.deleted_at IS NULL
-       AND c.archived_at IS NULL
+       AND ${stateClause}
      GROUP BY c.id, p.name
      ORDER BY c.updated_at DESC`,
     [projectId],
@@ -245,6 +259,7 @@ export async function listCanvases(projectId: string) {
     nodes: Number(row.nodeCount),
     updatedAt: timestamp(row.updatedAt),
     revision: Number(row.revision),
+    starred: Boolean(row.starred),
     arrangeMode: row.arrangeMode,
     viewport: parsedJson(row.viewportJson, { x: 0, y: 0, zoom: 92 }),
   }));
@@ -277,6 +292,7 @@ export async function readCanvasGraph(canvasId: string) {
        c.project_id AS projectId,
        p.name AS projectName,
        c.revision,
+       c.starred,
        c.arrange_mode AS arrangeMode,
        c.viewport_json AS viewportJson,
        0 AS nodeCount,
@@ -316,7 +332,10 @@ export async function readCanvasGraph(canvasId: string) {
       `SELECT
          id,
          source_node_id AS source,
-         target_node_id AS target
+         target_node_id AS target,
+         source_port_id AS sourcePort,
+         target_port_id AS targetPort,
+         data_type AS dataType
        FROM xiaoluo_v2_canvas_edges
        WHERE canvas_id = ?
        ORDER BY created_at, id`,
@@ -339,11 +358,27 @@ export async function readCanvasGraph(canvasId: string) {
     ...(row.result === null ? {} : { result: row.result }),
     parameters: parsedJson(row.parametersJson, {}),
   }));
-  const edges: CanvasEdge[] = edgeRows.map((row) => ({
-    id: row.id,
-    source: row.source,
-    target: row.target,
-  }));
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const edges: CanvasEdge[] = edgeRows.flatMap((row) => {
+    const source = nodeMap.get(row.source);
+    const target = nodeMap.get(row.target);
+    return source && target
+      ? [
+          normalizeEdgePorts(
+            {
+              id: row.id,
+              source: row.source,
+              target: row.target,
+              sourcePort: row.sourcePort,
+              targetPort: row.targetPort,
+              dataType: row.dataType,
+            },
+            source,
+            target,
+          ),
+        ]
+      : [];
+  });
 
   return {
     id: canvas.id,
@@ -418,9 +453,20 @@ export async function replaceCanvasGraph(input: {
     for (const edge of input.edges) {
       await connection.execute(
         `INSERT INTO xiaoluo_v2_canvas_edges
-          (id, canvas_id, source_node_id, target_node_id)
-         VALUES (?, ?, ?, ?)`,
-        [edge.id, input.canvasId, edge.source, edge.target],
+          (
+            id, canvas_id, source_node_id, target_node_id,
+            source_port_id, target_port_id, data_type
+          )
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          edge.id,
+          input.canvasId,
+          edge.source,
+          edge.target,
+          edge.sourcePort,
+          edge.targetPort,
+          edge.dataType,
+        ],
       );
     }
     return input.revision + 1;

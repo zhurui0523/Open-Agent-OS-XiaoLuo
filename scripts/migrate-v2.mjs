@@ -27,6 +27,13 @@ const connection = await mysql.createConnection({
 const migrations = [
   "0000_common_randall",
   "0001_brainy_virginia_dare",
+  "0002_bizarre_meltdown",
+  "0003_lively_morg",
+  "0004_clever_shotgun",
+  "0005_grey_peter_parker",
+  "0006_unknown_havok",
+  "0007_living_mole_man",
+  "0008_kind_arclight",
 ];
 
 async function tableExists(name) {
@@ -181,6 +188,15 @@ async function verify() {
     "xiaoluo_v2_canvas_snapshots",
     "xiaoluo_v2_package_versions",
     "xiaoluo_v2_asset_collections",
+    "xiaoluo_v2_user_preferences",
+    "xiaoluo_v2_user_security_settings",
+    "xiaoluo_v2_model_catalog_entries",
+    "xiaoluo_v2_model_execution_audits",
+    "xiaoluo_v2_model_usage_stats",
+    "xiaoluo_v2_canvas_share_links",
+    "xiaoluo_v2_rate_limit_buckets",
+    "xiaoluo_v2_audit_logs",
+    "xiaoluo_v2_outbox_events",
   ];
   const absent = [];
   for (const table of expectedTables) {
@@ -194,15 +210,42 @@ async function verify() {
          (TABLE_NAME = 'xiaoluo_v2_kernel_runs' AND COLUMN_NAME = 'workspace_id')
          OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'secret_ref_id')
          OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'package_key')
+         OR (TABLE_NAME = 'xiaoluo_v2_auth_sessions' AND COLUMN_NAME = 'device_name')
+         OR (TABLE_NAME = 'xiaoluo_v2_auth_sessions' AND COLUMN_NAME = 'refresh_token_hash')
+         OR (TABLE_NAME = 'xiaoluo_v2_users' AND COLUMN_NAME = 'username')
+         OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'circuit_state')
+         OR (TABLE_NAME = 'xiaoluo_v2_generation_jobs' AND COLUMN_NAME = 'poll_url')
+         OR (TABLE_NAME = 'xiaoluo_v2_canvas_edges' AND COLUMN_NAME = 'source_port_id')
+         OR (TABLE_NAME = 'xiaoluo_v2_canvas_edges' AND COLUMN_NAME = 'target_port_id')
+         OR (TABLE_NAME = 'xiaoluo_v2_canvas_edges' AND COLUMN_NAME = 'data_type')
+         OR (TABLE_NAME = 'xiaoluo_v2_audit_logs' AND COLUMN_NAME = 'request_id')
+         OR (TABLE_NAME = 'xiaoluo_v2_outbox_events' AND COLUMN_NAME = 'status')
        )`,
   );
-  if (absent.length || columns.length !== 3) {
+  if (absent.length || columns.length !== 13) {
     throw new Error(
-      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/3`,
+      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/13`,
     );
   }
+  const [nodeKindColumns] = await connection.execute(
+    `SELECT COLUMN_TYPE AS columnType
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'xiaoluo_v2_canvas_nodes'
+       AND COLUMN_NAME = 'kind'
+     LIMIT 1`,
+  );
+  const nodeKindType = String(nodeKindColumns[0]?.columnType ?? "");
+  if (!nodeKindType.includes("'audio'") || !nodeKindType.includes("'document'")) {
+    throw new Error("Schema verification failed. Canvas node kind enum is incomplete");
+  }
   process.stdout.write(
-    JSON.stringify({ ok: true, tables: expectedTables.length, keyColumns: 3 }),
+    JSON.stringify({
+      ok: true,
+      tables: expectedTables.length,
+      keyColumns: 13,
+      canvasNodeKinds: 5,
+    }),
   );
 }
 

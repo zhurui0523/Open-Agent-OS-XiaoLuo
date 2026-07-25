@@ -4,6 +4,7 @@ import { canvasSnapshots } from "../../../../../db/schema";
 import { jsonError, requireUser } from "../../../../lib/auth";
 import { requireCanvasAccess } from "../../../../lib/authorization";
 import { mysqlNow } from "../../../../lib/mysql";
+import { normalizeEdgePorts } from "../../../../lib/node-ports";
 import {
   readCanvasGraph,
   replaceCanvasGraph,
@@ -102,15 +103,28 @@ export async function PATCH(request: Request) {
     if (!current) return Response.json({ error: "画布不存在" }, { status: 404 });
     const graph = JSON.parse(snapshot.graphJson) as {
       nodes: CanvasNode[];
-      edges: CanvasEdge[];
+      edges: Array<
+        Pick<CanvasEdge, "id" | "source" | "target"> &
+          Partial<
+            Pick<CanvasEdge, "sourcePort" | "targetPort" | "dataType">
+          >
+      >;
       arrangeMode: "free" | "time" | "type";
       viewport: { x: number; y: number; zoom: number };
     };
+    const nodeMap = new Map(graph.nodes.map((node) => [node.id, node]));
+    const normalizedEdges = graph.edges.flatMap((edge) => {
+      const source = nodeMap.get(edge.source);
+      const target = nodeMap.get(edge.target);
+      return source && target
+        ? [normalizeEdgePorts(edge, source, target)]
+        : [];
+    });
     const revision = await replaceCanvasGraph({
       canvasId: payload.canvasId,
       revision: current.revision,
       nodes: graph.nodes,
-      edges: graph.edges,
+      edges: normalizedEdges,
       arrangeMode: graph.arrangeMode,
       viewport: graph.viewport,
     });

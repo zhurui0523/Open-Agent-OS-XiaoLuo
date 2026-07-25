@@ -2,19 +2,24 @@
 
 import {
   Check,
+  AudioLines,
   ChevronRight,
+  Copy,
   Clock3,
   FileText,
+  FileOutput,
   Image as ImageIcon,
   Layers3,
   ListChecks,
   MousePointer2,
   Puzzle,
+  Redo2,
   Shapes,
   Undo2,
   Upload,
   Video,
   Workflow,
+  ClipboardPaste,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -33,12 +38,17 @@ interface CanvasContextMenuProps {
   capabilities: Capability[];
   packages: InstalledPackage[];
   canUndo: boolean;
+  canRedo: boolean;
+  canCopy: boolean;
   multiSelectActive: boolean;
   arrangeMode: ArrangeMode;
   onAddNode: (kind: NodeKind) => void;
   onAddCapability: (capability: Capability) => void;
   onAddPlugin: (plugin: InstalledPackage) => void;
   onUndo: () => void;
+  onRedo: () => void;
+  onCopy: () => void;
+  onPaste: () => void;
   onToggleMultiSelect: () => void;
   onArrange: (mode: ArrangeMode) => void;
   onUpload: () => void;
@@ -53,12 +63,17 @@ export function CanvasContextMenu({
   capabilities,
   packages,
   canUndo,
+  canRedo,
+  canCopy,
   multiSelectActive,
   arrangeMode,
   onAddNode,
   onAddCapability,
   onAddPlugin,
   onUndo,
+  onRedo,
+  onCopy,
+  onPaste,
   onToggleMultiSelect,
   onArrange,
   onUpload,
@@ -72,7 +87,8 @@ export function CanvasContextMenu({
     () =>
       capabilities.filter(
         (capability) =>
-          capability.enabled && capability.category === "SKILL",
+          capability.enabled &&
+          ["SKILL", "Agent", "Workflow"].includes(capability.category),
       ),
     [capabilities],
   );
@@ -139,6 +155,38 @@ export function CanvasContextMenu({
         type="button"
         className="canvas-context-item"
         role="menuitem"
+        disabled={!canRedo}
+        onClick={() => run(onRedo)}
+      >
+        <Redo2 size={19} />
+        <span>重做</span>
+        <kbd>Ctrl+Y</kbd>
+      </button>
+      <button
+        type="button"
+        className="canvas-context-item"
+        role="menuitem"
+        disabled={!canCopy}
+        onClick={() => run(onCopy)}
+      >
+        <Copy size={19} />
+        <span>复制节点</span>
+        <kbd>Ctrl+C</kbd>
+      </button>
+      <button
+        type="button"
+        className="canvas-context-item"
+        role="menuitem"
+        onClick={() => run(onPaste)}
+      >
+        <ClipboardPaste size={19} />
+        <span>粘贴节点</span>
+        <kbd>Ctrl+V</kbd>
+      </button>
+      <button
+        type="button"
+        className="canvas-context-item"
+        role="menuitem"
         onClick={() => run(() => onAddNode("image"))}
       >
         <ImageIcon size={19} />
@@ -152,6 +200,24 @@ export function CanvasContextMenu({
       >
         <Video size={19} />
         <span>视频占位卡片</span>
+      </button>
+      <button
+        type="button"
+        className="canvas-context-item"
+        role="menuitem"
+        onClick={() => run(() => onAddNode("audio"))}
+      >
+        <AudioLines size={19} />
+        <span>音频占位卡片</span>
+      </button>
+      <button
+        type="button"
+        className="canvas-context-item"
+        role="menuitem"
+        onClick={() => run(() => onAddNode("document"))}
+      >
+        <FileOutput size={19} />
+        <span>文档占位卡片</span>
       </button>
 
       <div
@@ -361,7 +427,7 @@ export function CanvasContextMenu({
             <Shapes size={17} />
             <span>
               类型排序
-              <small>文本、图片、视频分组</small>
+              <small>文本、图片、视频、音频、文档分组</small>
             </span>
             {arrangeMode === "type" && <Check size={16} />}
           </button>

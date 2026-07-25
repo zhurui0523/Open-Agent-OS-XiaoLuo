@@ -1,34 +1,51 @@
 import type { RowDataPacket } from "mysql2/promise";
 import { mysqlExecute, mysqlRows } from "./mysql";
 
-const SESSION_COOKIE = "xiaoluo_session";
-const SESSION_DAYS = 30;
+const ACCESS_COOKIE = "xiaoluo_access";
+const REFRESH_COOKIE = "xiaoluo_refresh";
+const LEGACY_SESSION_COOKIE = "xiaoluo_session";
+const ACCESS_TOKEN_SECONDS = 15 * 60;
+const DEFAULT_REFRESH_DAYS = 30;
 const PASSWORD_ITERATIONS = 310_000;
 
 export interface AuthUser {
   id: string;
   email: string;
+  username: string;
   displayName: string;
   phoneLast4: string | null;
   platformRole: "system_admin" | "user";
 }
 
-interface UserRow extends RowDataPacket {
-  id: string;
-  email: string;
-  displayName: string;
+interface UserRow extends RowDataPacket, AuthUser {
   passwordHash: string;
-  phoneLast4: string | null;
-  platformRole: "system_admin" | "user";
   status: "active" | "disabled";
 }
 
-interface SessionUserRow extends RowDataPacket {
-  id: string;
-  email: string;
-  displayName: string;
-  phoneLast4: string | null;
-  platformRole: "system_admin" | "user";
+interface SessionUserRow extends RowDataPacket, AuthUser {
+  sessionId: string;
+  refreshExpiresAt: string;
+}
+
+interface SecuritySettingsRow extends RowDataPacket {
+  allowMultipleSessions: number | boolean;
+  sessionTtlDays: number;
+}
+
+interface AccessTokenPayload {
+  v: 2;
+  sub: string;
+  sid: string;
+  iat: number;
+  exp: number;
+}
+
+export interface AuthTokenPair {
+  accessToken: string;
+  accessExpiresAt: Date;
+  refreshToken: string;
+  refreshExpiresAt: Date;
+  sessionId: string;
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -44,12 +61,100 @@ function base64ToBytes(value: string) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-export function randomToken(byteLength = 32) {
-  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+function base64UrlEncode(value: string | Uint8Array) {
+  const bytes =
+    typeof value === "string" ? new TextEncoder().encode(value) : value;
   return bytesToBase64(bytes)
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
+}
+
+function base64UrlDecode(value: string) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  return base64ToBytes(
+    value.replaceAll("-", "+").replaceAll("_", "/") + padding,
+  );
+}
+
+function accessTokenSecret() {
+  const configured = process.env.ACCESS_TOKEN_SECRET?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("ACCESS_TOKEN_SECRET 未配置");
+  }
+  const developmentFallback = process.env.DB_PASSWORD?.trim();
+  if (!developmentFallback) {
+    throw new Error("ACCESS_TOKEN_SECRET 未配置");
+  }
+  return `xiaoluo-development-access-token:${developmentFallback}`;
+}
+
+async function hmac(value: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(accessTokenSecret()),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)),
+  );
+}
+
+async function issueAccessToken(userId: string, sessionId: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: AccessTokenPayload = {
+    v: 2,
+    sub: userId,
+    sid: sessionId,
+    iat: now,
+    exp: now + ACCESS_TOKEN_SECONDS,
+  };
+  const encoded = base64UrlEncode(JSON.stringify(payload));
+  const signature = base64UrlEncode(await hmac(encoded));
+  return {
+    token: `${encoded}.${signature}`,
+    expiresAt: new Date(payload.exp * 1000),
+  };
+}
+
+async function verifyAccessToken(token: string) {
+  const [encoded, signature, extra] = token.split(".");
+  if (!encoded || !signature || extra) return null;
+  const expected = base64UrlEncode(await hmac(encoded));
+  const actualBytes = new TextEncoder().encode(signature);
+  const expectedBytes = new TextEncoder().encode(expected);
+  if (actualBytes.length !== expectedBytes.length) return null;
+  let difference = 0;
+  actualBytes.forEach((byte, index) => {
+    difference |= byte ^ expectedBytes[index];
+  });
+  if (difference !== 0) return null;
+  try {
+    const payload = JSON.parse(
+      new TextDecoder().decode(base64UrlDecode(encoded)),
+    ) as Partial<AccessTokenPayload>;
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      payload.v !== 2 ||
+      typeof payload.sub !== "string" ||
+      typeof payload.sid !== "string" ||
+      typeof payload.iat !== "number" ||
+      typeof payload.exp !== "number" ||
+      payload.exp <= now
+    ) {
+      return null;
+    }
+    return payload as AccessTokenPayload;
+  } catch {
+    return null;
+  }
+}
+
+export function randomToken(byteLength = 32) {
+  return base64UrlEncode(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
 export async function sha256(value: string) {
@@ -139,44 +244,69 @@ function cookieValue(request: Request, name: string) {
   return null;
 }
 
-export async function createSession(userId: string) {
-  const token = randomToken();
-  const tokenHash = await sha256(token);
-  const expires = new Date(
-    Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000,
-  );
-  await mysqlExecute(
-    `INSERT INTO xiaoluo_v2_auth_sessions
-      (id, user_id, token_hash, expires_at)
-     VALUES (?, ?, ?, ?)`,
-    [crypto.randomUUID(), userId, tokenHash, expires],
-  );
-  return { token, expires };
+function requestIp(request: Request) {
+  return (
+    request.headers.get("cf-connecting-ip") ??
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    request.headers.get("x-real-ip") ??
+    "本地网络"
+  )
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .slice(0, 64);
 }
 
-export function sessionCookie(
+function deviceName(userAgent: string) {
+  const browser = /Edg\//.test(userAgent)
+    ? "Microsoft Edge"
+    : /Firefox\//.test(userAgent)
+      ? "Firefox"
+      : /Chrome\//.test(userAgent)
+        ? "Google Chrome"
+        : /Safari\//.test(userAgent)
+          ? "Safari"
+          : "未知浏览器";
+  const system = /Windows/.test(userAgent)
+    ? "Windows"
+    : /Android/.test(userAgent)
+      ? "Android"
+      : /iPhone|iPad/.test(userAgent)
+        ? "iOS / iPadOS"
+        : /Mac OS/.test(userAgent)
+          ? "macOS"
+          : /Linux/.test(userAgent)
+            ? "Linux"
+            : "未知系统";
+  return `${browser} · ${system}`;
+}
+
+function authCookie(
+  name: string,
   token: string,
   expires: Date,
   request: Request,
 ) {
   const secure = new URL(request.url).protocol === "https:";
+  const maxAge = Math.max(
+    0,
+    Math.floor((expires.getTime() - Date.now()) / 1000),
+  );
   return [
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    `${name}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
     secure ? "Secure" : "",
     `Expires=${expires.toUTCString()}`,
-    `Max-Age=${SESSION_DAYS * 24 * 60 * 60}`,
+    `Max-Age=${maxAge}`,
   ]
     .filter(Boolean)
     .join("; ");
 }
 
-export function clearSessionCookie(request: Request) {
+function clearCookie(name: string, request: Request) {
   const secure = new URL(request.url).protocol === "https:";
   return [
-    `${SESSION_COOKIE}=`,
+    `${name}=`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
@@ -188,49 +318,298 @@ export function clearSessionCookie(request: Request) {
     .join("; ");
 }
 
-export async function destroySession(request: Request) {
-  const token = cookieValue(request, SESSION_COOKIE);
-  if (!token) return;
-  await mysqlExecute("DELETE FROM xiaoluo_v2_auth_sessions WHERE token_hash = ?", [
-    await sha256(token),
-  ]);
+export function authCookieHeaders(pair: AuthTokenPair, request: Request) {
+  const headers = new Headers();
+  headers.append(
+    "set-cookie",
+    authCookie(
+      ACCESS_COOKIE,
+      pair.accessToken,
+      pair.accessExpiresAt,
+      request,
+    ),
+  );
+  headers.append(
+    "set-cookie",
+    authCookie(
+      REFRESH_COOKIE,
+      pair.refreshToken,
+      pair.refreshExpiresAt,
+      request,
+    ),
+  );
+  headers.append("set-cookie", clearCookie(LEGACY_SESSION_COOKIE, request));
+  return headers;
 }
 
-export async function currentUser(
-  request: Request,
-): Promise<AuthUser | null> {
-  const token = cookieValue(request, SESSION_COOKIE);
-  if (!token) return null;
-  const tokenHash = await sha256(token);
-  const rows = await mysqlRows<SessionUserRow>(
+export function clearAuthCookieHeaders(request: Request) {
+  const headers = new Headers();
+  for (const name of [ACCESS_COOKIE, REFRESH_COOKIE, LEGACY_SESSION_COOKIE]) {
+    headers.append("set-cookie", clearCookie(name, request));
+  }
+  return headers;
+}
+
+function validRefreshDays(value: number | undefined) {
+  return value && [7, 30, 90].includes(value)
+    ? value
+    : DEFAULT_REFRESH_DAYS;
+}
+
+async function securitySettings(userId: string) {
+  const [security] = await mysqlRows<SecuritySettingsRow>(
+    `SELECT
+       allow_multiple_sessions AS allowMultipleSessions,
+       session_ttl_days AS sessionTtlDays
+     FROM xiaoluo_v2_user_security_settings
+     WHERE user_id = ?
+     LIMIT 1`,
+    [userId],
+  );
+  return {
+    allowMultipleSessions: security
+      ? Boolean(security.allowMultipleSessions)
+      : true,
+    refreshDays: validRefreshDays(Number(security?.sessionTtlDays)),
+  };
+}
+
+async function makeTokenPair(
+  userId: string,
+  sessionId: string,
+  refreshExpiresAt: Date,
+) {
+  const access = await issueAccessToken(userId, sessionId);
+  return {
+    accessToken: access.token,
+    accessExpiresAt: access.expiresAt,
+    refreshToken: randomToken(48),
+    refreshExpiresAt,
+    sessionId,
+  } satisfies AuthTokenPair;
+}
+
+export async function createAuthSession(userId: string, request: Request) {
+  const security = await securitySettings(userId);
+  if (!security.allowMultipleSessions) {
+    await mysqlExecute(
+      "DELETE FROM xiaoluo_v2_auth_sessions WHERE user_id = ?",
+      [userId],
+    );
+  }
+  const sessionId = crypto.randomUUID();
+  const refreshExpiresAt = new Date(
+    Date.now() + security.refreshDays * 24 * 60 * 60 * 1000,
+  );
+  const pair = await makeTokenPair(userId, sessionId, refreshExpiresAt);
+  const refreshHash = await sha256(pair.refreshToken);
+  const userAgent = (request.headers.get("user-agent") ?? "未知设备")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .slice(0, 500);
+  await mysqlExecute(
+    `INSERT INTO xiaoluo_v2_auth_sessions
+      (
+        id, user_id, token_hash, expires_at,
+        refresh_token_hash, refresh_expires_at, refresh_rotated_at,
+        device_name, user_agent, ip_address
+      )
+     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?, ?)`,
+    [
+      sessionId,
+      userId,
+      refreshHash,
+      refreshExpiresAt,
+      refreshHash,
+      refreshExpiresAt,
+      deviceName(userAgent),
+      userAgent,
+      requestIp(request),
+    ],
+  );
+  return pair;
+}
+
+function publicUser(row: SessionUserRow | UserRow): AuthUser {
+  return {
+    id: row.id,
+    email: row.email,
+    username: row.username,
+    displayName: row.displayName,
+    phoneLast4: row.phoneLast4,
+    platformRole: row.platformRole,
+  };
+}
+
+async function userForAccessPayload(payload: AccessTokenPayload) {
+  const [row] = await mysqlRows<SessionUserRow>(
     `SELECT
        u.id,
        u.email,
+       u.username,
        u.display_name AS displayName,
        u.phone_last4 AS phoneLast4,
-       u.platform_role AS platformRole
+       u.platform_role AS platformRole,
+       s.id AS sessionId,
+       COALESCE(s.refresh_expires_at, s.expires_at) AS refreshExpiresAt
+     FROM xiaoluo_v2_auth_sessions s
+     INNER JOIN xiaoluo_v2_users u ON u.id = s.user_id
+     WHERE s.id = ?
+       AND s.user_id = ?
+       AND COALESCE(s.refresh_expires_at, s.expires_at) > CURRENT_TIMESTAMP(3)
+       AND u.status = 'active'
+     LIMIT 1`,
+    [payload.sid, payload.sub],
+  );
+  if (!row) return null;
+  await mysqlExecute(
+    `UPDATE xiaoluo_v2_auth_sessions
+     SET last_seen_at = CURRENT_TIMESTAMP(3)
+     WHERE id = ?`,
+    [payload.sid],
+  ).catch(() => undefined);
+  return row;
+}
+
+async function accessPayload(request: Request) {
+  const token = cookieValue(request, ACCESS_COOKIE);
+  return token ? verifyAccessToken(token) : null;
+}
+
+export async function currentSessionId(request: Request) {
+  const payload = await accessPayload(request);
+  return payload?.sid ?? null;
+}
+
+export async function currentUser(request: Request): Promise<AuthUser | null> {
+  const payload = await accessPayload(request);
+  if (!payload) return null;
+  const row = await userForAccessPayload(payload);
+  return row ? publicUser(row) : null;
+}
+
+export async function refreshAuthSession(
+  request: Request,
+  refreshExpiresAtOverride?: Date,
+) {
+  const refreshToken = cookieValue(request, REFRESH_COOKIE);
+  if (!refreshToken) return null;
+  const refreshHash = await sha256(refreshToken);
+  const [row] = await mysqlRows<SessionUserRow>(
+    `SELECT
+       u.id,
+       u.email,
+       u.username,
+       u.display_name AS displayName,
+       u.phone_last4 AS phoneLast4,
+       u.platform_role AS platformRole,
+       s.id AS sessionId,
+       s.refresh_expires_at AS refreshExpiresAt
+     FROM xiaoluo_v2_auth_sessions s
+     INNER JOIN xiaoluo_v2_users u ON u.id = s.user_id
+     WHERE s.refresh_token_hash = ?
+       AND s.refresh_expires_at > CURRENT_TIMESTAMP(3)
+       AND u.status = 'active'
+     LIMIT 1`,
+    [refreshHash],
+  );
+  if (!row) return null;
+  const refreshExpiresAt =
+    refreshExpiresAtOverride ?? new Date(row.refreshExpiresAt);
+  const pair = await makeTokenPair(row.id, row.sessionId, refreshExpiresAt);
+  const nextHash = await sha256(pair.refreshToken);
+  const result = await mysqlExecute(
+    `UPDATE xiaoluo_v2_auth_sessions
+     SET token_hash = ?,
+         expires_at = ?,
+         refresh_token_hash = ?,
+         refresh_expires_at = ?,
+         refresh_rotated_at = CURRENT_TIMESTAMP(3),
+         last_seen_at = CURRENT_TIMESTAMP(3)
+     WHERE id = ? AND refresh_token_hash = ?`,
+    [
+      nextHash,
+      refreshExpiresAt,
+      nextHash,
+      refreshExpiresAt,
+      row.sessionId,
+      refreshHash,
+    ],
+  );
+  if (result.affectedRows !== 1) return null;
+  return { user: publicUser(row), pair };
+}
+
+export async function upgradeLegacySession(request: Request) {
+  const legacyToken = cookieValue(request, LEGACY_SESSION_COOKIE);
+  if (!legacyToken) return null;
+  const legacyHash = await sha256(legacyToken);
+  const [row] = await mysqlRows<SessionUserRow>(
+    `SELECT
+       u.id,
+       u.email,
+       u.username,
+       u.display_name AS displayName,
+       u.phone_last4 AS phoneLast4,
+       u.platform_role AS platformRole,
+       s.id AS sessionId,
+       s.expires_at AS refreshExpiresAt
      FROM xiaoluo_v2_auth_sessions s
      INNER JOIN xiaoluo_v2_users u ON u.id = s.user_id
      WHERE s.token_hash = ?
+       AND s.refresh_token_hash IS NULL
        AND s.expires_at > CURRENT_TIMESTAMP(3)
        AND u.status = 'active'
      LIMIT 1`,
-    [tokenHash],
+    [legacyHash],
   );
-  if (!rows[0]) return null;
-  void mysqlExecute(
+  if (!row) return null;
+  const refreshExpiresAt = new Date(row.refreshExpiresAt);
+  const pair = await makeTokenPair(row.id, row.sessionId, refreshExpiresAt);
+  const nextHash = await sha256(pair.refreshToken);
+  const result = await mysqlExecute(
     `UPDATE xiaoluo_v2_auth_sessions
-     SET last_seen_at = CURRENT_TIMESTAMP(3)
-     WHERE token_hash = ?`,
-    [tokenHash],
-  ).catch(() => undefined);
-  return rows[0];
+     SET token_hash = ?,
+         refresh_token_hash = ?,
+         refresh_expires_at = expires_at,
+         refresh_rotated_at = CURRENT_TIMESTAMP(3),
+         last_seen_at = CURRENT_TIMESTAMP(3)
+     WHERE id = ? AND token_hash = ? AND refresh_token_hash IS NULL`,
+    [nextHash, nextHash, row.sessionId, legacyHash],
+  );
+  if (result.affectedRows !== 1) return null;
+  return { user: publicUser(row), pair };
+}
+
+export async function destroySession(request: Request) {
+  const payload = await accessPayload(request);
+  if (payload) {
+    await mysqlExecute(
+      "DELETE FROM xiaoluo_v2_auth_sessions WHERE id = ? AND user_id = ?",
+      [payload.sid, payload.sub],
+    );
+    return;
+  }
+  const refreshToken = cookieValue(request, REFRESH_COOKIE);
+  if (refreshToken) {
+    await mysqlExecute(
+      "DELETE FROM xiaoluo_v2_auth_sessions WHERE refresh_token_hash = ?",
+      [await sha256(refreshToken)],
+    );
+    return;
+  }
+  const legacyToken = cookieValue(request, LEGACY_SESSION_COOKIE);
+  if (legacyToken) {
+    await mysqlExecute(
+      "DELETE FROM xiaoluo_v2_auth_sessions WHERE token_hash = ?",
+      [await sha256(legacyToken)],
+    );
+  }
 }
 
 export async function requireUser(request: Request) {
   const user = await currentUser(request);
   if (!user) {
-    throw new Response(JSON.stringify({ error: "请先登录" }), {
+    throw new Response(JSON.stringify({ error: "登录状态已过期，请重新验证" }), {
       status: 401,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
@@ -249,22 +628,64 @@ export async function requireSystemAdmin(request: Request) {
   return user;
 }
 
+const userSelect = `SELECT
+  id,
+  email,
+  username,
+  display_name AS displayName,
+  password_hash AS passwordHash,
+  phone_last4 AS phoneLast4,
+  platform_role AS platformRole,
+  status
+FROM xiaoluo_v2_users`;
+
 export async function userByEmail(email: string) {
-  const rows = await mysqlRows<UserRow>(
-    `SELECT
-       id,
-       email,
-       display_name AS displayName,
-       password_hash AS passwordHash,
-       phone_last4 AS phoneLast4,
-       platform_role AS platformRole,
-       status
-     FROM xiaoluo_v2_users
-     WHERE email = ?
-     LIMIT 1`,
+  const [user] = await mysqlRows<UserRow>(
+    `${userSelect} WHERE email = ? LIMIT 1`,
     [email],
   );
-  return rows[0] ?? null;
+  return user ?? null;
+}
+
+export async function userByUsername(username: string) {
+  const [user] = await mysqlRows<UserRow>(
+    `${userSelect} WHERE username = ? LIMIT 1`,
+    [username.trim().toLowerCase()],
+  );
+  return user ?? null;
+}
+
+export async function userById(id: string) {
+  const [user] = await mysqlRows<UserRow>(
+    `${userSelect} WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  return user ?? null;
+}
+
+export function normalizeUsername(value: string) {
+  const username = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_]{2,31}$/.test(username)) {
+    throw new Response(
+      JSON.stringify({
+        error: "用户名需要 3–32 位，仅支持小写字母、数字和下划线，且必须以字母或数字开头",
+      }),
+      {
+        status: 400,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      },
+    );
+  }
+  return username;
+}
+
+export async function userByLoginIdentifier(identifier: string) {
+  const normalized = identifier.trim().toLowerCase();
+  const [user] = await mysqlRows<UserRow>(
+    `${userSelect} WHERE email = ? OR username = ? LIMIT 1`,
+    [normalized, normalized],
+  );
+  return user ?? null;
 }
 
 export function jsonError(error: unknown, fallback: string) {

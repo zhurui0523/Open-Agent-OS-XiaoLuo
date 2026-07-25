@@ -7,6 +7,7 @@ import {
   MousePointer2,
   PanelsTopLeft,
   Play,
+  Settings,
   WandSparkles,
 } from "lucide-react";
 import type { AppView, RunState } from "../types";
@@ -19,6 +20,7 @@ interface CanvasToolbarProps {
   onToolChange: (tool: string) => void;
   onRun: () => void;
   onOpenDrawer: () => void;
+  onOpenSettings: () => void;
   onNavigate: (view: AppView) => void;
 }
 
@@ -29,6 +31,7 @@ export function CanvasToolbar({
   onToolChange,
   onRun,
   onOpenDrawer,
+  onOpenSettings,
   onNavigate,
 }: CanvasToolbarProps) {
   function chooseCanvasTool(tool: string) {
@@ -85,11 +88,28 @@ export function CanvasToolbar({
       </IconButton>
       <span className="tool-separator" />
       <IconButton
-        label={runState === "running" ? "工作流执行中" : "运行工作流"}
-        active={runState === "running"}
+        label={
+          runState === "waiting"
+            ? "等待第三方模型结果"
+            : runState === "running"
+              ? "工作流执行中"
+              : "运行工作流"
+        }
+        active={runState === "running" || runState === "waiting"}
         onClick={runCanvas}
       >
-        <Play size={18} fill={runState === "running" ? "currentColor" : "none"} />
+        <Play
+          size={18}
+          fill={
+            runState === "running" || runState === "waiting"
+              ? "currentColor"
+              : "none"
+          }
+        />
+      </IconButton>
+      <span className="tool-separator" />
+      <IconButton label="设置" onClick={onOpenSettings}>
+        <Settings size={18} />
       </IconButton>
     </nav>
   );

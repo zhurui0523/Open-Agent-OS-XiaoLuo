@@ -5,7 +5,10 @@ import {
   isNotNull,
   isNull,
   like,
+  lt,
+  or,
 } from "drizzle-orm";
+import type { RowDataPacket } from "mysql2/promise";
 import { getDb } from "../../../../db";
 import {
   assets,
@@ -18,11 +21,13 @@ import {
   sanitizeAssetName,
   serializeFileAsset,
   storeAsset,
+  validateUploadedFile,
 } from "../../../lib/asset-kernel";
 import { requireWorkspaceContext } from "../../../lib/cloud-context";
-import { mysqlNow } from "../../../lib/mysql";
+import { mysqlNow, mysqlRows } from "../../../lib/mysql";
 import { validateExternalEndpoint } from "../../../lib/model-adapters";
 import type { NodeKind } from "../../../types";
+import { artifactFormat } from "../../../lib/artifact-format";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -56,7 +61,7 @@ function jsonTags(value: unknown) {
 }
 
 function generatedName(kind: NodeKind, title?: string) {
-  const extension = kind === "text" ? "txt" : kind === "image" ? "png" : "mp4";
+  const extension = artifactFormat(kind).extension;
   return `${sanitizeAssetName(title ?? "AI 生成结果")}.${extension}`;
 }
 
@@ -79,9 +84,10 @@ async function generatedBytes(payload: {
     }
     return {
       bytes,
-      mimeType:
-        response.headers.get("content-type") ??
-        (payload.kind === "image" ? "image/png" : "video/mp4"),
+      mimeType: artifactFormat(
+        payload.kind ?? "document",
+        response.headers.get("content-type"),
+      ).mimeType,
     };
   }
   return {
@@ -99,6 +105,11 @@ export async function GET(request: Request) {
     const folder = url.searchParams.get("folder");
     const trashed = url.searchParams.get("trash") === "1";
     const favorite = url.searchParams.get("favorite") === "1";
+    const cursor = url.searchParams.get("cursor")?.trim() ?? "";
+    const limit = Math.min(
+      100,
+      Math.max(20, Number.parseInt(url.searchParams.get("limit") ?? "60", 10) || 60),
+    );
     const conditions = [
       eq(assets.workspaceId, home.workspaceId),
       trashed ? isNotNull(assets.trashedAt) : isNull(assets.trashedAt),
@@ -109,15 +120,36 @@ export async function GET(request: Request) {
     if (folder === "root") conditions.push(isNull(assets.folderId));
     else if (folder) conditions.push(eq(assets.folderId, folder));
     const db = await getDb();
+    if (cursor) {
+      const separator = cursor.indexOf("::");
+      const cursorUpdatedAt = separator > 0
+        ? new Date(cursor.slice(0, separator))
+        : null;
+      const cursorId = separator > 0 ? cursor.slice(separator + 2) : "";
+      if (cursorUpdatedAt && !Number.isNaN(cursorUpdatedAt.getTime()) && cursorId) {
+        const cursorCondition = or(
+          lt(assets.updatedAt, cursorUpdatedAt),
+          and(eq(assets.updatedAt, cursorUpdatedAt), lt(assets.id, cursorId)),
+        );
+        if (cursorCondition) conditions.push(cursorCondition);
+      }
+    }
     const rows = await db
       .select()
       .from(assets)
       .where(and(...conditions))
       .orderBy(desc(assets.updatedAt))
-      .limit(500);
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page.at(-1);
     return Response.json({
-      assets: rows.map(serializeFileAsset),
-      total: rows.length,
+      assets: page.map(serializeFileAsset),
+      total: page.length,
+      nextCursor:
+        hasMore && last?.updatedAt
+          ? `${new Date(last.updatedAt).toISOString()}::${last.id}`
+          : null,
     });
   } catch (error) {
     return errorResponse(error, 500);
@@ -136,11 +168,17 @@ export async function POST(request: Request) {
       if (file.size > MAX_FILE_BYTES) {
         throw new Error("单个文件暂时不能超过 100 MB");
       }
+      const bytes = await file.arrayBuffer();
+      const validated = validateUploadedFile({
+        name: file.name,
+        declaredMimeType: file.type,
+        bytes,
+      });
       input = {
         workspaceId: home.workspaceId,
-        name: file.name,
-        mimeType: file.type || "application/octet-stream",
-        bytes: await file.arrayBuffer(),
+        name: validated.name,
+        mimeType: validated.mimeType,
+        bytes,
         folderId: String(form.get("folderId") ?? "").trim() || null,
         tags: jsonTags(String(form.get("tags") ?? "")),
         description: String(form.get("description") ?? "").trim(),
@@ -290,13 +328,52 @@ export async function DELETE(request: Request) {
     if (!id) throw new Error("文件 ID 必填");
     const db = await getDb();
     const [ownedAsset] = await db
-      .select({ id: assets.id })
+      .select({ id: assets.id, uri: assets.uri })
       .from(assets)
       .where(
         and(eq(assets.id, id), eq(assets.workspaceId, home.workspaceId)),
       )
       .limit(1);
     if (!ownedAsset) return errorResponse(new Error("文件不存在"), 404);
+    const [referenceCount] = await mysqlRows<
+      RowDataPacket & { count: number }
+    >(
+      `SELECT (
+         (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_asset_relations ar
+           WHERE ar.from_asset_id = ? OR ar.to_asset_id = ?
+         ) +
+         (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_canvas_nodes n
+           INNER JOIN xiaoluo_v2_canvases c ON c.id = n.canvas_id
+           INNER JOIN xiaoluo_v2_projects p ON p.id = c.project_id
+           WHERE p.workspace_id = ?
+             AND (
+               CAST(n.parameters_json AS CHAR) LIKE ?
+               OR n.result LIKE ?
+             )
+         )
+       ) AS count`,
+      [
+        id,
+        id,
+        home.workspaceId,
+        `%${ownedAsset.uri}%`,
+        `%${ownedAsset.uri}%`,
+      ],
+    );
+    if (Number(referenceCount?.count ?? 0) > 0) {
+      return Response.json(
+        {
+          error: "该文件仍被画布或其他资产引用，请先移除引用",
+          code: "ASSET_IN_USE",
+          references: Number(referenceCount.count),
+        },
+        { status: 409 },
+      );
+    }
     const versions = await db
       .select()
       .from(assetVersions)

@@ -1,10 +1,12 @@
 import type { ResultSetHeader } from "mysql2/promise";
 import {
-  createSession,
+  authCookieHeaders,
+  createAuthSession,
   hashPassword,
   jsonError,
-  sessionCookie,
+  normalizeUsername,
   userByEmail,
+  userByUsername,
 } from "../../../../lib/auth";
 import { verifyPhoneChallenge } from "../../../../lib/phone-auth";
 import { mysqlTransaction } from "../../../../lib/mysql";
@@ -15,11 +17,13 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       email?: string;
       password?: string;
+      username?: string;
       displayName?: string;
       phone?: string;
       code?: string;
     };
     const email = body.email?.trim().toLowerCase() ?? "";
+    const username = normalizeUsername(body.username ?? "");
     const displayName = body.displayName?.trim().slice(0, 80) ?? "";
     const password = body.password ?? "";
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -31,9 +35,9 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (password.length < 10) {
+    if (password.length < 6) {
       return Response.json(
-        { error: "密码至少需要 10 个字符" },
+        { error: "密码至少需要 6 个字符" },
         { status: 400 },
       );
     }
@@ -45,6 +49,9 @@ export async function POST(request: Request) {
     }
     if (await userByEmail(email)) {
       return Response.json({ error: "该邮箱已经注册" }, { status: 409 });
+    }
+    if (await userByUsername(username)) {
+      return Response.json({ error: "该用户名已经被使用" }, { status: 409 });
     }
 
     const userId = crypto.randomUUID();
@@ -61,13 +68,14 @@ export async function POST(request: Request) {
         await connection.execute<ResultSetHeader>(
           `INSERT INTO xiaoluo_v2_users
             (
-              id, email, display_name, password_hash,
+              id, email, username, display_name, password_hash,
               phone_hash, phone_last4, phone_verified_at
             )
-           VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
           [
             userId,
             email,
+            username,
             displayName,
             passwordHash,
             phone.phoneHash,
@@ -82,7 +90,7 @@ export async function POST(request: Request) {
         error.code === "ER_DUP_ENTRY"
       ) {
         return Response.json(
-          { error: "该邮箱或手机号已经注册" },
+          { error: "该用户名、邮箱或手机号已经注册" },
           { status: 409 },
         );
       }
@@ -90,12 +98,13 @@ export async function POST(request: Request) {
     }
 
     await ensureUserHome(userId, displayName);
-    const session = await createSession(userId);
+    const session = await createAuthSession(userId, request);
     return Response.json(
       {
         user: {
           id: userId,
           email,
+          username,
           displayName,
           phoneLast4,
           platformRole: "user",
@@ -103,13 +112,10 @@ export async function POST(request: Request) {
       },
       {
         status: 201,
-        headers: {
-          "set-cookie": sessionCookie(session.token, session.expires, request),
-        },
+        headers: authCookieHeaders(session, request),
       },
     );
   } catch (error) {
     return jsonError(error, "创建账号失败");
   }
 }
-

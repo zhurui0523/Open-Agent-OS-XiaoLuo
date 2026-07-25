@@ -7,8 +7,6 @@ import type {
 import { createPool } from "mysql2/promise";
 import { serverRuntimeConfig } from "./server-runtime-config";
 
-let pool: Pool | undefined;
-
 function createMysqlPool() {
   const { mysql } = serverRuntimeConfig().database;
   return createPool({
@@ -32,48 +30,67 @@ function createMysqlPool() {
   });
 }
 
+const poolKey = Symbol.for("xiaoluo.mysql.pool");
+
+type MysqlGlobal = typeof globalThis & {
+  [poolKey]?: Pool;
+};
+
 export async function getMysqlPool() {
-  pool ??= createMysqlPool();
-  return pool;
+  const runtime = globalThis as MysqlGlobal;
+  runtime[poolKey] ??= createMysqlPool();
+  return runtime[poolKey];
+}
+
+async function withMysqlPool<T>(operation: (database: Pool) => Promise<T>) {
+  const database = createMysqlPool();
+  try {
+    return await operation(database);
+  } finally {
+    await database.end();
+  }
 }
 
 export async function mysqlRows<T extends RowDataPacket>(
   sql: string,
   values: unknown[] = [],
 ) {
-  const database = await getMysqlPool();
-  const [rows] = await database.execute<T[]>(sql, values as never);
-  return rows;
+  return withMysqlPool(async (database) => {
+    const [rows] = await database.execute<T[]>(sql, values as never);
+    return rows;
+  });
 }
 
 export async function mysqlExecute(
   sql: string,
   values: unknown[] = [],
 ) {
-  const database = await getMysqlPool();
-  const [result] = await database.execute<ResultSetHeader>(
-    sql,
-    values as never,
-  );
-  return result;
+  return withMysqlPool(async (database) => {
+    const [result] = await database.execute<ResultSetHeader>(
+      sql,
+      values as never,
+    );
+    return result;
+  });
 }
 
 export async function mysqlTransaction<T>(
   operation: (connection: PoolConnection) => Promise<T>,
 ) {
-  const database = await getMysqlPool();
-  const connection = await database.getConnection();
-  try {
-    await connection.beginTransaction();
-    const result = await operation(connection);
-    await connection.commit();
-    return result;
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
-  }
+  return withMysqlPool(async (database) => {
+    const connection = await database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await operation(connection);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  });
 }
 
 export function mysqlNow(date = new Date()) {

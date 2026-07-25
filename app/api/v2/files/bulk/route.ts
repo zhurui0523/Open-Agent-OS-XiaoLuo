@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { assets } from "../../../../../db/schema";
 import { jsonError, requireUser } from "../../../../lib/auth";
@@ -11,9 +11,10 @@ export async function PATCH(request: Request) {
     const payload = (await request.json()) as {
       workspaceId?: string;
       ids?: string[];
-      action?: "trash" | "restore" | "move" | "favorite";
+      action?: "trash" | "restore" | "move" | "favorite" | "tags";
       folderId?: string | null;
       favorite?: boolean;
+      tags?: string[];
     };
     const workspaceId = await requireRequestedWorkspace(
       request,
@@ -29,6 +30,12 @@ export async function PATCH(request: Request) {
     }
     const db = await getDb();
     const now = mysqlNow();
+    const tags = Array.isArray(payload.tags)
+      ? [...new Set(payload.tags.map((tag) => tag.trim()).filter(Boolean))].slice(
+          0,
+          30,
+        )
+      : [];
     await db
       .update(assets)
       .set({
@@ -39,6 +46,12 @@ export async function PATCH(request: Request) {
           : {}),
         ...(payload.action === "favorite"
           ? { favorite: Boolean(payload.favorite) }
+          : {}),
+        ...(payload.action === "tags"
+          ? {
+              tagsJson: JSON.stringify(tags),
+              searchText: sql`concat(${assets.searchText}, '\n', ${tags.join(" ")})`,
+            }
           : {}),
         updatedAt: now,
       })

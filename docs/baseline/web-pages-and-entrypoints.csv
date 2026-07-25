@@ -1,0 +1,12 @@
+id,entrypoint,view_or_page,priority,auth,requirement,evidence,test_id,status
+PAGE-001,/,登录注册找回密码,P0,public,REQ-001,app/components/auth-screen.tsx,E2E-001,verified
+PAGE-002,/,灵境无限画布,P0,session,REQ-004,app/components/canvas-view.tsx,E2E-002,verified
+PAGE-003,/,画布管理抽屉,P0,session,REQ-004,app/components/canvas-drawer.tsx,E2E-003,verified
+PAGE-004,/,Intent Console,P0,session,REQ-005,app/components/intent-console.tsx,E2E-004,verified
+PAGE-005,/,资产与文件系统,P0,session,REQ-011,app/components/assets-view.tsx,E2E-005,verified
+PAGE-006,/,能力与Package中心,P0,session,REQ-009,app/components/capabilities-view.tsx,E2E-006,verified
+PAGE-007,/,设置中心,P0,session,REQ-020,app/components/settings-center.tsx,E2E-007,verified
+PAGE-008,/,个人资料与安全,P0,session,REQ-019,app/components/personal-settings.tsx,E2E-008,verified
+PAGE-009,/,账户与企业管理,P1,session,REQ-002,app/components/account-center.tsx,E2E-009,verified
+PAGE-010,/,系统运维总览,P1,system_admin,REQ-021,app/components/admin-operations.tsx,E2E-010,verified
+PAGE-011,/share/:token,只读画布与Workflow分享,P1,token,REQ-018,app/share/[token]/page.tsx,E2E-011,verified

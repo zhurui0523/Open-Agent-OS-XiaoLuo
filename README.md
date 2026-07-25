@@ -64,7 +64,9 @@ pnpm lint
 ## 安全约定
 
 - 密码使用 PBKDF2-SHA256、随机盐和 310,000 次迭代保存。
-- 登录状态使用服务端会话与 `HttpOnly`、`SameSite=Lax` Cookie。
+- 登录状态使用 15 分钟签名 Access Token 与可轮换 Refresh Token；两者均通过
+  `HttpOnly`、`SameSite=Lax` Cookie 传输，Refresh 会话可按设备立即撤销。
+- 用户名是独立、全局唯一的登录标识；显示名称只负责界面展示。
 - 画布写入采用 revision 乐观锁，检测多端并发覆盖。
 - OSS AccessKey 只在服务端使用，绝不下发到浏览器。
 - 已经出现在聊天、日志、截图或 Git 历史里的密码与 AccessKey 必须立即

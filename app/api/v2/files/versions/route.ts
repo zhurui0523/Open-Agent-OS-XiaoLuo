@@ -9,6 +9,7 @@ import {
   getFileBucket,
   MAX_FILE_BYTES,
   storeAssetVersion,
+  validateUploadedFile,
 } from "../../../../lib/asset-kernel";
 import { requireWorkspaceContext } from "../../../../lib/cloud-context";
 
@@ -81,11 +82,23 @@ export async function POST(request: Request) {
       )
       .limit(1);
     if (!asset) return errorResponse(new Error("文件不存在"), 404);
+    const bytes = await file.arrayBuffer();
+    const validated = validateUploadedFile({
+      name: file.name || asset.name,
+      declaredMimeType: file.type || asset.mimeType,
+      bytes,
+    });
+    if (
+      validated.mimeType.split("/")[0] !== asset.mimeType.split("/")[0] &&
+      validated.mimeType !== asset.mimeType
+    ) {
+      throw new Error("新版本必须与原文件保持相同的内容类型");
+    }
     const bucket = await getFileBucket();
     const updated = await storeAssetVersion(db, bucket, asset, {
-      name: file.name || asset.name,
-      mimeType: file.type || asset.mimeType,
-      bytes: await file.arrayBuffer(),
+      name: validated.name,
+      mimeType: validated.mimeType,
+      bytes,
       sourceType: String(form.get("sourceType") ?? "version-upload"),
       sourceRef: String(form.get("sourceRef") ?? "").trim() || null,
     });

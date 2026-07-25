@@ -14,6 +14,7 @@
     "admin:bootstrap": "node --env-file=.env.local scripts/bootstrap-system-admin.mjs",
     "start": "vinext start",
     "start:local:detached": "node scripts/start-local-detached.mjs",
+    "worker:local": "node --env-file=.env.local scripts/runtime-worker.mjs",
     "test": "vinext build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",

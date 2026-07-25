@@ -1,5 +1,5 @@
 import {
-  clearSessionCookie,
+  clearAuthCookieHeaders,
   destroySession,
   jsonError,
 } from "../../../../lib/auth";
@@ -9,7 +9,7 @@ export async function POST(request: Request) {
     await destroySession(request);
     return Response.json(
       { ok: true },
-      { headers: { "set-cookie": clearSessionCookie(request) } },
+      { headers: clearAuthCookieHeaders(request) },
     );
   } catch (error) {
     return jsonError(error, "退出登录失败");

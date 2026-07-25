@@ -5,7 +5,6 @@ import {
   ArrowRight,
   LoaderCircle,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { AccountUser } from "../types";
@@ -35,6 +34,7 @@ export function AuthScreen({
   const [recoveryStep, setRecoveryStep] =
     useState<RecoveryStep>("verify");
   const [displayName, setDisplayName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
@@ -116,10 +116,10 @@ export function AuthScreen({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            email,
+            ...(mode === "login" ? { identifier: email } : { email }),
             password,
             ...(mode === "register"
-              ? { displayName, phone, code }
+              ? { username, displayName, phone, code }
               : {}),
           }),
         },
@@ -158,10 +158,6 @@ export function AuthScreen({
   return (
     <main className="auth-screen">
       <section className="auth-story">
-        <div className="brand-lockup light">
-          <span><Sparkles size={20} /></span>
-          <div><b>XiaoLuo AI</b><small>Intent OS · V2</small></div>
-        </div>
         <div className="auth-story-copy">
           <span className="auth-kicker">Connected AI Operating System</span>
           <h1>让每一个想法，都可以被理解。</h1>
@@ -170,7 +166,6 @@ export function AuthScreen({
             <p>让每一次创造，都可以沉淀为可复用的智能资产。</p>
           </div>
         </div>
-        <div className="auth-orbit" aria-hidden="true"><i /><i /><i /><span /></div>
       </section>
       <section className="auth-panel">
         <form className="auth-card" onSubmit={submit}>
@@ -199,27 +194,51 @@ export function AuthScreen({
           ) : (
             <>
               {mode === "register" && (
-                <label>
-                  <span>显示名称</span>
-                  <input
-                    type="text"
-                    value={displayName}
-                    onChange={(event) => setDisplayName(event.target.value)}
-                    autoComplete="name"
-                    minLength={2}
-                    maxLength={80}
-                    required
-                  />
-                </label>
+                <>
+                  <label>
+                    <span>用户名</span>
+                    <input
+                      type="text"
+                      value={username}
+                      onChange={(event) =>
+                        setUsername(
+                          event.target.value
+                            .toLowerCase()
+                            .replace(/[^a-z0-9_]/g, "")
+                            .slice(0, 32),
+                        )
+                      }
+                      autoComplete="username"
+                      minLength={3}
+                      maxLength={32}
+                      pattern="[a-z0-9][a-z0-9_]{2,31}"
+                      placeholder="用于登录，全局唯一"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>显示名称</span>
+                    <input
+                      type="text"
+                      value={displayName}
+                      onChange={(event) => setDisplayName(event.target.value)}
+                      autoComplete="name"
+                      minLength={2}
+                      maxLength={80}
+                      required
+                    />
+                  </label>
+                </>
               )}
               {mode !== "recover" && (
                 <label>
-                  <span>邮箱</span>
+                  <span>{mode === "login" ? "账号" : "邮箱"}</span>
                   <input
-                    type="email"
+                    type={mode === "login" ? "text" : "email"}
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
-                    autoComplete="email"
+                    autoComplete={mode === "login" ? "username" : "email"}
+                    placeholder={mode === "login" ? "邮箱或用户名" : undefined}
                     required
                   />
                 </label>
@@ -275,7 +294,7 @@ export function AuthScreen({
                     autoComplete={
                       mode === "login" ? "current-password" : "new-password"
                     }
-                    minLength={10}
+                    minLength={6}
                     required
                   />
                 </label>

@@ -2,10 +2,13 @@
 
 import {
   AlertCircle,
+  AudioLines,
   Check,
   Clapperboard,
   Clock3,
   FileText,
+  FileOutput,
+  GitBranch,
   GripHorizontal,
   Image as ImageIcon,
   Layers3,
@@ -17,16 +20,19 @@ import {
   Video,
   XCircle,
 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import type {
   CanvasNode,
   Capability,
   KernelNodeOutput,
   ModelConnection,
   NodeStatus,
+  PortDataType,
 } from "../types";
+import { portColor, portsForNode } from "../lib/node-ports";
 import { IconButton } from "./icon-button";
 import { SchemaFields } from "./schema-fields";
+import { SchemaOutput } from "./schema-output";
 
 const statusMeta: Record<
   NodeStatus,
@@ -40,16 +46,21 @@ const statusMeta: Record<
   succeeded: { label: "已完成", icon: Check },
   failed: { label: "失败", icon: AlertCircle },
   canceled: { label: "已取消", icon: XCircle },
+  skipped: { label: "已跳过", icon: GitBranch },
 };
 
 const kindMeta = {
   text: { label: "文本", icon: FileText },
   image: { label: "图像", icon: ImageIcon },
   video: { label: "视频", icon: Video },
+  audio: { label: "音频", icon: AudioLines },
+  document: { label: "文档", icon: FileOutput },
 };
 
 interface NodeCardProps {
   node: CanvasNode;
+  workspaceId: string;
+  saveState: "loading" | "ready" | "saving" | "saved" | "conflict" | "error";
   selected: boolean;
   multiSelected: boolean;
   zoom: number;
@@ -61,9 +72,15 @@ interface NodeCardProps {
   onMove: (x: number, y: number) => void;
   onUpdate: (patch: Partial<CanvasNode>) => void;
   onSizeChange: (nodeId: string, height: number) => void;
-  onConnectionStart: (clientX: number, clientY: number) => void;
-  connectionTargetAvailable: boolean;
+  onConnectionStart: (
+    portId: string,
+    dataType: PortDataType,
+    clientX: number,
+    clientY: number,
+  ) => void;
+  connectionDataType?: PortDataType;
   onRun: () => void;
+  onRerunBranch: () => void;
 }
 
 interface NodeWorkbenchProps {
@@ -100,7 +117,7 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         <span>
           <Layers3 size={12} /> 专业工作台
         </span>
-        <small>{node.kind === "text" ? "TEXT" : node.kind === "image" ? "IMAGE" : "VIDEO"}</small>
+        <small>{node.kind.toUpperCase()}</small>
       </header>
 
       {node.kind === "text" && (
@@ -140,6 +157,8 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         <>
           <div className="workbench-preview image-workbench-preview">
             {mediaUrl ? (
+              // Provider and OSS result URLs are dynamic.
+              // eslint-disable-next-line @next/next/no-img-element
               <img src={mediaUrl} alt={`${node.title} 生成结果`} />
             ) : (
               <div className="media-preview-art" aria-hidden="true">
@@ -237,12 +256,87 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
           </div>
         </>
       )}
+
+      {node.kind === "audio" && (
+        <>
+          <div className="workbench-preview audio-workbench-preview">
+            {mediaUrl ? (
+              <audio src={mediaUrl} controls preload="metadata" />
+            ) : (
+              <>
+                <AudioLines size={22} />
+                <span>{progressLabel}</span>
+              </>
+            )}
+          </div>
+          <div className="workbench-fields">
+            <label>
+              <span>格式</span>
+              <select
+                value={value("format", "mp3")}
+                onChange={(event) => updateParameter("format", event.target.value)}
+              >
+                <option value="mp3">MP3</option>
+                <option value="wav">WAV</option>
+                <option value="flac">FLAC</option>
+              </select>
+            </label>
+            <label>
+              <span>采样率</span>
+              <select
+                value={value("sampleRate", "44100")}
+                onChange={(event) =>
+                  updateParameter("sampleRate", event.target.value)
+                }
+              >
+                <option value="22050">22.05 kHz</option>
+                <option value="44100">44.1 kHz</option>
+                <option value="48000">48 kHz</option>
+              </select>
+            </label>
+          </div>
+        </>
+      )}
+
+      {node.kind === "document" && (
+        <>
+          <div className="workbench-preview document-workbench-preview">
+            <FileOutput size={22} />
+            <span>{mediaUrl ? "文档已生成，可在结果区打开" : progressLabel}</span>
+          </div>
+          <div className="workbench-fields">
+            <label>
+              <span>输出格式</span>
+              <select
+                value={value("format", "pdf")}
+                onChange={(event) => updateParameter("format", event.target.value)}
+              >
+                <option value="pdf">PDF</option>
+                <option value="docx">Word</option>
+                <option value="pptx">PowerPoint</option>
+                <option value="xlsx">Excel</option>
+              </select>
+            </label>
+            <label>
+              <span>模板</span>
+              <input
+                value={value("template", "默认模板")}
+                onChange={(event) =>
+                  updateParameter("template", event.target.value)
+                }
+              />
+            </label>
+          </div>
+        </>
+      )}
     </section>
   );
 }
 
 export function NodeCard({
   node,
+  workspaceId,
+  saveState,
   selected,
   multiSelected,
   zoom,
@@ -255,8 +349,9 @@ export function NodeCard({
   onUpdate,
   onSizeChange,
   onConnectionStart,
-  connectionTargetAvailable,
+  connectionDataType,
   onRun,
+  onRerunBranch,
 }: NodeCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const drag = useRef<{
@@ -267,6 +362,8 @@ export function NodeCard({
     nodeY: number;
     checkpointed: boolean;
   } | null>(null);
+  const moveFrame = useRef<number | null>(null);
+  const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const status = statusMeta[node.status];
   const StatusIcon = status.icon;
   const KindIcon = kindMeta[node.kind].icon;
@@ -279,6 +376,8 @@ export function NodeCard({
   const activeCapability = capabilities.find(
     (capability) => capability.id === node.capabilityId,
   );
+  const inputPorts = portsForNode(node, "input");
+  const outputPorts = portsForNode(node, "output");
 
   useEffect(() => {
     const card = cardRef.current;
@@ -289,6 +388,13 @@ export function NodeCard({
     observer.observe(card);
     return () => observer.disconnect();
   }, [node.id, onSizeChange]);
+
+  useEffect(
+    () => () => {
+      if (moveFrame.current !== null) cancelAnimationFrame(moveFrame.current);
+    },
+    [],
+  );
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (panMode || event.button !== 0) return;
@@ -317,14 +423,29 @@ export function NodeCard({
       onMoveStart();
     }
     const scale = zoom / 100;
-    onMove(
-      drag.current.nodeX + (event.clientX - drag.current.startX) / scale,
-      drag.current.nodeY + (event.clientY - drag.current.startY) / scale,
-    );
+    pendingMove.current = {
+      x: drag.current.nodeX + (event.clientX - drag.current.startX) / scale,
+      y: drag.current.nodeY + (event.clientY - drag.current.startY) / scale,
+    };
+    if (moveFrame.current === null) {
+      moveFrame.current = requestAnimationFrame(() => {
+        if (pendingMove.current) {
+          onMove(pendingMove.current.x, pendingMove.current.y);
+        }
+        pendingMove.current = null;
+        moveFrame.current = null;
+      });
+    }
   }
 
   function endDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (drag.current?.pointerId === event.pointerId) drag.current = null;
+    if (drag.current?.pointerId === event.pointerId) {
+      if (pendingMove.current) {
+        onMove(pendingMove.current.x, pendingMove.current.y);
+        pendingMove.current = null;
+      }
+      drag.current = null;
+    }
   }
 
   return (
@@ -396,8 +517,38 @@ export function NodeCard({
               <select
                 aria-label="能力"
                 value={node.capabilityId}
-                onChange={(event) => onUpdate({ capabilityId: event.target.value })}
+                onChange={(event) => {
+                  const capability = capabilities.find(
+                    (item) => item.id === event.target.value,
+                  );
+                  onUpdate({
+                    capabilityId: event.target.value,
+                    parameters: {
+                      ...node.parameters,
+                      ...(capability
+                        ? {
+                            capabilitySnapshot: {
+                              id: capability.id,
+                              title: capability.title,
+                              packageId: capability.packageId ?? null,
+                              packageVersion: capability.packageVersion,
+                              contributionType:
+                                capability.contributionType ?? null,
+                              inputSchema: capability.inputSchema ?? {},
+                              outputSchema: capability.outputSchema ?? {},
+                              uiSchema: capability.uiSchema ?? {},
+                            },
+                          }
+                        : {}),
+                    },
+                  });
+                }}
               >
+                {!activeCapability && (
+                  <option value={node.capabilityId}>
+                    缺失能力（历史节点只读）
+                  </option>
+                )}
                 {compatibleCapabilities.map((capability) => (
                   <option key={capability.id} value={capability.id}>
                     {capability.title}
@@ -422,13 +573,62 @@ export function NodeCard({
                 ))}
               </select>
             </label>
+            <label>
+              <span>失败策略</span>
+              <select
+                aria-label="失败策略"
+                value={String(node.parameters?.failurePolicy ?? "stop")}
+                onChange={(event) =>
+                  onUpdate({
+                    parameters: {
+                      ...node.parameters,
+                      failurePolicy: event.target.value,
+                    },
+                  })
+                }
+              >
+                <option value="stop">停止工作流</option>
+                <option value="retry">自动重试</option>
+                <option value="skip">跳过并继续</option>
+              </select>
+            </label>
+            {node.parameters?.failurePolicy === "retry" && (
+              <label>
+                <span>最大尝试次数</span>
+                <select
+                  aria-label="最大尝试次数"
+                  value={String(node.parameters?.retryLimit ?? 3)}
+                  onChange={(event) =>
+                    onUpdate({
+                      parameters: {
+                        ...node.parameters,
+                        retryLimit: Number(event.target.value),
+                      },
+                    })
+                  }
+                >
+                  {[2, 3, 4, 5].map((attempts) => (
+                    <option key={attempts} value={attempts}>
+                      {attempts} 次
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
+
+          {!activeCapability && (
+            <div className="node-missing-capability" role="status">
+              当前 Package 已停用或卸载。历史参数和结果仍保留；请重新安装或选择替代能力后再执行。
+            </div>
+          )}
 
           {activeCapability?.inputSchema && (
             <SchemaFields
               schema={activeCapability.inputSchema}
               uiSchema={activeCapability.uiSchema}
               value={node.parameters ?? {}}
+              workspaceId={workspaceId}
               onChange={(parameters) => onUpdate({ parameters })}
             />
           )}
@@ -441,7 +641,23 @@ export function NodeCard({
         </div>
       )}
 
-      {!selected && node.result && <div className="node-result">{node.result}</div>}
+      {!selected &&
+        activeCapability?.outputSchema &&
+        node.parameters?.kernelOutput && (
+          <SchemaOutput
+            schema={activeCapability.outputSchema}
+            value={
+              (node.parameters.kernelOutput as KernelNodeOutput).data ??
+              node.parameters.kernelOutput
+            }
+          />
+        )}
+
+      {!selected &&
+        node.result &&
+        !(activeCapability?.outputSchema && node.parameters?.kernelOutput) && (
+          <div className="node-result">{node.result}</div>
+        )}
 
       {selected && (
         <div className="node-actions">
@@ -451,32 +667,87 @@ export function NodeCard({
           <IconButton label="重试节点" onClick={onRun}>
             <RotateCcw size={15} />
           </IconButton>
+          <IconButton label="从此节点重跑下游分支" onClick={onRerunBranch}>
+            <GitBranch size={15} />
+          </IconButton>
           <span className="saved-state">
-            <Check size={13} /> 已保存
+            {saveState === "conflict" || saveState === "error" ? (
+              <AlertCircle size={13} />
+            ) : (
+              <Check size={13} />
+            )}{" "}
+            {saveState === "saving"
+              ? "保存中"
+              : saveState === "conflict"
+                ? "版本冲突"
+                : saveState === "error"
+                  ? "保存失败"
+                  : "已保存"}
           </span>
         </div>
       )}
 
-      <button
-        type="button"
-        className={`port port-input ${connectionTargetAvailable ? "is-available" : ""}`}
-        data-node-id={node.id}
-        aria-label={`连接到${node.title}`}
-        onPointerDown={(event) => event.stopPropagation()}
-      />
-      <button
-        type="button"
-        className="port port-output"
-        data-node-id={node.id}
-        aria-label={`从${node.title}开始连接`}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          event.stopPropagation();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          onConnectionStart(event.clientX, event.clientY);
-        }}
-      />
+      {inputPorts.map((port, index) => {
+        const compatible =
+          Boolean(connectionDataType) &&
+          port.dataTypes.includes(connectionDataType as PortDataType);
+        const offset = (index - (inputPorts.length - 1) / 2) * 22;
+        return (
+          <button
+            type="button"
+            key={port.id}
+            className={`port port-input ${compatible ? "is-available" : connectionDataType ? "is-incompatible" : ""}`}
+            style={
+              {
+                top: `calc(50% + ${offset}px)`,
+                "--port-color": portColor(port.dataTypes[0]),
+              } as CSSProperties
+            }
+            data-node-id={node.id}
+            data-port-id={port.id}
+            data-port-types={port.dataTypes.join(",")}
+            title={
+              compatible
+                ? `${port.label} · 可接收 ${connectionDataType}`
+                : `${port.label} · ${port.dataTypes.join(" / ")}`
+            }
+            aria-label={`${port.label}输入端口，可接收${port.dataTypes.join("、")}`}
+            onPointerDown={(event) => event.stopPropagation()}
+          />
+        );
+      })}
+      {outputPorts.map((port, index) => {
+        const offset = (index - (outputPorts.length - 1) / 2) * 22;
+        return (
+          <button
+            type="button"
+            key={port.id}
+            className="port port-output"
+            style={
+              {
+                top: `calc(50% + ${offset}px)`,
+                "--port-color": portColor(port.dataTypes[0]),
+              } as CSSProperties
+            }
+            data-node-id={node.id}
+            data-port-id={port.id}
+            title={`${port.label} · 输出 ${port.dataTypes.join(" / ")}`}
+            aria-label={`${port.label}输出端口，输出${port.dataTypes.join("、")}`}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              onConnectionStart(
+                port.id,
+                port.dataTypes[0],
+                event.clientX,
+                event.clientY,
+              );
+            }}
+          />
+        );
+      })}
     </article>
   );
 }

@@ -14,9 +14,16 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  Trash2,
 } from "lucide-react";
-import { useState } from "react";
-import type { ChatMessage, IntentPlan, RunState } from "../types";
+import { useRef, useState } from "react";
+import type {
+  ChatAttachment,
+  ChatMessage,
+  Capability,
+  IntentPlan,
+  RunState,
+} from "../types";
 import { IconButton } from "./icon-button";
 
 const suggestions = [
@@ -31,8 +38,16 @@ interface IntentConsoleProps {
   isPlanning: boolean;
   runState: RunState;
   onClose: () => void;
-  onSubmit: (value: string) => void;
-  onConfirmPlan: () => void;
+  capabilities: Capability[];
+  onSubmit: (
+    value: string,
+    attachments?: ChatAttachment[],
+    preferredCapabilityId?: string,
+  ) => void;
+  onUploadAttachments: (files: File[]) => Promise<ChatAttachment[]>;
+  onConfirmPlan: () => void | Promise<void>;
+  onUpdatePlan: (plan: IntentPlan) => void | Promise<void>;
+  onRejectPlan: () => void | Promise<void>;
   onStart: () => void;
   onPause: () => void;
   onCancel: () => void;
@@ -44,18 +59,33 @@ export function IntentConsole({
   isPlanning,
   runState,
   onClose,
+  capabilities,
   onSubmit,
+  onUploadAttachments,
   onConfirmPlan,
+  onUpdatePlan,
+  onRejectPlan,
   onStart,
   onPause,
   onCancel,
 }: IntentConsoleProps) {
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [editingPlan, setEditingPlan] = useState(false);
+  const [planDraft, setPlanDraft] = useState<IntentPlan | null>(null);
+  const [preferredCapabilityId, setPreferredCapabilityId] = useState("auto");
+  const attachmentRef = useRef<HTMLInputElement>(null);
 
   function submit() {
     if (!draft.trim()) return;
-    onSubmit(draft);
+    onSubmit(
+      draft,
+      attachments,
+      preferredCapabilityId === "auto" ? undefined : preferredCapabilityId,
+    );
     setDraft("");
+    setAttachments([]);
   }
 
   return (
@@ -92,6 +122,15 @@ export function IntentConsole({
             )}
             <div className="message-bubble">
               <p>{message.content}</p>
+              {!!message.attachments?.length && (
+                <div className="message-attachments">
+                  {message.attachments.map((attachment) => (
+                    <span key={attachment.id}>
+                      <Paperclip size={11} /> {attachment.name}
+                    </span>
+                  ))}
+                </div>
+              )}
               <time>{message.time}</time>
             </div>
           </div>
@@ -115,17 +154,79 @@ export function IntentConsole({
               </span>
               <span className="plan-badge">待确认</span>
             </div>
-            <h3>{plan.goal}</h3>
+            {editingPlan && planDraft ? (
+              <input
+                className="plan-edit-goal"
+                aria-label="计划目标"
+                value={planDraft.goal}
+                onChange={(event) =>
+                  setPlanDraft({ ...planDraft, goal: event.target.value })
+                }
+              />
+            ) : (
+              <h3>{plan.goal}</h3>
+            )}
             <div className="plan-tasks">
-              {plan.tasks.map((task, index) => (
+              {(editingPlan && planDraft ? planDraft : plan).tasks.map((task, index) => (
                 <div key={task.id} className="plan-task">
                   <span>{index + 1}</span>
                   <div>
-                    <b>{task.title}</b>
-                    <small>
-                      {task.capability} · {task.duration}
-                    </small>
+                    {editingPlan && planDraft ? (
+                      <>
+                        <input
+                          aria-label={`任务 ${index + 1} 标题`}
+                          value={task.title}
+                          onChange={(event) =>
+                            setPlanDraft({
+                              ...planDraft,
+                              tasks: planDraft.tasks.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? { ...item, title: event.target.value }
+                                  : item,
+                              ),
+                            })
+                          }
+                        />
+                        <input
+                          aria-label={`任务 ${index + 1} 能力`}
+                          value={task.capability}
+                          onChange={(event) =>
+                            setPlanDraft({
+                              ...planDraft,
+                              tasks: planDraft.tasks.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? { ...item, capability: event.target.value }
+                                  : item,
+                              ),
+                            })
+                          }
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <b>{task.title}</b>
+                        <small>
+                          {task.capability} · {task.duration}
+                        </small>
+                      </>
+                    )}
                   </div>
+                  {editingPlan && planDraft && planDraft.tasks.length > 1 && (
+                    <button
+                      type="button"
+                      aria-label={`删除任务 ${index + 1}`}
+                      onClick={() =>
+                        setPlanDraft({
+                          ...planDraft,
+                          tasks: planDraft.tasks.filter(
+                            (_, itemIndex) => itemIndex !== index,
+                          ),
+                        })
+                      }
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -136,9 +237,40 @@ export function IntentConsole({
             )}
             <div className="plan-summary">
               <span>{plan.estimate}</span>
-              <button type="button" className="secondary-button">
-                调整计划
+              <button
+                type="button"
+                className="danger-text-button"
+                onClick={() => void onRejectPlan()}
+              >
+                取消计划
               </button>
+              {editingPlan && planDraft ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!planDraft.goal.trim() || !planDraft.tasks.length}
+                  onClick={() => {
+                    void onUpdatePlan(planDraft);
+                    setEditingPlan(false);
+                  }}
+                >
+                  保存调整
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setPlanDraft({
+                      ...plan,
+                      tasks: plan.tasks.map((task) => ({ ...task })),
+                    });
+                    setEditingPlan(true);
+                  }}
+                >
+                  调整计划
+                </button>
+              )}
               <button type="button" className="primary-button" onClick={onConfirmPlan}>
                 <Check size={15} /> 确认并写入画布
               </button>
@@ -161,17 +293,29 @@ export function IntentConsole({
           </div>
         )}
 
-        {(runState === "running" || runState === "paused") && (
+        {(runState === "running" ||
+          runState === "waiting" ||
+          runState === "paused") && (
           <div className="run-control-card">
             <div>
               <span className={`run-pulse ${runState === "paused" ? "is-paused" : ""}`} />
               <div>
-                <strong>{runState === "running" ? "工作流执行中" : "工作流已暂停"}</strong>
-                <small>运行状态来自当前 Run 投影</small>
+                <strong>
+                  {runState === "waiting"
+                    ? "等待第三方模型结果"
+                    : runState === "running"
+                      ? "工作流执行中"
+                      : "工作流已暂停"}
+                </strong>
+                <small>
+                  {runState === "waiting"
+                    ? "异步任务完成后会自动继续执行下游节点"
+                    : "运行状态来自当前 Run 投影"}
+                </small>
               </div>
             </div>
             <div>
-              {runState === "running" ? (
+              {runState === "running" || runState === "waiting" ? (
                 <button type="button" className="secondary-button" onClick={onPause}>
                   <Pause size={14} /> 暂停
                 </button>
@@ -230,6 +374,27 @@ export function IntentConsole({
       </div>
 
       <div className="composer-wrap">
+        {!!attachments.length && (
+          <div className="composer-attachments">
+            {attachments.map((attachment) => (
+              <span key={attachment.id}>
+                <Paperclip size={12} />
+                {attachment.name}
+                <button
+                  type="button"
+                  aria-label={`移除附件 ${attachment.name}`}
+                  onClick={() =>
+                    setAttachments((current) =>
+                      current.filter((item) => item.id !== attachment.id),
+                    )
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer">
           <textarea
             value={draft}
@@ -242,13 +407,30 @@ export function IntentConsole({
           />
           <div className="composer-footer">
             <div>
-              <IconButton label="添加附件">
+              <IconButton
+                label={uploading ? "正在上传附件" : "添加附件"}
+                onClick={() => attachmentRef.current?.click()}
+              >
                 <Paperclip size={17} />
               </IconButton>
-              <button type="button" className="composer-skill">
-                <MessageSquareText size={15} /> 自动选择能力
+              <label className="composer-skill">
+                <MessageSquareText size={15} />
+                <select
+                  aria-label="意图首选能力"
+                  value={preferredCapabilityId}
+                  onChange={(event) => setPreferredCapabilityId(event.target.value)}
+                >
+                  <option value="auto">自动选择能力</option>
+                  {capabilities
+                    .filter((capability) => capability.enabled)
+                    .map((capability) => (
+                      <option key={capability.id} value={capability.id}>
+                        {capability.title}
+                      </option>
+                    ))}
+                </select>
                 <ChevronDown size={13} />
-              </button>
+              </label>
             </div>
             <span>⌘ Enter 发送</span>
             <button
@@ -262,6 +444,24 @@ export function IntentConsole({
             </button>
           </div>
         </div>
+        <input
+          ref={attachmentRef}
+          className="canvas-file-input"
+          type="file"
+          multiple
+          disabled={uploading}
+          onChange={(event) => {
+            const files = [...(event.target.files ?? [])];
+            event.currentTarget.value = "";
+            if (!files.length) return;
+            setUploading(true);
+            void onUploadAttachments(files)
+              .then((uploaded) =>
+                setAttachments((current) => [...current, ...uploaded].slice(0, 8)),
+              )
+              .finally(() => setUploading(false));
+          }}
+        />
         <small className="composer-note">AI 会先生成可检查计划，不会未经确认直接执行。</small>
       </div>
     </aside>

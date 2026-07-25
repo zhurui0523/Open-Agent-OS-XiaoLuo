@@ -11,23 +11,29 @@ import type {
   CanvasNode,
   CanvasSummary,
   Capability,
+  ChatAttachment,
   ChatMessage,
   FileSystemAsset,
   InstalledPackage,
   IntentPlan,
-  KernelExecuteResult,
   KernelNodeOutput,
   ModelConnectionDraft,
   NodeKind,
   RegistryEvent,
   RegistrySnapshot,
   RunState,
+  UserPreferences,
   WorkspaceOption,
 } from "../types";
-import { createIntentPlan, messageTime } from "../lib/intent-plan";
+import { messageTime } from "../lib/intent-plan";
+import {
+  compatibleInputPorts,
+  defaultOutputPort,
+  portForNode,
+} from "../lib/node-ports";
 import {
   compileWorkflow,
-  type CompiledWorkflow,
+  wouldCreateCycle,
 } from "../lib/workflow-kernel";
 
 interface CanvasHistoryEntry {
@@ -48,9 +54,7 @@ interface ActiveKernelRun {
   id: string;
   paused: boolean;
   canceled: boolean;
-  resume?: () => void;
   controllers: Map<string, AbortController>;
-  workflow: CompiledWorkflow;
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -115,6 +119,12 @@ export function useIntentOS() {
   );
   const [zoom, setZoom] = useState(92);
   const [runState, setRunState] = useState<RunState>("ready");
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    gesturePreset: "figma",
+    invertZoom: false,
+    zoomSensitivity: "normal",
+    keyboardShortcuts: true,
+  });
   const [isPlanning, setIsPlanning] = useState(false);
   const [plan, setPlan] = useState<IntentPlan | null>(null);
   const [activePlanId, setActivePlanId] = useState("");
@@ -127,13 +137,28 @@ export function useIntentOS() {
       time: "14:20",
     },
   ]);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const activeRun = useRef<ActiveKernelRun | null>(null);
   const canvasHistory = useRef<CanvasHistoryEntry[]>([]);
+  const canvasFuture = useRef<CanvasHistoryEntry[]>([]);
+  const canvasClipboard = useRef<CanvasHistoryEntry | null>(null);
   const [historyDepth, setHistoryDepth] = useState(0);
   const revisions = useRef(new Map<string, number>());
   const saveSequence = useRef(Promise.resolve());
   const skipNextCloudSave = useRef(true);
+
+  useEffect(() => {
+    let active = true;
+    void requestJson<{ preferences: UserPreferences }>("/api/v2/preferences")
+      .then((payload) => {
+        if (active) setPreferences(payload.preferences);
+      })
+      .catch(() => {
+        // Defaults remain available when preferences have not been migrated yet.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const applyCloudCanvas = useCallback(
     (canvas: {
@@ -159,6 +184,7 @@ export function useIntentOS() {
       setSelectedNodeIdState(null);
       setSelectedNodeIds([]);
       canvasHistory.current = [];
+      canvasFuture.current = [];
       setHistoryDepth(0);
       skipNextCloudSave.current = true;
     },
@@ -302,7 +328,7 @@ export function useIntentOS() {
             );
           }
         });
-    }, 700);
+    }, 450);
     return () => clearTimeout(timer);
   }, [
     activeCanvasId,
@@ -322,8 +348,8 @@ export function useIntentOS() {
     [],
   );
 
-  async function setActiveCanvasId(id: string) {
-    if (!id || id === activeCanvasId) return;
+  async function loadCanvas(id: string) {
+    if (!id) return;
     setCloudLoaded(false);
     setCloudStatus("loading");
     try {
@@ -350,6 +376,11 @@ export function useIntentOS() {
     }
   }
 
+  async function setActiveCanvasId(id: string) {
+    if (!id || id === activeCanvasId) return;
+    await loadCanvas(id);
+  }
+
   async function createCanvas(title = "未命名画布") {
     if (!projectId) return;
     const payload = await requestJson<{ canvas: CanvasSummary }>(
@@ -363,9 +394,113 @@ export function useIntentOS() {
     await setActiveCanvasId(payload.canvas.id);
   }
 
+  async function duplicateCanvas(id: string, title: string) {
+    if (!projectId) return;
+    const payload = await requestJson<{ canvas: CanvasSummary }>(
+      "/api/v2/canvases",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          projectId,
+          sourceCanvasId: id,
+          title,
+        }),
+      },
+    );
+    setCanvases((current) => [payload.canvas, ...current]);
+    await setActiveCanvasId(payload.canvas.id);
+  }
+
+  async function restoreCanvas(id: string) {
+    if (!projectId) return;
+    await requestJson("/api/v2/canvases", {
+      method: "PATCH",
+      body: JSON.stringify({ id, projectId, action: "restore" }),
+    });
+    const payload = await requestJson<{ canvases: CanvasSummary[] }>(
+      `/api/v2/canvases?projectId=${encodeURIComponent(projectId)}`,
+    );
+    setCanvases(payload.canvases);
+  }
+
+  async function patchCanvas(
+    id: string,
+    action: "rename" | "archive" | "star",
+    extra: Record<string, unknown> = {},
+  ) {
+    await requestJson("/api/v2/canvases", {
+      method: "PATCH",
+      body: JSON.stringify({ id, action, ...extra }),
+    });
+    if (action === "rename") {
+      setCanvases((current) =>
+        current.map((canvas) =>
+          canvas.id === id
+            ? { ...canvas, title: String(extra.title ?? canvas.title) }
+            : canvas,
+        ),
+      );
+      return;
+    }
+    if (action === "star") {
+      setCanvases((current) =>
+        current.map((canvas) =>
+          canvas.id === id
+            ? { ...canvas, starred: Boolean(extra.starred) }
+            : canvas,
+        ),
+      );
+      return;
+    }
+    const remaining = canvases.filter((canvas) => canvas.id !== id);
+    setCanvases(remaining);
+    if (id === activeCanvasId && remaining[0]) {
+      await loadCanvas(remaining[0].id);
+    }
+  }
+
+  async function renameCanvas(id: string, title: string) {
+    await patchCanvas(id, "rename", { title });
+  }
+
+  async function archiveCanvas(id: string) {
+    await patchCanvas(id, "archive");
+  }
+
+  async function toggleCanvasStar(id: string, starred: boolean) {
+    await patchCanvas(id, "star", { starred });
+  }
+
+  async function deleteCanvas(id: string) {
+    await requestJson(`/api/v2/canvases?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    const remaining = canvases.filter((canvas) => canvas.id !== id);
+    setCanvases(remaining);
+    if (id === activeCanvasId && remaining[0]) {
+      await loadCanvas(remaining[0].id);
+    }
+  }
+
+  async function createCanvasSnapshot(label?: string) {
+    if (!activeCanvasId) return;
+    await requestJson("/api/v2/canvases/snapshots", {
+      method: "POST",
+      body: JSON.stringify({ canvasId: activeCanvasId, label }),
+    });
+  }
+
+  async function restoreCanvasSnapshot(snapshotId: string) {
+    if (!activeCanvasId) return;
+    await requestJson("/api/v2/canvases/snapshots", {
+      method: "PATCH",
+      body: JSON.stringify({ canvasId: activeCanvasId, snapshotId }),
+    });
+    await loadCanvas(activeCanvasId);
+  }
+
   useEffect(
     () => () => {
-      timers.current.forEach(clearTimeout);
       activeRun.current?.controllers.forEach((controller) =>
         controller.abort(),
       );
@@ -381,6 +516,7 @@ export function useIntentOS() {
         id: string;
         role: "user" | "assistant" | "system";
         content: string;
+        metadataJson: string;
         createdAt: string;
       }>;
       plan: { id: string; status: string; planJson: string } | null;
@@ -395,12 +531,26 @@ export function useIntentOS() {
               role: "user" | "assistant";
             } => message.role === "user" || message.role === "assistant",
           )
-          .map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            time: messageTime(),
-          }));
+          .map((message) => {
+            let attachments: ChatAttachment[] = [];
+            try {
+              const metadata = JSON.parse(message.metadataJson) as {
+                attachments?: ChatAttachment[];
+              };
+              if (Array.isArray(metadata.attachments)) {
+                attachments = metadata.attachments;
+              }
+            } catch {
+              attachments = [];
+            }
+            return {
+              id: message.id,
+              role: message.role,
+              content: message.content,
+              time: messageTime(),
+              ...(attachments.length ? { attachments } : {}),
+            };
+          });
         if (restored.length) setMessages(restored);
         if (state.plan?.status === "awaiting_confirmation") {
           try {
@@ -432,6 +582,7 @@ export function useIntentOS() {
       ...canvasHistory.current.slice(-39),
       { nodes, edges, selectedNodeIds, arrangeMode },
     ];
+    canvasFuture.current = [];
     setHistoryDepth(canvasHistory.current.length);
   }
 
@@ -453,6 +604,14 @@ export function useIntentOS() {
       setSelectedNodeIdState(next.at(-1) ?? null);
       return next;
     });
+  }
+
+  function selectNodes(ids: string[]) {
+    const valid = [...new Set(ids)].filter((id) =>
+      nodes.some((node) => node.id === id),
+    );
+    setSelectedNodeIds(valid);
+    setSelectedNodeIdState(valid.at(-1) ?? null);
   }
 
   function beginNodeMove() {
@@ -493,7 +652,11 @@ export function useIntentOS() {
           ? "新图片节点"
           : kind === "video"
             ? "新视频节点"
-            : "新文本节点"),
+            : kind === "audio"
+              ? "新音频节点"
+              : kind === "document"
+                ? "新文档节点"
+                : "新文本节点"),
       prompt: preset.prompt ?? "在这里描述这个节点需要完成的任务。",
       kind,
       status: "draft",
@@ -515,6 +678,39 @@ export function useIntentOS() {
     return id;
   }
 
+  function addAssetToCanvas(asset: FileSystemAsset) {
+    const kind: NodeKind =
+      asset.kind === "image" ||
+      asset.kind === "video" ||
+      asset.kind === "audio" ||
+      asset.kind === "text"
+        ? asset.kind
+        : "document";
+    const sizeLabel =
+      asset.size >= 1_048_576
+        ? `${(asset.size / 1_048_576).toFixed(1)} MB`
+        : `${Math.max(1, Math.round(asset.size / 1024))} KB`;
+    setView("canvas");
+    return addNode(kind, undefined, {
+      title: asset.name,
+      prompt: asset.description || `使用资产 ${asset.name} 继续创作。`,
+      result: `已引用 AI 文件系统资产 · ${sizeLabel}`,
+      parameters: {
+        source: "asset-kernel",
+        assetId: asset.id,
+        assetUri: asset.uri,
+        assetContentUrl: asset.contentUrl,
+        assetDownloadUrl: asset.downloadUrl,
+        fileName: asset.name,
+        mimeType: asset.mimeType,
+        size: asset.size,
+        sourceType: asset.sourceType,
+        sourceRef: asset.sourceRef,
+        sourceVersion: asset.currentVersion,
+      },
+    });
+  }
+
   function deleteSelected() {
     const ids = selectedNodeIds.length
       ? selectedNodeIds
@@ -522,8 +718,24 @@ export function useIntentOS() {
         ? [selectedNodeId]
         : [];
     if (!ids.length) return;
-    rememberCanvas();
     const selectedIds = new Set(ids);
+    const downstream = new Set(
+      edges
+        .filter(
+          (edge) =>
+            selectedIds.has(edge.source) && !selectedIds.has(edge.target),
+        )
+        .map((edge) => edge.target),
+    );
+    if (
+      downstream.size &&
+      !window.confirm(
+        `删除后会断开 ${downstream.size} 个下游节点的输入，是否继续？`,
+      )
+    ) {
+      return;
+    }
+    rememberCanvas();
     setNodes((current) => current.filter((node) => !selectedIds.has(node.id)));
     setEdges((current) =>
       current.filter(
@@ -535,22 +747,60 @@ export function useIntentOS() {
     setSelectedNodeIds([]);
   }
 
-  function connectNodes(source: string, target: string) {
+  function connectNodes(
+    source: string,
+    target: string,
+    sourcePortId?: string,
+    targetPortId?: string,
+  ) {
+    const sourceNode = nodes.find((node) => node.id === source);
+    const targetNode = nodes.find((node) => node.id === target);
+    const sourcePort = sourceNode
+      ? sourcePortId
+        ? portForNode(sourceNode, sourcePortId, "output")
+        : defaultOutputPort(sourceNode)
+      : undefined;
+    const dataType = sourcePort?.dataTypes[0];
+    const targetPort =
+      targetNode && dataType
+        ? targetPortId
+          ? portForNode(targetNode, targetPortId, "input")
+          : compatibleInputPorts(targetNode, dataType)[0]
+        : undefined;
     if (
       source === target ||
-      !nodes.some((node) => node.id === source) ||
-      !nodes.some((node) => node.id === target) ||
+      !sourceNode ||
+      !targetNode ||
+      !sourcePort ||
+      !targetPort ||
+      !dataType ||
+      !targetPort.dataTypes.includes(dataType) ||
       edges.some((edge) => edge.source === source && edge.target === target)
     ) {
+      setCloudError(
+        source === target
+          ? "节点不能连接自身"
+          : !targetPort
+            ? "目标节点没有兼容的输入端口"
+            : "这条连接已经存在",
+      );
+      return false;
+    }
+    if (wouldCreateCycle(nodes, edges, source, target)) {
+      setCloudError("该连接会形成循环依赖，已阻止创建");
       return false;
     }
     rememberCanvas();
+    setCloudError("");
     setEdges((current) => [
       ...current,
       {
         id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         source,
         target,
+        sourcePort: sourcePort.id,
+        targetPort: targetPort.id,
+        dataType,
       },
     ]);
     return true;
@@ -565,12 +815,91 @@ export function useIntentOS() {
   function undoCanvas() {
     const previous = canvasHistory.current.pop();
     if (!previous) return;
+    canvasFuture.current.push({
+      nodes,
+      edges,
+      selectedNodeIds,
+      arrangeMode,
+    });
     setNodes(previous.nodes);
     setEdges(previous.edges);
     setSelectedNodeIds(previous.selectedNodeIds);
     setSelectedNodeIdState(previous.selectedNodeIds.at(-1) ?? null);
     setArrangeMode(previous.arrangeMode);
     setHistoryDepth(canvasHistory.current.length);
+  }
+
+  function redoCanvas() {
+    const next = canvasFuture.current.pop();
+    if (!next) return;
+    canvasHistory.current.push({
+      nodes,
+      edges,
+      selectedNodeIds,
+      arrangeMode,
+    });
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    setSelectedNodeIds(next.selectedNodeIds);
+    setSelectedNodeIdState(next.selectedNodeIds.at(-1) ?? null);
+    setArrangeMode(next.arrangeMode);
+    setHistoryDepth(canvasHistory.current.length);
+  }
+
+  function copySelected() {
+    const ids = new Set(
+      selectedNodeIds.length
+        ? selectedNodeIds
+        : selectedNodeId
+          ? [selectedNodeId]
+          : [],
+    );
+    if (!ids.size) return false;
+    canvasClipboard.current = {
+      nodes: nodes.filter((node) => ids.has(node.id)),
+      edges: edges.filter(
+        (edge) => ids.has(edge.source) && ids.has(edge.target),
+      ),
+      selectedNodeIds: [...ids],
+      arrangeMode: "free",
+    };
+    return true;
+  }
+
+  function pasteCopied() {
+    const copied = canvasClipboard.current;
+    if (!copied?.nodes.length) return false;
+    rememberCanvas();
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const idMap = new Map(
+      copied.nodes.map((node, index) => [
+        node.id,
+        `${node.id}_copy_${suffix}_${index}`,
+      ]),
+    );
+    const pastedNodes = copied.nodes.map((node) => ({
+      ...node,
+      id: idMap.get(node.id) as string,
+      title: `${node.title} 副本`,
+      x: node.x + 36,
+      y: node.y + 36,
+      createdAt: Date.now(),
+      status: "draft" as const,
+      progress: undefined,
+    }));
+    const pastedEdges = copied.edges.map((edge, index) => ({
+      ...edge,
+      id: `edge_copy_${suffix}_${index}`,
+      source: idMap.get(edge.source) as string,
+      target: idMap.get(edge.target) as string,
+    }));
+    const nextSelection = pastedNodes.map((node) => node.id);
+    setNodes((current) => [...current, ...pastedNodes]);
+    setEdges((current) => [...current, ...pastedEdges]);
+    setSelectedNodeIds(nextSelection);
+    setSelectedNodeIdState(nextSelection.at(-1) ?? null);
+    setArrangeMode("free");
+    return true;
   }
 
   function arrangeNodes(mode: "free" | "time" | "type") {
@@ -585,11 +914,15 @@ export function useIntentOS() {
           text: 0,
           image: 1,
           video: 2,
+          audio: 3,
+          document: 4,
         };
         const typeIndex: Record<NodeKind, number> = {
           text: 0,
           image: 0,
           video: 0,
+          audio: 0,
+          document: 0,
         };
         return current.map((node) => {
           const row = typeIndex[node.kind]++;
@@ -617,36 +950,30 @@ export function useIntentOS() {
     });
   }
 
-  function submitIntent(value: string) {
-    const intent = value.trim();
-    if (!intent || isPlanning) return;
-    setMessages((current) => [
-      ...current,
-      { id: `msg_${Date.now()}`, role: "user", content: intent, time: messageTime() },
-    ]);
-    setIsPlanning(true);
-    setPlan(null);
-    setRunState("idle");
-    timers.current.push(
-      setTimeout(() => {
-        setPlan(createIntentPlan(intent));
-        setRunState("awaiting_confirmation");
-        setIsPlanning(false);
-        setMessages((current) => [
-          ...current,
-          {
-            id: `msg_${Date.now()}`,
-            role: "assistant",
-            content:
-              "计划已经生成。我优先保留了可编辑的脚本和视觉节点，并把耗时较长的视频生成放在最后。",
-            time: messageTime(),
-          },
-        ]);
-      }, 850),
-    );
+  async function uploadIntentAttachments(files: File[]) {
+    const uploaded: ChatAttachment[] = [];
+    for (const file of files.slice(0, 8)) {
+      const asset = await uploadAsset(file, {
+        sourceType: "intent-attachment",
+        sourceRef: activeCanvasId,
+        tags: ["Intent 附件"],
+      });
+      uploaded.push({
+        id: asset.id,
+        uri: asset.uri,
+        name: asset.name,
+        kind: asset.kind,
+        mimeType: asset.mimeType,
+      });
+    }
+    return uploaded;
   }
 
-  async function submitIntentServer(value: string) {
+  async function submitIntentServer(
+    value: string,
+    attachments: ChatAttachment[] = [],
+    preferredCapabilityId?: string,
+  ) {
     const intent = value.trim();
     if (!intent || isPlanning || !activeCanvasId) return;
     setMessages((current) => [
@@ -656,6 +983,7 @@ export function useIntentOS() {
         role: "user",
         content: intent,
         time: messageTime(),
+        attachments,
       },
     ]);
     setIsPlanning(true);
@@ -666,7 +994,12 @@ export function useIntentOS() {
       const response = await fetch("/api/v2/intent/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ canvasId: activeCanvasId, content: intent }),
+        body: JSON.stringify({
+          canvasId: activeCanvasId,
+          content: intent,
+          attachments,
+          preferredCapabilityId,
+        }),
       });
       if (!response.ok || !response.body) {
         const payload = (await response.json().catch(() => ({}))) as {
@@ -763,6 +1096,13 @@ export function useIntentOS() {
         id: `planned_edge_${index}`,
         source: node.id,
         target: plannedNodes[index + 1].id,
+        sourcePort: defaultOutputPort(node).id,
+        targetPort:
+          compatibleInputPorts(
+            plannedNodes[index + 1],
+            defaultOutputPort(node).dataTypes[0],
+          )[0]?.id ?? "context",
+        dataType: defaultOutputPort(node).dataTypes[0],
       })),
     );
     setSelectedNodeIdState(plannedNodes[0]?.id ?? null);
@@ -787,95 +1127,43 @@ export function useIntentOS() {
     setActivePlanId("");
   }
 
-  function startSimulatedRun() {
-    if (!nodes.length) return;
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-    setRunState("running");
-    setNodes((current) =>
-      current.map((node, index) => ({
-        ...node,
-        status: index === 0 ? "running" : "queued",
-        progress: index === 0 ? 18 : 0,
-      })),
-    );
-    nodes.forEach((node, index) => {
-      timers.current.push(
-        setTimeout(() => {
-          setNodes((current) =>
-            current.map((item, itemIndex) => {
-              if (itemIndex < index) return { ...item, status: "succeeded", progress: 100 };
-              if (itemIndex === index) return { ...item, status: "running", progress: 62 };
-              return { ...item, status: "queued", progress: 0 };
-            }),
-          );
-        }, 900 + index * 900),
-      );
+  async function updatePlan(nextPlan: IntentPlan) {
+    if (!activePlanId) return;
+    await requestJson("/api/v2/intent/plans", {
+      method: "PATCH",
+      body: JSON.stringify({
+        canvasId: activeCanvasId,
+        planId: activePlanId,
+        action: "update",
+        plan: nextPlan,
+      }),
     });
-    timers.current.push(
-      setTimeout(() => {
-        setNodes((current) =>
-          current.map((node) => ({ ...node, status: "succeeded", progress: 100 })),
-        );
-        setRunState("succeeded");
-        setMessages((current) => [
-          ...current,
-          {
-            id: `msg_${Date.now()}`,
-            role: "assistant",
-            content: "工作流已完成，4 个结果已进入资产库，并保留了画布、模型和能力来源。",
-            time: messageTime(),
-          },
-        ]);
-      }, 900 + nodes.length * 900),
-    );
+    setPlan(nextPlan);
   }
 
-  function pauseSimulatedRun() {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-    setRunState("paused");
-    setNodes((current) =>
-      current.map((node) =>
-        node.status === "running" ? { ...node, status: "paused" } : node,
-      ),
-    );
-  }
-
-  function cancelSimulatedRun() {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-    setRunState("canceled");
-    setNodes((current) =>
-      current.map((node) =>
-        node.status === "running" || node.status === "queued"
-          ? { ...node, status: "canceled" }
-          : node,
-      ),
-    );
-  }
-
-  async function updateKernelRun(
-    runId: string,
-    status: RunState | "queued",
-    error?: string,
-  ) {
-    try {
-      await requestJson("/api/v2/kernel/runs", {
+  async function rejectPlan() {
+    if (activePlanId) {
+      await requestJson("/api/v2/intent/plans", {
         method: "PATCH",
-        body: JSON.stringify({ runId, status, error }),
+        body: JSON.stringify({
+          canvasId: activeCanvasId,
+          planId: activePlanId,
+          action: "reject",
+        }),
       });
-    } catch {
-      // The node execution result remains visible even if an audit update fails.
     }
-  }
-
-  async function waitForKernelResume(run: ActiveKernelRun) {
-    if (!run.paused) return;
-    await new Promise<void>((resolve) => {
-      run.resume = resolve;
-    });
-    run.resume = undefined;
+    setPlan(null);
+    setActivePlanId("");
+    setRunState("idle");
+    setMessages((current) => [
+      ...current,
+      {
+        id: `msg_${Date.now()}`,
+        role: "assistant",
+        content: "计划已取消。你可以修改目标后重新生成。",
+        time: messageTime(),
+      },
+    ]);
   }
 
   function graphForTarget(targetNodeId?: string) {
@@ -899,275 +1187,38 @@ export function useIntentOS() {
     };
   }
 
-  async function startRun(targetNodeId?: string) {
-    const currentRun = activeRun.current;
-    if (currentRun?.paused) {
-      currentRun.paused = false;
-      currentRun.resume?.();
-      setRunState("running");
-      setNodes((current) =>
-        current.map((node) =>
-          node.status === "paused"
-            ? { ...node, status: "running", progress: Math.max(18, node.progress ?? 0) }
-            : node,
-        ),
-      );
-      void updateKernelRun(currentRun.id, "running");
-      return;
-    }
-    if (currentRun || !nodes.length) return;
-
-    const graph = graphForTarget(targetNodeId);
-    let workflow: CompiledWorkflow;
-    try {
-      workflow = compileWorkflow(graph.nodes, graph.edges);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "工作流编译失败";
-      setRunState("failed");
-      setMessages((current) => [
-        ...current,
-        {
-          id: `msg_${Date.now()}`,
-          role: "assistant",
-          content: `微内核拒绝执行：${message}`,
-          time: messageTime(),
-        },
-      ]);
-      return;
-    }
-
-    try {
-      const created = await requestJson<{
-        runId: string;
-        levels: string[][];
-      }>("/api/v2/kernel/runs", {
-        method: "POST",
-        body: JSON.stringify({ ...graph, canvasId: activeCanvasId }),
+  function graphForBranch(sourceNodeId: string) {
+    const descendants = new Set([sourceNodeId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      edges.forEach((edge) => {
+        if (descendants.has(edge.source) && !descendants.has(edge.target)) {
+          descendants.add(edge.target);
+          changed = true;
+        }
       });
-      const run: ActiveKernelRun = {
-        id: created.runId,
-        paused: false,
-        canceled: false,
-        controllers: new Map(),
-        workflow,
-      };
-      activeRun.current = run;
-      const includedIds = new Set(graph.nodes.map((node) => node.id));
-      setRunState("running");
-      setNodes((current) =>
-        current.map((node) =>
-          includedIds.has(node.id)
-            ? { ...node, status: "queued", progress: 0 }
-            : node,
-        ),
-      );
-      await updateKernelRun(run.id, "running");
-
-      for (const level of workflow.levels) {
-        await waitForKernelResume(run);
-        if (run.canceled) return;
-        const levelIds = new Set(level);
-        setNodes((current) =>
-          current.map((node) =>
-            levelIds.has(node.id)
-              ? { ...node, status: "running", progress: 24 }
-              : node,
-          ),
-        );
-
-        const settled = await Promise.allSettled(
-          level.map(async (nodeId) => {
-            const controller = new AbortController();
-            run.controllers.set(nodeId, controller);
-            try {
-              const response = await requestJson<KernelExecuteResult>(
-                "/api/v2/kernel/execute",
-                {
-                  method: "POST",
-                  body: JSON.stringify({ runId: run.id, nodeId }),
-                  signal: controller.signal,
-                },
-              );
-              const graphNode = graph.nodes.find((node) => node.id === nodeId);
-              let persistedAsset: FileSystemAsset | null = null;
-              if (
-                graphNode &&
-                !response.output.preview &&
-                (response.output.assetUrl || response.output.text)
-              ) {
-                try {
-                  const persisted = await requestJson<{
-                    asset: FileSystemAsset;
-                  }>(
-                    `/api/v2/files?workspaceId=${encodeURIComponent(workspaceId)}`,
-                    {
-                    method: "POST",
-                    body: JSON.stringify({
-                      title: graphNode.title,
-                      kind: graphNode.kind,
-                      result: response.output.text ?? response.result,
-                      assetUrl: response.output.assetUrl,
-                      sourceType: "kernel-output",
-                      sourceRef: `${run.id}:${nodeId}`,
-                      tags: [graphNode.kind, "AI 生成"],
-                      metadata: {
-                        executor: response.executor,
-                        runId: run.id,
-                        nodeId,
-                      },
-                    }),
-                    },
-                  );
-                  persistedAsset = persisted.asset;
-                } catch {
-                  // The generated result remains usable even if asset persistence fails.
-                }
-              }
-              const kernelOutput = persistedAsset
-                ? {
-                    ...response.output,
-                    assetUrl:
-                      graphNode?.kind === "text"
-                        ? response.output.assetUrl
-                        : persistedAsset.contentUrl,
-                    data: {
-                      assetId: persistedAsset.id,
-                      assetUri: persistedAsset.uri,
-                    },
-                  }
-                : response.output;
-              setNodes((current) =>
-                current.map((node) =>
-                  node.id === nodeId
-                    ? {
-                        ...node,
-                        status: "succeeded",
-                        progress: 100,
-                        result: response.result,
-                        parameters: {
-                          ...node.parameters,
-                          kernelOutput,
-                          kernelExecutor: response.executor,
-                          kernelRunId: run.id,
-                          ...(persistedAsset
-                            ? {
-                                assetId: persistedAsset.id,
-                                assetUri: persistedAsset.uri,
-                                assetContentUrl: persistedAsset.contentUrl,
-                              }
-                            : {}),
-                        },
-                      }
-                    : node,
-                ),
-              );
-              return response;
-            } catch (error) {
-              if (run.canceled) throw error;
-              const message =
-                error instanceof Error ? error.message : "节点执行失败";
-              setNodes((current) =>
-                current.map((node) =>
-                  node.id === nodeId
-                    ? {
-                        ...node,
-                        status: "failed",
-                        progress: 100,
-                        result: `执行失败：${message}`,
-                      }
-                    : node,
-                ),
-              );
-              throw error;
-            } finally {
-              run.controllers.delete(nodeId);
-            }
-          }),
-        );
-        const failed = settled.find(
-          (result): result is PromiseRejectedResult =>
-            result.status === "rejected",
-        );
-        if (failed) throw failed.reason;
-      }
-
-      if (!run.canceled) {
-        setRunState("succeeded");
-        await updateKernelRun(run.id, "succeeded");
-        setMessages((current) => [
-          ...current,
-          {
-            id: `msg_${Date.now()}`,
-            role: "assistant",
-            content: targetNodeId
-              ? "目标节点及其上游依赖已由 AI 微内核执行完成。"
-              : `工作流执行完成：${graph.nodes.length} 个节点已按依赖关系运行，上游结果已传递给下游。`,
-            time: messageTime(),
-          },
-        ]);
-      }
-    } catch (error) {
-      const run = activeRun.current;
-      if (run?.canceled) return;
-      const message = error instanceof Error ? error.message : "工作流执行失败";
-      setRunState("failed");
-      if (run) await updateKernelRun(run.id, "failed", message);
-      setNodes((current) =>
-        current.map((node) =>
-          node.status === "queued"
-            ? { ...node, status: "canceled", progress: 0 }
-            : node,
-        ),
-      );
-      setMessages((current) => [
-        ...current,
-        {
-          id: `msg_${Date.now()}`,
-          role: "assistant",
-          content: `工作流已停止：${message}`,
-          time: messageTime(),
-        },
-      ]);
-    } finally {
-      const run = activeRun.current;
-      run?.controllers.forEach((controller) => controller.abort());
-      activeRun.current = null;
     }
-  }
-
-  function pauseRun() {
-    const run = activeRun.current;
-    if (!run || run.paused || run.canceled) return;
-    run.paused = true;
-    setRunState("paused");
-    setNodes((current) =>
-      current.map((node) =>
-        node.status === "running" ? { ...node, status: "paused" } : node,
+    const included = new Set(descendants);
+    changed = true;
+    while (changed) {
+      changed = false;
+      edges.forEach((edge) => {
+        if (included.has(edge.target) && !included.has(edge.source)) {
+          included.add(edge.source);
+          changed = true;
+        }
+      });
+    }
+    return {
+      nodes: nodes.filter((node) => included.has(node.id)),
+      edges: edges.filter(
+        (edge) => included.has(edge.source) && included.has(edge.target),
       ),
-    );
-    void updateKernelRun(run.id, "paused");
+    };
   }
 
-  function cancelRun() {
-    const run = activeRun.current;
-    if (!run) return;
-    run.canceled = true;
-    run.controllers.forEach((controller) => controller.abort());
-    run.resume?.();
-    setRunState("canceled");
-    setNodes((current) =>
-      current.map((node) =>
-        node.status === "running" ||
-        node.status === "queued" ||
-        node.status === "paused"
-          ? { ...node, status: "canceled" }
-          : node,
-      ),
-    );
-    void updateKernelRun(run.id, "canceled");
-  }
-
-  async function applyDispatchedRun(runId: string) {
+  async function readRunState(runId: string) {
     const result = await requestJson<{
       run: { status: RunState; error?: string | null };
       tasks: Array<{
@@ -1177,10 +1228,7 @@ export function useIntentOS() {
         executor: string | null;
         error: string | null;
       }>;
-    }>("/api/v2/kernel/dispatch", {
-      method: "POST",
-      body: JSON.stringify({ runId }),
-    });
+    }>(`/api/v2/kernel/runs?runId=${encodeURIComponent(runId)}`);
     const taskMap = new Map(result.tasks.map((task) => [task.nodeId, task]));
     setNodes((current) =>
       current.map((node) => {
@@ -1219,7 +1267,39 @@ export function useIntentOS() {
     return result;
   }
 
-  async function startRunServer(targetNodeId?: string) {
+  async function waitForRun(
+    runId: string,
+    initial: Awaited<ReturnType<typeof readRunState>>,
+  ) {
+    let result = initial;
+    let queuedPolls = 0;
+    while (["queued", "running", "waiting"].includes(result.run.status)) {
+      const active = activeRun.current;
+      if (!active || active.id !== runId || active.canceled || active.paused) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+      result = await readRunState(runId);
+      if (result.run.status === "queued") {
+        queuedPolls += 1;
+        if (queuedPolls === 4) {
+          // Recovery path for development sessions started without the
+          // standalone Runtime Worker. The normal local launcher starts it.
+          await requestJson("/api/v2/kernel/dispatch", {
+            method: "POST",
+            body: JSON.stringify({ runId }),
+          });
+          result = await readRunState(runId);
+        }
+      }
+    }
+    return result;
+  }
+
+  async function startRunServer(
+    targetNodeId?: string,
+    mode: "target" | "branch" = "target",
+  ) {
     const current = activeRun.current;
     if (current?.paused) {
       current.paused = false;
@@ -1228,15 +1308,20 @@ export function useIntentOS() {
         method: "PATCH",
         body: JSON.stringify({ runId: current.id, action: "resume" }),
       });
-      const resumed = await applyDispatchedRun(current.id);
-      if (resumed.run.status !== "paused") activeRun.current = null;
+      const resumed = await readRunState(current.id);
+      const completed = await waitForRun(current.id, resumed);
+      if (!["paused", "waiting"].includes(completed.run.status)) {
+        activeRun.current = null;
+      }
       return;
     }
     if (current || !nodes.length || !activeCanvasId) return;
-    const graph = graphForTarget(targetNodeId);
-    let workflow: CompiledWorkflow;
+    const graph =
+      targetNodeId && mode === "branch"
+        ? graphForBranch(targetNodeId)
+        : graphForTarget(targetNodeId);
     try {
-      workflow = compileWorkflow(graph.nodes, graph.edges);
+      compileWorkflow(graph.nodes, graph.edges);
     } catch (error) {
       setRunState("failed");
       setMessages((messages) => [
@@ -1269,7 +1354,6 @@ export function useIntentOS() {
         paused: false,
         canceled: false,
         controllers: new Map(),
-        workflow,
       };
       const included = new Set(graph.nodes.map((node) => node.id));
       setNodes((currentNodes) =>
@@ -1280,7 +1364,11 @@ export function useIntentOS() {
         ),
       );
       setRunState("running");
-      const dispatched = await applyDispatchedRun(created.runId);
+      const initialDispatch = await readRunState(created.runId);
+      const dispatched = await waitForRun(
+        created.runId,
+        initialDispatch,
+      );
       if (dispatched.run.status === "succeeded") {
         setMessages((messages) => [
           ...messages,
@@ -1294,7 +1382,9 @@ export function useIntentOS() {
           },
         ]);
       }
-      if (dispatched.run.status !== "paused") activeRun.current = null;
+      if (!["paused", "waiting"].includes(dispatched.run.status)) {
+        activeRun.current = null;
+      }
     } catch (error) {
       setRunState("failed");
       activeRun.current = null;
@@ -1309,6 +1399,10 @@ export function useIntentOS() {
         },
       ]);
     }
+  }
+
+  function rerunBranchServer(nodeId: string) {
+    return startRunServer(nodeId, "branch");
   }
 
   async function pauseRunServer() {
@@ -1367,7 +1461,7 @@ export function useIntentOS() {
     try {
       const payload = await requestJson<{
         model: (typeof models)[number];
-        probe: { message: string };
+        probe: { message: string; catalogCount?: number };
       }>("/api/v2/models/test", {
         method: "POST",
         body: JSON.stringify({ id, workspaceId }),
@@ -1375,7 +1469,9 @@ export function useIntentOS() {
       setModels((current) =>
         current.map((model) => (model.id === id ? payload.model : model)),
       );
-      return payload.probe.message;
+      return payload.probe.catalogCount
+        ? `${payload.probe.message}，已同步 ${payload.probe.catalogCount} 个可用模型。`
+        : payload.probe.message;
     } catch (error) {
       setModels((current) =>
         current.map((model) =>
@@ -1439,6 +1535,37 @@ export function useIntentOS() {
     return result.model;
   }
 
+  async function updateModel(id: string, draft: ModelConnectionDraft) {
+    const result = await requestJson<{ model: (typeof models)[number] }>(
+      "/api/v2/models",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ id, ...draft, workspaceId }),
+      },
+    );
+    await refreshRegistry();
+    return result.model;
+  }
+
+  async function updatePreferences(next: UserPreferences) {
+    const previous = preferences;
+    setPreferences(next);
+    try {
+      const payload = await requestJson<{ preferences: UserPreferences }>(
+        "/api/v2/preferences",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ preferences: next }),
+        },
+      );
+      setPreferences(payload.preferences);
+      return payload.preferences;
+    } catch (error) {
+      setPreferences(previous);
+      throw error;
+    }
+  }
+
   async function uploadAsset(
     file: File,
     metadata: {
@@ -1485,6 +1612,7 @@ export function useIntentOS() {
     selectedNodeIds,
     setSelectedNodeId,
     selectNode,
+    selectNodes,
     activeCanvasId,
     canvases,
     workspaceName,
@@ -1499,6 +1627,14 @@ export function useIntentOS() {
     setCanvasViewport,
     setActiveCanvasId,
     createCanvas,
+    duplicateCanvas,
+    restoreCanvas,
+    renameCanvas,
+    archiveCanvas,
+    toggleCanvasStar,
+    deleteCanvas,
+    createCanvasSnapshot,
+    restoreCanvasSnapshot,
     drawerOpen,
     setDrawerOpen,
     consoleOpen,
@@ -1509,22 +1645,32 @@ export function useIntentOS() {
     zoom,
     setZoom,
     runState,
+    preferences,
     isPlanning,
     plan,
     messages,
     canUndo: historyDepth > 0,
+    canRedo: canvasFuture.current.length > 0,
     beginNodeMove,
     moveNode,
     updateNode,
     addNode,
+    addAssetToCanvas,
     deleteSelected,
     connectNodes,
     deleteEdge,
     undoCanvas,
+    redoCanvas,
+    copySelected,
+    pasteCopied,
     arrangeNodes,
     submitIntent: submitIntentServer,
+    uploadIntentAttachments,
     confirmPlan,
+    updatePlan,
+    rejectPlan,
     startRun: startRunServer,
+    rerunBranch: rerunBranchServer,
     pauseRun: pauseRunServer,
     cancelRun: cancelRunServer,
     toggleCapability,
@@ -1535,7 +1681,9 @@ export function useIntentOS() {
     uninstallPackage,
     testPlugin,
     createModel,
+    updateModel,
     deleteModel,
+    updatePreferences,
     uploadAsset,
   };
 }

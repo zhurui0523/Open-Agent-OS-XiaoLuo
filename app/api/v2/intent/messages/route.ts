@@ -1,10 +1,14 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   intentConversations,
   intentMessages,
   intentPlans,
+  assets,
+  packageCapabilities,
+  packages,
 } from "../../../../../db/schema";
+import { coreCapabilities } from "../../../../data";
 import { jsonError, requireUser } from "../../../../lib/auth";
 import { requireCanvasAccess } from "../../../../lib/authorization";
 import {
@@ -48,6 +52,14 @@ export async function POST(request: Request) {
     const payload = (await request.json()) as {
       canvasId?: string;
       content?: string;
+      attachments?: Array<{
+        id?: string;
+        uri?: string;
+        name?: string;
+        kind?: string;
+        mimeType?: string;
+      }>;
+      preferredCapabilityId?: string;
     };
     const canvasId = payload.canvasId?.trim();
     const content = payload.content?.trim().slice(0, 20_000);
@@ -58,6 +70,67 @@ export async function POST(request: Request) {
       );
     }
     const access = await requireCanvasAccess(user.id, canvasId, "edit");
+    const requestedAttachments = (payload.attachments ?? [])
+      .slice(0, 8)
+      .filter((attachment) => Boolean(attachment.id));
+    const attachmentIds = requestedAttachments.map((attachment) =>
+      String(attachment.id),
+    );
+    const validAttachments = attachmentIds.length
+      ? await (await getDb())
+          .select({
+            id: assets.id,
+            uri: assets.uri,
+            name: assets.name,
+            kind: assets.kind,
+            mimeType: assets.mimeType,
+          })
+          .from(assets)
+          .where(
+            and(
+              eq(assets.workspaceId, access.workspaceId),
+              inArray(assets.id, attachmentIds),
+              isNull(assets.trashedAt),
+            ),
+          )
+      : [];
+    if (validAttachments.length !== attachmentIds.length) {
+      return Response.json(
+        { error: "附件不存在、已删除或不属于当前工作空间" },
+        { status: 400 },
+      );
+    }
+    const preferredCapabilityId = payload.preferredCapabilityId?.trim();
+    let preferredCapabilityTitle = "";
+    if (preferredCapabilityId) {
+      preferredCapabilityTitle =
+        coreCapabilities.find(
+          (capability) =>
+            capability.id === preferredCapabilityId && capability.enabled,
+        )?.title ?? "";
+      if (!preferredCapabilityTitle) {
+        const [packageCapability] = await (await getDb())
+          .select({ title: packageCapabilities.title })
+          .from(packageCapabilities)
+          .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
+          .where(
+            and(
+              eq(packageCapabilities.id, preferredCapabilityId),
+              eq(packageCapabilities.enabled, true),
+              eq(packages.workspaceId, access.workspaceId),
+              eq(packages.enabled, true),
+            ),
+          )
+          .limit(1);
+        preferredCapabilityTitle = packageCapability?.title ?? "";
+      }
+      if (!preferredCapabilityTitle) {
+        return Response.json(
+          { error: "首选能力不存在、已禁用或不属于当前工作空间" },
+          { status: 400 },
+        );
+      }
+    }
     const conversation = await getOrCreateConversation({
       workspaceId: access.workspaceId,
       canvasId,
@@ -71,7 +144,12 @@ export async function POST(request: Request) {
       conversationId: conversation.id,
       role: "user" as const,
       content,
-      metadataJson: "{}",
+      metadataJson: JSON.stringify({
+        attachments: validAttachments,
+        ...(preferredCapabilityId
+          ? { preferredCapabilityId, preferredCapabilityTitle }
+          : {}),
+      }),
       createdAt: now,
     };
     await db.insert(intentMessages).values(userMessage);
@@ -93,7 +171,17 @@ export async function POST(request: Request) {
             controller.enqueue(
               event("planner.status", { status: "planning" }),
             );
-            const planned = await planIntent(access.workspaceId, content);
+            const planningInput = validAttachments.length
+              ? `${content}\n\n参考附件：${validAttachments
+                  .map((attachment) => `${attachment.name} (${attachment.uri})`)
+                  .join("；")}`
+              : content;
+            const planned = await planIntent(
+              access.workspaceId,
+              preferredCapabilityTitle
+                ? `${planningInput}\n\n用户明确指定首选能力：${preferredCapabilityTitle}。计划中优先使用该能力；只有模态确实不适配时才选择其他能力。`
+                : planningInput,
+            );
             const assistantContent =
               "计划已经生成。你可以先检查和编辑节点，再确认写入画布。";
             const assistantMessage = {

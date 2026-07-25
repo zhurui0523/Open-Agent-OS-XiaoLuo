@@ -1,0 +1,12 @@
+id,worker_or_integration,responsibility,recovery,requirement,evidence,test_id,status
+JOB-001,kernel-worker,领取DAG任务并按层并发执行,"lease timeout|max attempts|idempotency",REQ-006,app/lib/kernel-worker.ts,E2E-014,verified
+JOB-002,generation-job,异步视频提交轮询取消重试和产物入库,"provider task id persisted|page-independent polling",REQ-025,app/lib/model-async-jobs.ts,E2E-015,verified
+JOB-003,model-router,优先级备用模型重试并发与熔断,"fallback|retryAfter|circuit cooldown",REQ-022,app/lib/model-runtime-router.ts,E2E-016,verified
+JOB-004,asset-kernel,OSS内容寻址存储签名读取版本和来源,"sha256 URI|missing object error|reconcile",REQ-011,app/lib/asset-kernel.ts,E2E-005,verified
+JOB-005,intent-planner,服务端计划生成与Schema检查,"persistent conversation and plan revision",REQ-005,app/lib/server-intent-planner.ts,E2E-004,verified
+JOB-006,rate-limiter,模型测试与运行调用持久化限流,"atomic MySQL bucket",REQ-027,app/lib/rate-limit.ts,E2E-016,verified
+JOB-007,mysql-migrations,编号迁移校验和和结构验证,"ledger|checksum|repeatable verify",REQ-013,scripts/migrate-v2.mjs,E2E-021,verified
+JOB-008,realtime-collaboration,多人光标评论和权限撤销断连需要长连接服务,"WebSocket or CRDT service",REQ-015,docs/implementation-status.md,E2E-022,external_blocked
+JOB-009,isolated-worker,第三方CLI Node Python强隔离需要独立容器运行集群,"read-only root|network allowlist|CPU memory timeout",REQ-029,docs/implementation-status.md,E2E-023,external_blocked
+JOB-010,legacy-migration,旧库与OSS正式迁移需要脱敏旧库样本和对象清单,"dry run|count compare|rollback",REQ-017,scripts/migrate-v2.mjs,E2E-024,input_blocked
+JOB-011,runtime-worker-scheduler,独立轮询可运行DAG和到期异步任务,"worker token|lease claim|expired lease recovery|API fallback",REQ-006,app/api/v2/worker/tick/route.ts,E2E-014,verified

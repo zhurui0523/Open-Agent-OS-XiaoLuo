@@ -20,7 +20,6 @@ import {
 } from "react";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import {
-  centeredPortPoint,
   fitWorldBounds,
   screenToWorld,
   unionBounds,
@@ -29,9 +28,13 @@ import {
   type ViewportTransform,
   type WorldBounds,
 } from "../lib/canvas-geometry";
-import type { NodeKind } from "../types";
+import type {
+  NodeKind,
+  PortDataType,
+} from "../types";
 import { CanvasContextMenu } from "./canvas-context-menu";
 import { CanvasDrawer } from "./canvas-drawer";
+import { CanvasEdgeLayer } from "./canvas-edge-layer";
 import { IconButton } from "./icon-button";
 import { IntentConsole } from "./intent-console";
 import { NodeCard } from "./node-card";
@@ -43,7 +46,7 @@ const MINIMAP_WIDTH = 200;
 const MINIMAP_HEIGHT = 124;
 const MINIMAP_PADDING = 8;
 const CONTEXT_MENU_WIDTH = 286;
-const CONTEXT_MENU_HEIGHT = 462;
+const CONTEXT_MENU_HEIGHT = 700;
 
 interface ContextMenuState {
   x: number;
@@ -55,44 +58,13 @@ interface ContextMenuState {
 
 interface ConnectionDraft {
   sourceId: string;
+  sourcePortId: string;
+  dataType: PortDataType;
   current: { x: number; y: number };
 }
 
 interface CanvasViewProps {
   os: IntentOSController;
-}
-
-function lineStyle(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-): CSSProperties {
-  const distance = Math.hypot(end.x - start.x, end.y - start.y);
-  const angle = Math.atan2(end.y - start.y, end.x - start.x) * (180 / Math.PI);
-  return {
-    left: start.x,
-    top: start.y,
-    width: distance,
-    transform: `rotate(${angle}deg)`,
-  };
-}
-
-function edgeStyle(
-  source: { x: number; y: number },
-  target: { x: number; y: number },
-  sourceHeight: number,
-  targetHeight: number,
-): CSSProperties {
-  const start = centeredPortPoint(
-    source,
-    { width: NODE_WIDTH, height: sourceHeight },
-    "output",
-  );
-  const end = centeredPortPoint(
-    target,
-    { width: NODE_WIDTH, height: targetHeight },
-    "input",
-  );
-  return lineStyle(start, end);
 }
 
 function expandBounds(bounds: WorldBounds, amount: number): WorldBounds {
@@ -114,6 +86,22 @@ export function CanvasView(props: CanvasViewProps) {
 }
 
 function CanvasWorkspace({ os }: CanvasViewProps) {
+  const {
+    addNode,
+    copySelected,
+    deleteEdge,
+    deleteSelected,
+    pasteCopied,
+    redoCanvas,
+    setCanvasViewport,
+    undoCanvas,
+  } = os;
+  const {
+    gesturePreset,
+    invertZoom,
+    keyboardShortcuts,
+    zoomSensitivity,
+  } = os.preferences;
   const activeCanvas =
     os.canvases.find((canvas) => canvas.id === os.activeCanvasId) ?? {
       id: "",
@@ -139,6 +127,12 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const [connectionDraft, setConnectionDraft] =
     useState<ConnectionDraft | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
   const initialFitDone = useRef(false);
   const panGesture = useRef<{
     pointerId: number;
@@ -148,11 +142,14 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     originY: number;
     moved: boolean;
   } | null>(null);
+  const selectionPointerId = useRef<number | null>(null);
   const viewportRef = useRef<ViewportTransform>({
     x: pan.x,
     y: pan.y,
     zoom: os.zoom,
   });
+  const panFrame = useRef<number | null>(null);
+  const pendingPan = useRef<{ x: number; y: number } | null>(null);
 
   const nodeBounds = useMemo<WorldBounds>(() => {
     if (!os.nodes.length) {
@@ -186,9 +183,9 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     (next: ViewportTransform) => {
       viewportRef.current = next;
       setPan({ x: next.x, y: next.y });
-      os.setCanvasViewport(next);
+      setCanvasViewport(next);
     },
-    [os.setCanvasViewport],
+    [setCanvasViewport],
   );
 
   const fitView = useCallback(() => {
@@ -226,6 +223,13 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(
+    () => () => {
+      if (panFrame.current !== null) cancelAnimationFrame(panFrame.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -241,9 +245,20 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       }
       event.preventDefault();
       const current = viewportRef.current;
-      if (event.ctrlKey || event.metaKey) {
+      const wheelZoom =
+        gesturePreset === "zoom-wheel" ||
+        event.ctrlKey ||
+        event.metaKey;
+      if (wheelZoom) {
         const rect = canvasStage.getBoundingClientRect();
-        const factor = Math.exp(-event.deltaY * 0.0016);
+        const sensitivity =
+          zoomSensitivity === "slow"
+            ? 0.0009
+            : zoomSensitivity === "fast"
+              ? 0.0024
+              : 0.0016;
+        const direction = invertZoom ? -1 : 1;
+        const factor = Math.exp(-event.deltaY * sensitivity * direction);
         commitViewport(
           zoomViewportAt(current, current.zoom * factor, {
             x: event.clientX - rect.left,
@@ -261,11 +276,17 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       };
       viewportRef.current = next;
       setPan({ x: next.x, y: next.y });
-      os.setCanvasViewport(next);
+      setCanvasViewport(next);
     }
     canvasStage.addEventListener("wheel", wheel, { passive: false });
     return () => canvasStage.removeEventListener("wheel", wheel);
-  }, [commitViewport]);
+  }, [
+    commitViewport,
+    gesturePreset,
+    invertZoom,
+    setCanvasViewport,
+    zoomSensitivity,
+  ]);
 
   useEffect(() => {
     if (
@@ -290,26 +311,52 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     }
     function keyDown(event: KeyboardEvent) {
       if (editableTarget(event.target)) return;
+      if (!keyboardShortcuts) return;
       if (
         (event.ctrlKey || event.metaKey) &&
-        event.key.toLowerCase() === "z"
+        event.key.toLowerCase() === "z" &&
+        !event.shiftKey
       ) {
         event.preventDefault();
-        os.undoCanvas();
+        undoCanvas();
         return;
       }
-      if (event.key === "Escape" && connectionDraft) {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        (event.key.toLowerCase() === "y" ||
+          (event.key.toLowerCase() === "z" && event.shiftKey))
+      ) {
         event.preventDefault();
-        setConnectionDraft(null);
+        redoCanvas();
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "c"
+      ) {
+        if (copySelected()) event.preventDefault();
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "v"
+      ) {
+        if (pasteCopied()) event.preventDefault();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (connectionDraft) setConnectionDraft(null);
+        setContextMenu(null);
         return;
       }
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
         if (selectedEdgeId) {
-          os.deleteEdge(selectedEdgeId);
+          deleteEdge(selectedEdgeId);
           setSelectedEdgeId(null);
         } else {
-          os.deleteSelected();
+          deleteSelected();
         }
         return;
       }
@@ -317,9 +364,39 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         event.preventDefault();
         setSpaceHeld(true);
       }
-      if (event.key === "0") {
+      if (event.key.toLowerCase() === "f" || event.key === "0") {
         event.preventDefault();
         fitView();
+      }
+      if (event.key.toLowerCase() === "h") {
+        event.preventDefault();
+        setMinimapOpen((current) => !current);
+      }
+      if (
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        ["1", "2", "3", "4", "5"].includes(event.key)
+      ) {
+        event.preventDefault();
+        const kind: NodeKind =
+          event.key === "1"
+            ? "text"
+            : event.key === "2"
+              ? "image"
+              : event.key === "3"
+                ? "video"
+                : event.key === "4"
+                  ? "audio"
+                  : "document";
+        const center = screenToWorld(
+          { x: stageSize.width / 2, y: stageSize.height / 2 },
+          viewportRef.current,
+        );
+        addNode(kind, {
+          x: center.x - NODE_WIDTH / 2,
+          y: center.y - NODE_FIT_HEIGHT / 2,
+        });
       }
       if (event.key === "=" || event.key === "+") {
         event.preventDefault();
@@ -342,10 +419,17 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   }, [
     connectionDraft,
     fitView,
-    os.deleteEdge,
-    os.deleteSelected,
-    os.undoCanvas,
+    addNode,
+    copySelected,
+    deleteEdge,
+    deleteSelected,
+    keyboardShortcuts,
+    pasteCopied,
+    redoCanvas,
     selectedEdgeId,
+    stageSize.height,
+    stageSize.width,
+    undoCanvas,
     zoomAtCenter,
   ]);
 
@@ -360,6 +444,21 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   function handleStagePointerDown(event: React.PointerEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement;
     const emptyCanvas = !isCanvasOverlay(target);
+    if (
+      event.button === 0 &&
+      emptyCanvas &&
+      os.activeTool === "multi-select" &&
+      !spaceHeld
+    ) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      selectionPointerId.current = event.pointerId;
+      setSelectionBox({ startX: x, startY: y, currentX: x, currentY: y });
+      return;
+    }
     const shouldPan =
       event.button === 1 ||
       (event.button === 0 &&
@@ -423,13 +522,15 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
 
   function beginConnection(
     sourceId: string,
+    sourcePortId: string,
+    dataType: PortDataType,
     clientX: number,
     clientY: number,
   ) {
     const current = clientToWorld(clientX, clientY);
     if (!current) return;
     setSelectedEdgeId(null);
-    setConnectionDraft({ sourceId, current });
+    setConnectionDraft({ sourceId, sourcePortId, dataType, current });
   }
 
   function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>) {
@@ -440,6 +541,19 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           draft ? { ...draft, current } : draft,
         );
       }
+      return;
+    }
+    if (selectionPointerId.current === event.pointerId && selectionBox) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      setSelectionBox((current) =>
+        current
+          ? {
+              ...current,
+              currentX: event.clientX - rect.left,
+              currentY: event.clientY - rect.top,
+            }
+          : current,
+      );
       return;
     }
     const gesture = panGesture.current;
@@ -453,8 +567,14 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       y: gesture.originY + deltaY,
     };
     viewportRef.current = next;
-    setPan({ x: next.x, y: next.y });
-    os.setCanvasViewport(next);
+    pendingPan.current = { x: next.x, y: next.y };
+    if (panFrame.current === null) {
+      panFrame.current = requestAnimationFrame(() => {
+        if (pendingPan.current) setPan(pendingPan.current);
+        pendingPan.current = null;
+        panFrame.current = null;
+      });
+    }
   }
 
   function endStagePan(event: React.PointerEvent<HTMLDivElement>) {
@@ -463,10 +583,48 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         .elementFromPoint(event.clientX, event.clientY)
         ?.closest<HTMLElement>(".port-input[data-node-id]");
       const targetId = target?.dataset.nodeId;
-      if (targetId) {
-        os.connectNodes(connectionDraft.sourceId, targetId);
+      const targetPortId = target?.dataset.portId;
+      const targetTypes = target?.dataset.portTypes?.split(",") ?? [];
+      if (
+        targetId &&
+        targetPortId &&
+        targetTypes.includes(connectionDraft.dataType)
+      ) {
+        os.connectNodes(
+          connectionDraft.sourceId,
+          targetId,
+          connectionDraft.sourcePortId,
+          targetPortId,
+        );
       }
       setConnectionDraft(null);
+      return;
+    }
+    if (selectionPointerId.current === event.pointerId && selectionBox) {
+      const left = Math.min(selectionBox.startX, selectionBox.currentX);
+      const right = Math.max(selectionBox.startX, selectionBox.currentX);
+      const top = Math.min(selectionBox.startY, selectionBox.currentY);
+      const bottom = Math.max(selectionBox.startY, selectionBox.currentY);
+      const start = screenToWorld({ x: left, y: top }, viewportRef.current);
+      const end = screenToWorld({ x: right, y: bottom }, viewportRef.current);
+      os.selectNodes(
+        os.nodes
+          .filter((node) => {
+            const height = nodeHeights[node.id] ?? NODE_FIT_HEIGHT;
+            return !(
+              node.x + NODE_WIDTH < start.x ||
+              node.x > end.x ||
+              node.y + height < start.y ||
+              node.y > end.y
+            );
+          })
+          .map((node) => node.id),
+      );
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      selectionPointerId.current = null;
+      setSelectionBox(null);
       return;
     }
     const gesture = panGesture.current;
@@ -480,12 +638,21 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     }
     panGesture.current = null;
     setIsPanning(false);
+    setPan({ x: viewportRef.current.x, y: viewportRef.current.y });
     os.setCanvasViewport(viewportRef.current);
   }
 
   function cancelStagePointer(event: React.PointerEvent<HTMLDivElement>) {
     if (connectionDraft) {
       setConnectionDraft(null);
+      return;
+    }
+    if (selectionPointerId.current === event.pointerId) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      selectionPointerId.current = null;
+      setSelectionBox(null);
       return;
     }
     endStagePan(event);
@@ -512,6 +679,41 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     uploadInputRef.current?.click();
   }
 
+  async function shareCanvas() {
+    if (!os.activeCanvasId) return;
+    const choice = window.prompt(
+      "输入分享类型：readonly（只读链接）或 workflow（Workflow 模板）",
+      "readonly",
+    );
+    if (choice === null) return;
+    const mode =
+      choice.trim().toLowerCase() === "workflow"
+        ? "workflow"
+        : "read_only";
+    try {
+      const response = await fetch("/api/v2/canvases/share", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          canvasId: os.activeCanvasId,
+          mode,
+          expiresInDays: 30,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        share?: { url: string };
+        error?: string;
+      };
+      if (!response.ok || !payload.share?.url) {
+        throw new Error(payload.error ?? "创建分享失败");
+      }
+      await navigator.clipboard.writeText(payload.share.url).catch(() => undefined);
+      window.prompt("分享链接已生成并尝试复制，可手动复制：", payload.share.url);
+    } catch (cause) {
+      window.alert(cause instanceof Error ? cause.message : "创建分享失败");
+    }
+  }
+
   async function handleCanvasUpload(
     event: React.ChangeEvent<HTMLInputElement>,
   ) {
@@ -535,7 +737,12 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       ? "image"
       : file.type.startsWith("video/")
         ? "video"
-        : "text";
+        : file.type.startsWith("audio/")
+          ? "audio"
+          : file.type.startsWith("text/") ||
+              ["md", "txt", "json"].includes(extension)
+            ? "text"
+            : "document";
     let prompt = `从本地导入 ${file.name}，可继续补充处理要求。`;
     if (
       kind === "text" &&
@@ -578,6 +785,18 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const visibleBounds = visibleWorldBounds(
     { x: pan.x, y: pan.y, zoom: os.zoom },
     stageSize,
+  );
+  const renderBounds = expandBounds(visibleBounds, 420);
+  const visibleNodes = os.nodes.filter(
+    (node) =>
+      os.selectedNodeIds.includes(node.id) ||
+      node.id === connectionDraft?.sourceId ||
+      !(
+        node.x + NODE_WIDTH < renderBounds.minX ||
+        node.x > renderBounds.maxX ||
+        node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT) < renderBounds.minY ||
+        node.y > renderBounds.maxY
+      ),
   );
   const minimapBounds = expandBounds(
     unionBounds(nodeBounds, visibleBounds),
@@ -624,9 +843,6 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     setPan({ x: next.x, y: next.y });
   }
 
-  const connectionSource = connectionDraft
-    ? os.nodes.find((node) => node.id === connectionDraft.sourceId)
-    : null;
   const stageClass = [
     "canvas-stage",
     isPanning ? "is-panning" : "",
@@ -642,12 +858,21 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       <CanvasDrawer
         open={os.drawerOpen}
         activeCanvasId={os.activeCanvasId}
+        projectId={os.projectId}
         canvases={os.canvases}
         workspaceName={os.workspaceName}
         projectName={os.projectName}
         onClose={() => os.setDrawerOpen(false)}
         onSelect={os.setActiveCanvasId}
         onCreate={() => void os.createCanvas()}
+        onRename={os.renameCanvas}
+        onArchive={os.archiveCanvas}
+        onDelete={os.deleteCanvas}
+        onDuplicate={os.duplicateCanvas}
+        onRestore={os.restoreCanvas}
+        onStar={os.toggleCanvasStar}
+        onCreateSnapshot={os.createCanvasSnapshot}
+        onRestoreSnapshot={os.restoreCanvasSnapshot}
       />
 
       <section
@@ -679,11 +904,11 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             </span>
           </div>
           <div className="canvas-header-actions">
-            <span className="viewer-stack" aria-label="2 位协作者">
-              <i>洛</i>
-              <i>林</i>
-            </span>
-            <button type="button" className="secondary-button compact">
+            <button
+              type="button"
+              className="secondary-button compact"
+              onClick={() => void shareCanvas()}
+            >
               <Share2 size={15} /> 分享
             </button>
             <IconButton
@@ -705,85 +930,48 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           onContextMenu={handleStageContextMenu}
         >
           <div className="canvas-grid" style={gridStyle} aria-hidden="true" />
+          {selectionBox && (
+            <div
+              className="canvas-selection-box"
+              style={{
+                left: Math.min(selectionBox.startX, selectionBox.currentX),
+                top: Math.min(selectionBox.startY, selectionBox.currentY),
+                width: Math.abs(selectionBox.currentX - selectionBox.startX),
+                height: Math.abs(selectionBox.currentY - selectionBox.startY),
+              }}
+              aria-hidden="true"
+            />
+          )}
+          {os.cloudError && (
+            <div className="canvas-cloud-error" role="alert">
+              {os.cloudError}
+            </div>
+          )}
 
           <div className="canvas-content" style={worldStyle}>
-            {os.edges.map((edge) => {
-              const source = os.nodes.find((node) => node.id === edge.source);
-              const target = os.nodes.find((node) => node.id === edge.target);
-              if (!source || !target) return null;
-              const flowing =
-                source.status === "running" || target.status === "running";
-              const selected = selectedEdgeId === edge.id;
-              return (
-                <div
-                  key={edge.id}
-                  className={`edge-line ${flowing ? "is-flowing" : ""} ${selected ? "is-selected" : ""}`}
-                  style={edgeStyle(
-                    source,
-                    target,
-                    nodeHeights[source.id] ?? 156,
-                    nodeHeights[target.id] ?? 156,
-                  )}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`连接：${source.title} 到 ${target.title}`}
-                  aria-pressed={selected}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setSelectedEdgeId(edge.id);
-                    os.setSelectedNodeId(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    setSelectedEdgeId(edge.id);
-                    os.setSelectedNodeId(null);
-                  }}
-                >
-                  <span />
-                  {selected && (
-                    <button
-                      type="button"
-                      className="edge-remove-button"
-                      aria-label="取消连接"
-                      title="取消连接"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        os.deleteEdge(edge.id);
-                        setSelectedEdgeId(null);
-                      }}
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+            <CanvasEdgeLayer
+              nodes={os.nodes}
+              edges={os.edges}
+              nodeHeights={nodeHeights}
+              visibleBounds={visibleBounds}
+              selectedEdgeId={selectedEdgeId}
+              draft={connectionDraft}
+              onSelect={(edgeId) => {
+                setSelectedEdgeId(edgeId);
+                os.setSelectedNodeId(null);
+              }}
+              onDelete={(edgeId) => {
+                os.deleteEdge(edgeId);
+                setSelectedEdgeId(null);
+              }}
+            />
 
-            {connectionDraft && connectionSource && (
-              <div
-                className="edge-line edge-line-draft"
-                style={lineStyle(
-                  centeredPortPoint(
-                    connectionSource,
-                    {
-                      width: NODE_WIDTH,
-                      height: nodeHeights[connectionSource.id] ?? 156,
-                    },
-                    "output",
-                  ),
-                  connectionDraft.current,
-                )}
-                aria-hidden="true"
-              />
-            )}
-
-            {os.nodes.map((node) => (
+            {visibleNodes.map((node) => (
               <NodeCard
                 key={node.id}
                 node={node}
+                workspaceId={os.workspaceId}
+                saveState={os.cloudStatus}
                 selected={node.id === os.selectedNodeId}
                 multiSelected={os.selectedNodeIds.includes(node.id)}
                 zoom={os.zoom}
@@ -798,19 +986,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 onMove={(x, y) => os.moveNode(node.id, x, y)}
                 onUpdate={(patch) => os.updateNode(node.id, patch)}
                 onSizeChange={handleNodeSizeChange}
-                onConnectionStart={(clientX, clientY) =>
-                  beginConnection(node.id, clientX, clientY)
+                onConnectionStart={(portId, dataType, clientX, clientY) =>
+                  beginConnection(node.id, portId, dataType, clientX, clientY)
                 }
-                connectionTargetAvailable={Boolean(
-                  connectionDraft &&
-                    connectionDraft.sourceId !== node.id &&
-                    !os.edges.some(
-                      (edge) =>
-                        edge.source === connectionDraft.sourceId &&
-                        edge.target === node.id,
-                    ),
-                )}
+                connectionDataType={
+                  connectionDraft?.sourceId === node.id
+                    ? undefined
+                    : connectionDraft?.dataType
+                }
                 onRun={() => void os.startRun(node.id)}
+                onRerunBranch={() => void os.rerunBranch(node.id)}
               />
             ))}
           </div>
@@ -932,6 +1117,8 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               capabilities={os.capabilities}
               packages={os.packages}
               canUndo={os.canUndo}
+              canRedo={os.canRedo}
+              canCopy={Boolean(os.selectedNodeIds.length)}
               multiSelectActive={os.activeTool === "multi-select"}
               arrangeMode={os.arrangeMode}
               onAddNode={addNodeAtContext}
@@ -953,6 +1140,13 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 })
               }
               onUndo={os.undoCanvas}
+              onRedo={os.redoCanvas}
+              onCopy={() => {
+                os.copySelected();
+              }}
+              onPaste={() => {
+                os.pasteCopied();
+              }}
               onToggleMultiSelect={() => {
                 if (os.activeTool === "multi-select") {
                   os.setActiveTool("select");
@@ -974,6 +1168,8 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               className="open-console-button"
               onClick={() => os.setConsoleOpen(true)}
             >
+              {/* Static brand asset; image optimization adds no value at this size. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src="/xiaoluo-intent-mark.png"
                 alt=""
@@ -991,9 +1187,13 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           plan={os.plan}
           isPlanning={os.isPlanning}
           runState={os.runState}
+          capabilities={os.capabilities}
           onClose={() => os.setConsoleOpen(false)}
           onSubmit={os.submitIntent}
+          onUploadAttachments={os.uploadIntentAttachments}
           onConfirmPlan={os.confirmPlan}
+          onUpdatePlan={os.updatePlan}
+          onRejectPlan={os.rejectPlan}
           onStart={os.startRun}
           onPause={os.pauseRun}
           onCancel={os.cancelRun}

@@ -49,10 +49,11 @@ test("enforces workspace scope on extension model runtime and asset APIs", async
 });
 
 test("persists Intent plans and runtime events on the server", async () => {
-  const [messages, runs, worker, schema] = await Promise.all([
+  const [messages, runs, worker, domainEvents, schema] = await Promise.all([
     source("app/api/v2/intent/messages/route.ts"),
     source("app/api/v2/kernel/runs/route.ts"),
     source("app/lib/kernel-worker.ts"),
+    source("app/lib/domain-events.ts"),
     source("db/schema.ts"),
   ]);
 
@@ -62,9 +63,62 @@ test("persists Intent plans and runtime events on the server", async () => {
   assert.match(worker, /leaseExpiresAt/);
   assert.match(worker, /maxAttempts/);
   assert.match(worker, /storeAsset/);
+  assert.match(runs, /capabilitySnapshot/);
   assert.match(schema, /export const intentPlans/);
   assert.match(schema, /export const runEvents/);
   assert.match(schema, /export const generationJobs/);
+  assert.match(schema, /export const auditLogs/);
+  assert.match(schema, /export const outboxEvents/);
+  assert.match(domainEvents, /FOR UPDATE SKIP LOCKED/);
+  assert.match(domainEvents, /runAuditedMutation/);
+  assert.match(domainEvents, /status = 'published'/);
+});
+
+test("routes model calls with retry fallback circuit breaking and async jobs", async () => {
+  const [
+    router,
+    executors,
+    asyncJobs,
+    pollRoute,
+    taskRoute,
+    catalogRoute,
+    statsRoute,
+    schema,
+    migration,
+  ] = await Promise.all([
+    source("app/lib/model-runtime-router.ts"),
+    source("app/lib/kernel-executors.ts"),
+    source("app/lib/model-async-jobs.ts"),
+    source("app/api/v2/tasks/poll/route.ts"),
+    source("app/api/v2/tasks/route.ts"),
+    source("app/api/v2/models/catalog/route.ts"),
+    source("app/api/v2/models/stats/route.ts"),
+    source("db/schema.ts"),
+    source("drizzle/0005_grey_peter_parker.sql"),
+  ]);
+
+  assert.match(router, /orderedCandidates/);
+  assert.match(router, /fallbackModelId/);
+  assert.match(router, /retryAfterMs/);
+  assert.match(router, /circuit_state/);
+  assert.match(router, /active_requests < max_concurrency/);
+  assert.match(router, /modelExecutionAudits/);
+  assert.match(executors, /AsyncJobDescriptor/);
+  assert.match(executors, /pollModelJob/);
+  assert.match(executors, /cancelModelJob/);
+  assert.match(asyncJobs, /persistAsyncResult/);
+  assert.match(asyncJobs, /storeAsset/);
+  assert.match(pollRoute, /pollGenerationJob/);
+  assert.match(taskRoute, /cancelGenerationJob/);
+  assert.match(catalogRoute, /modelCatalogEntries/);
+  assert.match(statsRoute, /total_count/);
+  assert.match(statsRoute, /不计算 Token、用量金额或第三方账单/);
+  assert.doesNotMatch(statsRoute, /price|cost_usd|token_count/i);
+  assert.match(schema, /export const modelCatalogEntries/);
+  assert.match(schema, /export const modelExecutionAudits/);
+  assert.match(schema, /export const modelUsageStats/);
+  assert.match(migration, /circuit_failure_threshold/);
+  assert.match(migration, /model_execution_audits/);
 });
 
 test("stores provider credentials as encrypted server-side references", async () => {
@@ -97,14 +151,14 @@ test("versions packages and removes them through lifecycle state", async () => {
 
 test("ships all eight frozen baseline inventories", async () => {
   const files = [
-    "requirements.csv",
-    "api-inventory.csv",
-    "schema-inventory.csv",
-    "route-inventory.csv",
-    "permissions-matrix.csv",
-    "events.csv",
-    "migration-mapping.csv",
-    "critical-e2e.csv",
+    "web-pages-and-entrypoints.csv",
+    "user-actions-and-states.csv",
+    "api-routes-and-events.csv",
+    "data-tables-fields-storage.csv",
+    "skills-agents-models-packages.csv",
+    "workers-jobs-integrations.csv",
+    "roles-and-permissions.csv",
+    "requirements-coverage.csv",
   ];
   await Promise.all(
     files.map((file) => access(new URL(`docs/baseline/${file}`, root))),

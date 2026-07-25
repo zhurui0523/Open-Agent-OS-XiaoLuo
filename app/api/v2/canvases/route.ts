@@ -11,6 +11,11 @@ import {
   replaceCanvasGraph,
 } from "../../../lib/workspace-store";
 import type { CanvasEdge, CanvasNode } from "../../../types";
+import { validateEdgePorts } from "../../../lib/node-ports";
+import {
+  compileWorkflow,
+  WorkflowCompileError,
+} from "../../../lib/workflow-kernel";
 
 interface ProjectRow extends RowDataPacket {
   name: string;
@@ -35,7 +40,9 @@ function validNodes(value: unknown): value is CanvasNode[] {
         typeof node.prompt === "string" &&
         (node.kind === "text" ||
           node.kind === "image" ||
-          node.kind === "video") &&
+          node.kind === "video" ||
+          node.kind === "audio" ||
+          node.kind === "document") &&
         typeof node.x === "number" &&
         Number.isFinite(node.x) &&
         typeof node.y === "number" &&
@@ -55,6 +62,14 @@ function validEdges(value: unknown, nodeIds: Set<string>): value is CanvasEdge[]
         typeof edge.id === "string" &&
         typeof edge.source === "string" &&
         typeof edge.target === "string" &&
+        typeof edge.sourcePort === "string" &&
+        typeof edge.targetPort === "string" &&
+        (edge.dataType === "text" ||
+          edge.dataType === "image" ||
+          edge.dataType === "video" ||
+          edge.dataType === "audio" ||
+          edge.dataType === "document" ||
+          edge.dataType === "json") &&
         edge.source !== edge.target &&
         nodeIds.has(edge.source) &&
         nodeIds.has(edge.target),
@@ -79,7 +94,12 @@ export async function GET(request: Request) {
       return Response.json({ error: "缺少 projectId" }, { status: 400 });
     }
     await requireProjectAccess(user.id, projectId, "view");
-    return Response.json({ canvases: await listCanvases(projectId) });
+    const requestedState = url.searchParams.get("state");
+    const state =
+      requestedState === "archived" || requestedState === "deleted"
+        ? requestedState
+        : "active";
+    return Response.json({ canvases: await listCanvases(projectId, state) });
   } catch (error) {
     return jsonError(error, "读取画布失败");
   }
@@ -91,6 +111,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       projectId?: string;
       title?: string;
+      sourceCanvasId?: string;
     };
     const projectId = body.projectId ?? "";
     const title = body.title?.trim().slice(0, 180) || "未命名画布";
@@ -102,6 +123,17 @@ export async function POST(request: Request) {
     if (!projects[0]) {
       return Response.json({ error: "项目不存在" }, { status: 404 });
     }
+    let sourceGraph: Awaited<ReturnType<typeof readCanvasGraph>> = null;
+    if (body.sourceCanvasId) {
+      await requireCanvasAccess(user.id, body.sourceCanvasId, "view");
+      sourceGraph = await readCanvasGraph(body.sourceCanvasId);
+      if (!sourceGraph || sourceGraph.projectId !== projectId) {
+        return Response.json(
+          { error: "只能复制当前项目中可访问的画布" },
+          { status: 400 },
+        );
+      }
+    }
     const id = crypto.randomUUID();
     await mysqlExecute(
       `INSERT INTO xiaoluo_v2_canvases
@@ -111,21 +143,35 @@ export async function POST(request: Request) {
         id,
         projectId,
         title,
-        JSON.stringify({ x: 0, y: 0, zoom: 92 }),
+        JSON.stringify(sourceGraph?.viewport ?? { x: 0, y: 0, zoom: 92 }),
         user.id,
       ],
     );
+    let revision = 1;
+    let nodeCount = 0;
+    if (sourceGraph) {
+      nodeCount = sourceGraph.nodes.length;
+      revision =
+        (await replaceCanvasGraph({
+          canvasId: id,
+          revision: 1,
+          arrangeMode: sourceGraph.arrangeMode,
+          viewport: sourceGraph.viewport,
+          nodes: sourceGraph.nodes.map((node) => ({ ...node })),
+          edges: sourceGraph.edges.map((edge) => ({ ...edge })),
+        })) ?? 1;
+    }
     return Response.json(
       {
         canvas: {
           id,
           title,
           project: projects[0].name,
-          nodes: 0,
+          nodes: nodeCount,
           updatedAt: new Date().toISOString(),
-          revision: 1,
-          arrangeMode: "free",
-          viewport: { x: 0, y: 0, zoom: 92 },
+          revision,
+          arrangeMode: sourceGraph?.arrangeMode ?? "free",
+          viewport: sourceGraph?.viewport ?? { x: 0, y: 0, zoom: 92 },
         },
       },
       { status: 201 },
@@ -156,6 +202,35 @@ export async function PUT(request: Request) {
     const nodeIds = new Set(body.nodes.map((node) => node.id));
     if (!validEdges(body.edges, nodeIds)) {
       return Response.json({ error: "连线数据无效" }, { status: 400 });
+    }
+    const nodesById = new Map(body.nodes.map((node) => [node.id, node]));
+    for (const edge of body.edges) {
+      const source = nodesById.get(edge.source);
+      const target = nodesById.get(edge.target);
+      if (!source || !target) continue;
+      const incompatibility = validateEdgePorts(edge, source, target);
+      if (incompatibility) {
+        return Response.json(
+          {
+            error: `连线 ${edge.id} 不兼容：${incompatibility}`,
+            code: "INCOMPATIBLE_PORTS",
+          },
+          { status: 422 },
+        );
+      }
+    }
+    if (body.nodes.length) {
+      try {
+        compileWorkflow(body.nodes, body.edges);
+      } catch (error) {
+        if (error instanceof WorkflowCompileError) {
+          return Response.json(
+            { error: error.message, code: error.code },
+            { status: 422 },
+          );
+        }
+        throw error;
+      }
     }
     const viewport = body.viewport;
     if (

@@ -1,8 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   kernelRuns,
   kernelTasks,
+  packageCapabilities,
+  packages,
   registryEvents,
   runEvents,
 } from "../../../../../db/schema";
@@ -45,7 +47,7 @@ function validGraph(value: unknown): {
       typeof node.id !== "string" ||
       typeof node.title !== "string" ||
       typeof node.prompt !== "string" ||
-      !["text", "image", "video"].includes(node.kind)
+      !["text", "image", "video", "audio", "document"].includes(node.kind)
     ) {
       throw new Error("工作流包含无效节点");
     }
@@ -87,8 +89,60 @@ export async function POST(request: Request) {
       return errorResponse(new Error("Idempotency-Key 必填"));
     }
     const graph = validGraph(payload);
-    const workflow = compileWorkflow(graph.nodes, graph.edges);
     const db = await getDb();
+    const capabilityIds = [
+      ...new Set(
+        graph.nodes
+          .map((node) => node.capabilityId)
+          .filter((id) => id && !id.startsWith("core.")),
+      ),
+    ];
+    const capabilityRows = capabilityIds.length
+      ? await db
+          .select({
+            capability: packageCapabilities,
+            packageId: packages.id,
+            packageKey: packages.packageKey,
+            packageVersion: packages.version,
+          })
+          .from(packageCapabilities)
+          .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
+          .where(
+            and(
+              inArray(packageCapabilities.id, capabilityIds),
+              eq(packages.workspaceId, access.workspaceId),
+            ),
+          )
+      : [];
+    const capabilityById = new Map(
+      capabilityRows.map((row) => [row.capability.id, row]),
+    );
+    const runtimeGraph = {
+      nodes: graph.nodes.map((node) => {
+        const row = capabilityById.get(node.capabilityId);
+        if (!row) return node;
+        return {
+          ...node,
+          parameters: {
+            ...node.parameters,
+            capabilitySnapshot: {
+              id: row.capability.id,
+              capabilityKey: row.capability.capabilityKey,
+              title: row.capability.title,
+              packageId: row.packageId,
+              packageKey: row.packageKey,
+              packageVersion: row.packageVersion,
+              contributionType: row.capability.contributionType,
+              inputSchema: JSON.parse(row.capability.inputSchemaJson),
+              outputSchema: JSON.parse(row.capability.outputSchemaJson),
+              uiSchema: JSON.parse(row.capability.uiSchemaJson),
+            },
+          },
+        };
+      }),
+      edges: graph.edges,
+    };
+    const workflow = compileWorkflow(runtimeGraph.nodes, runtimeGraph.edges);
     const [existing] = await db
       .select()
       .from(kernelRuns)
@@ -119,19 +173,29 @@ export async function POST(request: Request) {
       idempotencyKey,
       status: "queued",
       desiredStatus: "running",
-      graphJson: JSON.stringify(graph),
+      graphJson: JSON.stringify(runtimeGraph),
       createdAt: now,
       updatedAt: now,
     });
     await db.insert(kernelTasks).values(
-      graph.nodes.map((node) => ({
+      runtimeGraph.nodes.map((node) => ({
         id: `${runId}:${node.id}`,
         runId,
         nodeId: node.id,
         status: "queued",
         dependenciesJson: JSON.stringify(workflow.dependencies[node.id]),
         attempt: 0,
-        maxAttempts: 3,
+        maxAttempts: Math.min(
+          5,
+          Math.max(
+            1,
+            Number(
+              node.parameters?.failurePolicy === "retry"
+                ? node.parameters?.retryLimit ?? 3
+                : 1,
+            ) || 1,
+          ),
+        ),
         updatedAt: now,
       })),
     );

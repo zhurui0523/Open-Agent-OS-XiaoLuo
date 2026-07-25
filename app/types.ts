@@ -3,6 +3,7 @@ export type AppView = "canvas" | "assets" | "capabilities";
 export interface AccountUser {
   id: string;
   email: string;
+  username: string;
   displayName: string;
   phoneLast4: string | null;
   platformRole: "system_admin" | "user";
@@ -28,7 +29,23 @@ export interface WorkspaceOption {
   organizationRole: "admin" | "member" | null;
 }
 
-export type NodeKind = "text" | "image" | "video";
+export type NodeKind = "text" | "image" | "video" | "audio" | "document";
+
+export type PortDataType =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "document"
+  | "json";
+
+export interface NodePort {
+  id: string;
+  label: string;
+  direction: "input" | "output";
+  dataTypes: PortDataType[];
+  required?: boolean;
+}
 
 export type NodeStatus =
   | "draft"
@@ -38,7 +55,8 @@ export type NodeStatus =
   | "paused"
   | "succeeded"
   | "failed"
-  | "canceled";
+  | "canceled"
+  | "skipped";
 
 export interface CanvasNode {
   id: string;
@@ -57,7 +75,7 @@ export interface CanvasNode {
 }
 
 export interface KernelNodeOutput {
-  type: "text" | "image" | "video" | "json";
+  type: "text" | "image" | "video" | "audio" | "document" | "json";
   text?: string;
   assetUrl?: string;
   data?: unknown;
@@ -84,6 +102,9 @@ export interface CanvasEdge {
   id: string;
   source: string;
   target: string;
+  sourcePort: string;
+  targetPort: string;
+  dataType: PortDataType;
 }
 
 export interface CanvasSummary {
@@ -100,13 +121,14 @@ export interface Capability {
   title: string;
   description: string;
   modality: NodeKind;
-  category: "系统" | "SKILL" | "插件";
+  category: "系统" | "SKILL" | "Agent" | "Workflow" | "插件";
   enabled: boolean;
   packageVersion: string;
   parameterHint: string;
   packageId?: string;
-  contributionType?: "skill" | "node";
+  contributionType?: "skill" | "agent" | "workflow" | "node";
   inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   uiSchema?: Record<string, unknown>;
 }
 
@@ -122,11 +144,26 @@ export interface ModelConnection {
   modelName?: string;
   credentialRef?: string;
   secretRefId?: string;
+  priority: number;
+  fallbackModelId?: string | null;
+  maxConcurrency: number;
+  retryLimit: number;
+  circuitFailureThreshold: number;
+  circuitCooldownSeconds: number;
+  circuitState: "closed" | "open" | "half_open";
+  activeRequests: number;
+  catalogSyncedAt?: string | null;
   enabled?: boolean;
   lastCheckedAt?: string | null;
 }
 
-export type PackageType = "skill" | "plugin" | "model-provider";
+export type PackageType =
+  | "skill"
+  | "agent"
+  | "workflow"
+  | "plugin"
+  | "model-provider"
+  | "adapter";
 export type PluginRuntimeType = "declarative" | "sandbox-ui" | "remote-api";
 export type ModelProtocol =
   | "openai-compatible"
@@ -180,6 +217,41 @@ export interface ModelConnectionDraft {
   secretRefId?: string;
   secretValue?: string;
   secretName?: string;
+  priority?: number;
+  fallbackModelId?: string | null;
+  maxConcurrency?: number;
+  retryLimit?: number;
+  circuitFailureThreshold?: number;
+  circuitCooldownSeconds?: number;
+}
+
+export interface ModelUsageSummary {
+  text: {
+    total: number;
+    success: number;
+    failure: number;
+  };
+  image: {
+    total: number;
+    success: number;
+    failure: number;
+  };
+  video: {
+    total: number;
+    success: number;
+    failure: number;
+  };
+  retryCount: number;
+  fallbackCount: number;
+}
+
+export type GesturePreset = "figma" | "trackpad" | "zoom-wheel";
+
+export interface UserPreferences {
+  gesturePreset: GesturePreset;
+  invertZoom: boolean;
+  zoomSensitivity: "slow" | "normal" | "fast";
+  keyboardShortcuts: boolean;
 }
 
 export interface AssetItem {
@@ -240,6 +312,15 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   time: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface ChatAttachment {
+  id: string;
+  uri: string;
+  name: string;
+  kind: AssetKind;
+  mimeType: string;
 }
 
 export interface PlanTask {
@@ -261,6 +342,7 @@ export type RunState =
   | "awaiting_confirmation"
   | "ready"
   | "running"
+  | "waiting"
   | "paused"
   | "succeeded"
   | "failed"

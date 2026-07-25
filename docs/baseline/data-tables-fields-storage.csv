@@ -1,0 +1,11 @@
+domain,tables,key_fields,storage,requirement,evidence,status
+identity,"xiaoluo_v2_users|auth_sessions|auth_challenges|password_reset_tokens","username|phone_hash|refresh_token_hash|expires_at",MySQL,REQ-001,db/schema.ts,verified
+security,"user_security_settings|secret_refs","allow_multiple_sessions|encrypted_value|iv|auth_tag",MySQL encrypted,REQ-008,db/schema.ts,verified
+organization,"organizations|organization_members|enterprise_applications|organization_invitations","role|status|workspace_id",MySQL,REQ-002,db/schema.ts,verified
+workspace,"workspaces|workspace_members|projects","owner_id|role|organization_id",MySQL,REQ-003,db/schema.ts,verified
+canvas,"canvases|canvas_nodes|canvas_edges|canvas_snapshots|canvas_share_links","revision|viewport|source_port_id|target_port_id|data_type",MySQL,REQ-004,db/schema.ts,verified
+intent,"intent_conversations|intent_messages|intent_plans","status|plan_json|revision",MySQL,REQ-005,db/schema.ts,verified
+runtime,"kernel_runs|kernel_tasks|run_events|generation_jobs","lease_expires_at|attempts|provider_task_id|progress",MySQL,REQ-006,db/schema.ts,verified
+extensions,"packages|package_versions|package_capabilities|registry_events","manifest_json|integrity_sha256|input_schema|output_schema|ui_schema",MySQL and OSS bundle,REQ-009,db/schema.ts,verified
+models,"model_connections|model_catalog_entries|model_execution_audits|model_usage_stats|rate_limit_buckets","secret_ref_id|fallback_model_id|circuit_state|text_count|image_count|video_count",MySQL,REQ-022,db/schema.ts,verified
+assets,"asset_folders|assets|asset_versions|asset_relations|asset_collections","asset_uri|storage_key|sha256|source_run_id|source_node_id",MySQL metadata and OSS blobs,REQ-011,db/schema.ts,verified

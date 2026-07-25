@@ -25,6 +25,8 @@ import {
   Type,
   Upload,
   Video,
+  AudioLines,
+  FileOutput,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -42,12 +44,17 @@ const modalityIcon = {
   text: Type,
   image: ImageIcon,
   video: Video,
+  audio: AudioLines,
+  document: FileOutput,
 };
 
 const packageTypeLabel = {
   skill: "SKILL",
+  agent: "Agent",
+  workflow: "Workflow",
   plugin: "插件",
   "model-provider": "模型 Provider",
+  adapter: "Adapter",
 };
 
 const runtimeMeta = {
@@ -97,7 +104,7 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
     text: string;
   } | null>(null);
 
-  const pluginCount = os.packages.filter(
+  const extensionCount = os.packages.filter(
     (item) => item.packageType !== "skill",
   ).length;
   const skillCount = os.packages.filter(
@@ -160,9 +167,9 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
           <span className="stat-icon stat-violet">
             <PlugZap size={19} />
           </span>
-          <p>插件</p>
-          <strong>{pluginCount}</strong>
-          <small>声明式 · 沙盒 · 远程</small>
+          <p>扩展包</p>
+          <strong>{extensionCount}</strong>
+          <small>Agent · Workflow · Plugin</small>
         </button>
         <button type="button" onClick={() => setTab("models")}>
           <span className="stat-icon stat-green">
@@ -562,7 +569,7 @@ function ModelsPanel({
         <div className="extension-empty model-empty">
           <span><Cpu size={24} /></span>
           <h3>还没有真实模型连接</h3>
-          <p>添加 OpenAI Compatible、Anthropic Compatible 或 Generic REST Provider。</p>
+          <p>添加 OpenAI Compatible、Anthropic Compatible、Gemini 或异步视频 Provider。</p>
           <button type="button" className="primary-button" onClick={onAdd}>
             添加第一个模型
           </button>
@@ -583,6 +590,12 @@ function ModelsPanel({
                 <div><dt>Endpoint</dt><dd>{model.baseUrl}</dd></div>
                 <div><dt>Model ID</dt><dd>{model.modelName}</dd></div>
                 <div><dt>Secret Ref</dt><dd>{model.credentialRef ?? "未配置"}</dd></div>
+                <div><dt>路由策略</dt><dd>P{model.priority ?? 100} · 并发 {model.maxConcurrency ?? 2}</dd></div>
+                <div><dt>可靠性</dt><dd>尝试 {model.retryLimit ?? 3} · 熔断 {model.circuitState ?? "closed"}</dd></div>
+                <div>
+                  <dt>动态目录</dt>
+                  <dd>{model.catalogSyncedAt ? "已同步" : "尚未同步"}</dd>
+                </div>
               </dl>
               <div className="model-meta">
                 <span>{model.modalities.join(" · ")}</span>
@@ -877,7 +890,6 @@ function ModelDialog({
               <option value="gemini">Google Gemini</option>
               <option value="ark">Volcengine Ark</option>
               <option value="async-video">Async Video API</option>
-              <option value="generic-rest">Generic REST</option>
             </select>
           </label>
           <label className="form-span-two">
@@ -905,7 +917,7 @@ function ModelDialog({
         </div>
         <fieldset className="modality-fieldset">
           <legend>支持模态</legend>
-          {(["text", "image", "video"] as NodeKind[]).map((item) => {
+          {(["text", "image", "video", "audio", "document"] as NodeKind[]).map((item) => {
             const Icon = modalityIcon[item];
             return (
               <button
@@ -952,18 +964,39 @@ function SandboxDialog({
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [bridgeState, setBridgeState] = useState("等待插件握手");
+  const [frameFailed, setFrameFailed] = useState(false);
+  const [frameVersion, setFrameVersion] = useState(0);
+  const bridgeToken = useRef(crypto.randomUUID());
 
   useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setBridgeState("插件未完成握手，已启用安全回退");
+      setFrameFailed(true);
+    }, 8_000);
     function receive(event: MessageEvent) {
-      if (event.source !== frame.current?.contentWindow) return;
-      const message = event.data as { type?: string; requestId?: string };
+      if (
+        event.source !== frame.current?.contentWindow ||
+        event.origin !== "null" ||
+        !event.data ||
+        typeof event.data !== "object"
+      ) {
+        return;
+      }
+      const message = event.data as {
+        type?: string;
+        requestId?: string;
+        bridgeToken?: string;
+      };
       if (message?.type === "xiaoluo:ready") {
+        window.clearTimeout(timeout);
+        setFrameFailed(false);
         setBridgeState("消息桥已连接");
         frame.current?.contentWindow?.postMessage(
           {
             type: "xiaoluo:host-ready",
             contractVersion: "2.0",
             grantedCapabilities: [],
+            bridgeToken: bridgeToken.current,
           },
           "*",
         );
@@ -974,15 +1007,21 @@ function SandboxDialog({
             type: "xiaoluo:response",
             requestId: message.requestId,
             ok: false,
-            error: "Capability 未授权",
+            error:
+              message.bridgeToken === bridgeToken.current
+                ? "Capability 未授权"
+                : "消息桥令牌无效",
           },
           "*",
         );
       }
     }
     window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, []);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("message", receive);
+    };
+  }, [frameVersion]);
 
   return (
     <div className="extension-modal-backdrop sandbox-backdrop" role="presentation">
@@ -1000,14 +1039,38 @@ function SandboxDialog({
           <span>无 allow-same-origin</span>
           <span>摄像头 / 麦克风 / 定位：禁止</span>
         </div>
-        <iframe
-          ref={frame}
-          title={`${title} 插件沙盒`}
-          src={url}
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
-        />
+        {frameFailed ? (
+          <div className="sandbox-fallback" role="alert">
+            <CircleAlert size={24} />
+            <strong>插件界面未能安全加载</strong>
+            <p>核心应用仍可继续使用。你可以重试加载，或返回通用 Schema 界面。</p>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setBridgeState("等待插件握手");
+                setFrameFailed(false);
+                setFrameVersion((current) => current + 1);
+              }}
+            >
+              重新加载插件
+            </button>
+          </div>
+        ) : (
+          <iframe
+            key={frameVersion}
+            ref={frame}
+            title={`${title} 插件沙盒`}
+            src={url}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
+            onError={() => {
+              setBridgeState("插件加载失败，已启用安全回退");
+              setFrameFailed(true);
+            }}
+          />
+        )}
       </div>
     </div>
   );

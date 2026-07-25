@@ -14,5 +14,27 @@ REQ-012,P0,任务中心支持运行和异步生成任务查询与控制,统一�
 REQ-013,P0,数据库结构变更只能通过版本化迁移,Drizzle迁移账本校验和和回滚脚本,scripts/migrate-v2.mjs,implemented
 REQ-014,P0,服务提供存活和就绪探针,MySQL与OSS就绪检查,app/api/v2/health,implemented
 REQ-015,P1,多人实时协作与权限撤销后实时断连,当前为服务端保存和revision基础,docs/baseline/requirements.csv,deferred
-REQ-016,P1,完整审计日志与Outbox事件投递,关键能力已有Registry与Run事件但未全域覆盖,db/schema.ts,partial
+REQ-016,P1,完整审计日志与Outbox事件投递,不可变审计表与可重试Outbox投递器,app/lib/domain-events.ts,implemented
 REQ-017,P2,插件市场与第三方发布者治理,当前支持Package导入与注册表未包含市场,app/api/v2/packages/route.ts,deferred
+REQ-018,P1,画布支持只读链接和Workflow模板分享,服务端令牌摘要与不可变快照,app/api/v2/canvases/share/route.ts,implemented
+REQ-019,P0,个人中心支持资料手机密码安全与设备会话管理,设置中心与账户API,app/components/personal-settings.tsx,implemented
+REQ-020,P0,设置包含API Key手势快捷键和个人中心,统一设置中心,app/components/settings-center.tsx,implemented
+REQ-021,P1,系统管理员可以查看依赖任务存储与审计总览,只读运维面板,app/components/admin-operations.tsx,implemented
+REQ-022,P0,第三方模型支持目录优先级备用重试熔断限流与简单次数统计,统一模型路由器,app/lib/model-runtime-router.ts,implemented
+REQ-023,P0,画布支持大规模虚拟化框选多选编辑撤销重做和整理,可视区渲染与服务端防抖保存,app/components/canvas-view.tsx,implemented
+REQ-024,P0,Input和Output Schema驱动通用节点界面,递归输入与结果Renderer,app/components/schema-output.tsx,implemented
+REQ-025,P0,异步视频任务支持提交轮询恢复取消重试和资产沉淀,持久化Generation Job,app/lib/model-async-jobs.ts,implemented
+REQ-026,P1,Agent与Workflow复用Package和Capability Registry,统一Package契约和贡献投影,app/lib/package-contract.ts,implemented
+REQ-027,P0,模型测试和执行必须限流并留下审计,持久化限流桶与执行审计,app/lib/rate-limit.ts,implemented
+REQ-028,P2,正式插件市场具备发布者签名审核撤回与处置,需要外部信任和运营基础设施,docs/implementation-status.md,external_blocked
+REQ-029,P2,第三方CLI Node Python使用强隔离Worker,需要独立容器集群,docs/implementation-status.md,external_blocked
+REQ-030,P0,不创建文档内置14个Skill,产品方自行导入具体Skill,app/lib/package-contract.ts,user_excluded
+REQ-031,P0,不提供自定义接口编辑器,使用标准协议和Provider Package,app/components/settings-center.tsx,user_excluded
+REQ-032,P0,完全移除积分额度计费,无相关表接口和UI,tests/rendered-html.test.mjs,implemented
+REQ-033,P0,音频与文档和文本图片视频使用相同节点任务资产契约,五类核心Schema和正确MIME扩展名,app/data.ts,implemented
+REQ-034,P0,Intent支持附件引用和明确指定首选能力,服务端附件权限验证与能力解析,app/api/v2/intent/messages/route.ts,implemented
+REQ-035,P0,资产可重新放入画布形成类型化引用节点,资产抽屉添加到画布闭环,app/components/assets-view.tsx,implemented
+REQ-036,P0,任务支持单节点重试和从节点重跑下游分支,分支状态重置与服务端重新调度,app/api/v2/tasks/route.ts,implemented
+REQ-037,P0,Package生命周期写入失败不得留下半安装,Package版本能力审计Outbox单事务提交,app/api/v2/packages/route.ts,implemented
+REQ-038,P0,沙盒UI必须校验消息来源并在失败时回退,唯一来源消息桥令牌和加载超时回退,app/components/capabilities-view.tsx,implemented
+REQ-039,P0,文件上传必须校验大小扩展名MIME与内容签名,服务端文件内容验证器,app/lib/asset-kernel.ts,implemented

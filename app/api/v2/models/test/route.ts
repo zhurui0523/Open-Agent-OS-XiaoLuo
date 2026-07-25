@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
-import { modelConnections, registryEvents } from "../../../../../db/schema";
+import {
+  modelCatalogEntries,
+  modelConnections,
+  registryEvents,
+} from "../../../../../db/schema";
 import { probeModelAdapter } from "../../../../lib/model-adapters";
 import { serializeModel } from "../../../../lib/registry-serialization";
 import type { ModelProtocol, NodeKind } from "../../../../types";
@@ -8,6 +12,7 @@ import { mysqlNow } from "../../../../lib/mysql";
 import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 import { resolveSecret } from "../../../../lib/secret-vault";
+import { enforceRateLimit } from "../../../../lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
@@ -25,6 +30,12 @@ export async function POST(request: Request) {
     if (!payload.id) {
       return Response.json({ error: "id 必填" }, { status: 400 });
     }
+    await enforceRateLimit({
+      subject: user.id,
+      route: `models:test:${payload.id}`,
+      max: 10,
+      windowMs: 60_000,
+    });
     const db = await getDb();
     const [row] = await db
       .select()
@@ -57,12 +68,44 @@ export async function POST(request: Request) {
       credential,
     });
     const checkedAt = mysqlNow();
+    if (result.ok && result.catalog) {
+      await db
+        .update(modelCatalogEntries)
+        .set({ available: false })
+        .where(eq(modelCatalogEntries.connectionId, row.id));
+      for (const model of result.catalog) {
+        await db
+          .insert(modelCatalogEntries)
+          .values({
+            id: `catalog_${crypto.randomUUID()}`,
+            workspaceId,
+            connectionId: row.id,
+            modelId: model.id,
+            displayName: model.displayName,
+            modalitiesJson: JSON.stringify(model.modalities),
+            available: true,
+            metadataJson: JSON.stringify(model.metadata),
+            discoveredAt: checkedAt,
+            lastSeenAt: checkedAt,
+          })
+          .onDuplicateKeyUpdate({
+            set: {
+              displayName: model.displayName,
+              modalitiesJson: JSON.stringify(model.modalities),
+              available: true,
+              metadataJson: JSON.stringify(model.metadata),
+              lastSeenAt: checkedAt,
+            },
+          });
+      }
+    }
     await db
       .update(modelConnections)
       .set({
         state: result.state,
         latencyMs: result.latencyMs,
         lastCheckedAt: checkedAt,
+        ...(result.ok ? { catalogSyncedAt: checkedAt } : {}),
         updatedAt: checkedAt,
       })
       .where(eq(modelConnections.id, row.id));
@@ -80,9 +123,23 @@ export async function POST(request: Request) {
       actorUserId: user.id,
       eventType: result.ok ? "model.healthy" : "model.attention",
       entityId: row.id,
-      detailJson: JSON.stringify({ message: result.message }),
+      detailJson: JSON.stringify({
+        message: result.message,
+        discoveredModels: result.catalog?.length ?? 0,
+        latencyMs: result.latencyMs,
+      }),
     });
-    return Response.json({ model: serializeModel(updated), probe: result });
+    return Response.json({
+      model: serializeModel(updated),
+      probe: {
+        ok: result.ok,
+        state: result.state,
+        latencyMs: result.latencyMs,
+        message: result.message,
+        discoveredModels: result.discoveredModels,
+        catalogCount: result.catalog?.length ?? 0,
+      },
+    });
   } catch (error) {
     if (error instanceof Response) return error;
     return Response.json(

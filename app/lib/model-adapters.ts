@@ -14,6 +14,14 @@ export interface AdapterProbeResult {
   latencyMs: number;
   message: string;
   discoveredModels?: string[];
+  catalog?: AdapterModelDescriptor[];
+}
+
+export interface AdapterModelDescriptor {
+  id: string;
+  displayName: string;
+  modalities: NodeKind[];
+  metadata: Record<string, unknown>;
 }
 
 function trimSlash(value: string) {
@@ -71,6 +79,88 @@ function requestFor(config: ModelAdapterConfig) {
   return new Request(`${baseUrl}/models`, { method: "GET", headers });
 }
 
+function inferredModalities(
+  id: string,
+  methods: string[] = [],
+  configured: NodeKind[] = [],
+) {
+  const value = `${id} ${methods.join(" ")}`.toLowerCase();
+  const result = new Set<NodeKind>();
+  if (/image|imagen|flux|dall-e|stable-diffusion/.test(value)) {
+    result.add("image");
+  }
+  if (/video|veo|sora|kling|wan|seedance/.test(value)) {
+    result.add("video");
+  }
+  if (/audio|speech|voice|tts|music/.test(value)) {
+    result.add("audio");
+  }
+  if (/document|office|pdf|ppt|docx|xlsx/.test(value)) {
+    result.add("document");
+  }
+  if (
+    /chat|text|language|completion|generatecontent|claude|gpt|gemini|deepseek|qwen/.test(
+      value,
+    )
+  ) {
+    result.add("text");
+  }
+  configured.forEach((item) => result.add(item));
+  return [...result];
+}
+
+function catalogFromPayload(
+  payload: unknown,
+  config: ModelAdapterConfig,
+): AdapterModelDescriptor[] {
+  if (!payload || typeof payload !== "object") return [];
+  const record = payload as Record<string, unknown>;
+  const candidates = Array.isArray(record.data)
+    ? record.data
+    : Array.isArray(record.models)
+      ? record.models
+      : [];
+  return candidates
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const model = item as Record<string, unknown>;
+      const rawId =
+        typeof model.id === "string"
+          ? model.id
+          : typeof model.name === "string"
+            ? model.name.replace(/^models\//, "")
+            : "";
+      if (!rawId) return [];
+      const methods = Array.isArray(model.supportedGenerationMethods)
+        ? model.supportedGenerationMethods.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
+      return [
+        {
+          id: rawId.slice(0, 240),
+          displayName:
+            (typeof model.displayName === "string"
+              ? model.displayName
+              : typeof model.name === "string"
+                ? model.name
+                : rawId
+            ).slice(0, 240),
+          modalities: inferredModalities(rawId, methods, config.modalities),
+          metadata: {
+            ...(methods.length
+              ? { supportedGenerationMethods: methods }
+              : {}),
+            ...(typeof model.owned_by === "string"
+              ? { ownedBy: model.owned_by }
+              : {}),
+          },
+        },
+      ];
+    })
+    .slice(0, 500);
+}
+
 export async function probeModelAdapter(
   config: ModelAdapterConfig,
 ): Promise<AdapterProbeResult> {
@@ -85,17 +175,14 @@ export async function probeModelAdapter(
     const latencyMs = Date.now() - startedAt;
     if (response.ok) {
       let discoveredModels: string[] | undefined;
+      let catalog: AdapterModelDescriptor[] | undefined;
       if (
         config.protocol !== "generic-rest" &&
         config.protocol !== "async-video"
       ) {
-        const payload = (await response.json().catch(() => null)) as
-          | { data?: Array<{ id?: string }> }
-          | null;
-        discoveredModels = payload?.data
-          ?.map((item) => item.id)
-          .filter((id): id is string => Boolean(id))
-          .slice(0, 20);
+        const payload = await response.json().catch(() => null);
+        catalog = catalogFromPayload(payload, config);
+        discoveredModels = catalog.map((item) => item.id);
       }
       return {
         ok: true,
@@ -103,6 +190,7 @@ export async function probeModelAdapter(
         latencyMs,
         message: "连接成功，Adapter 已就绪",
         discoveredModels,
+        catalog,
       };
     }
     return {

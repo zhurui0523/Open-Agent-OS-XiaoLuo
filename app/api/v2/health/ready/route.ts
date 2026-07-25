@@ -1,5 +1,6 @@
+import type { RowDataPacket } from "mysql2/promise";
 import { getFileBucket } from "../../../../lib/asset-kernel";
-import { getMysqlPool } from "../../../../lib/mysql";
+import { mysqlRows } from "../../../../lib/mysql";
 
 export async function GET() {
   const checks = {
@@ -10,8 +11,7 @@ export async function GET() {
   await Promise.all([
     (async () => {
       try {
-        const database = await getMysqlPool();
-        await database.query("SELECT 1");
+        await mysqlRows<RowDataPacket>("SELECT 1 AS ok");
         checks.mysql = true;
       } catch {
         // The response intentionally omits infrastructure details and credentials.

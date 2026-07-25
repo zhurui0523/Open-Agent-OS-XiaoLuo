@@ -4,6 +4,7 @@ import {
   boolean,
   datetime,
   double,
+  foreignKey,
   index,
   int,
   json,
@@ -25,6 +26,7 @@ const timestamp = (name: string) =>
 export const users = mysqlTable("xiaoluo_v2_users", {
   id: id("id", 36).primaryKey(),
   email: varchar("email", { length: 254 }).notNull().unique(),
+  username: varchar("username", { length: 32 }).notNull().unique(),
   displayName: varchar("display_name", { length: 80 }).notNull(),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   phoneHash: varchar("phone_hash", { length: 64 }).unique(),
@@ -100,13 +102,55 @@ export const authSessions = mysqlTable(
       .references(() => users.id, { onDelete: "cascade" }),
     tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
     expiresAt: datetime("expires_at", { mode: "string", fsp: 3 }).notNull(),
+    refreshTokenHash: varchar("refresh_token_hash", { length: 64 }).unique(),
+    refreshExpiresAt: datetime("refresh_expires_at", {
+      mode: "string",
+      fsp: 3,
+    }),
+    refreshRotatedAt: datetime("refresh_rotated_at", {
+      mode: "string",
+      fsp: 3,
+    }),
+    deviceName: varchar("device_name", { length: 160 }),
+    userAgent: varchar("user_agent", { length: 500 }),
+    ipAddress: varchar("ip_address", { length: 64 }),
     createdAt: timestamp("created_at"),
     lastSeenAt: timestamp("last_seen_at"),
   },
   (table) => [
     index("auth_sessions_user_idx").on(table.userId),
     index("auth_sessions_expiry_idx").on(table.expiresAt),
+    index("auth_sessions_refresh_expiry_idx").on(table.refreshExpiresAt),
   ],
+);
+
+export const userPreferences = mysqlTable("xiaoluo_v2_user_preferences", {
+  userId: id("user_id", 36)
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  settingsJson: longtext("settings_json").notNull(),
+  revision: bigint("revision", { mode: "number", unsigned: true })
+    .notNull()
+    .default(1),
+  createdAt: timestamp("created_at"),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const userSecuritySettings = mysqlTable(
+  "xiaoluo_v2_user_security_settings",
+  {
+    userId: id("user_id", 36)
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    allowMultipleSessions: boolean("allow_multiple_sessions")
+      .notNull()
+      .default(true),
+    sessionTtlDays: int("session_ttl_days", { unsigned: true })
+      .notNull()
+      .default(30),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
 );
 
 export const workspaces = mysqlTable(
@@ -313,7 +357,13 @@ export const canvasNodes = mysqlTable(
     canvasId: id("canvas_id", 36)
       .notNull()
       .references(() => canvases.id, { onDelete: "cascade" }),
-    kind: mysqlEnum("kind", ["text", "image", "video"]).notNull(),
+    kind: mysqlEnum("kind", [
+      "text",
+      "image",
+      "video",
+      "audio",
+      "document",
+    ]).notNull(),
     title: varchar("title", { length: 240 }).notNull(),
     prompt: text("prompt").notNull(),
     status: varchar("status", { length: 32 }).notNull(),
@@ -345,6 +395,9 @@ export const canvasEdges = mysqlTable(
       .references(() => canvases.id, { onDelete: "cascade" }),
     sourceNodeId: id("source_node_id", 80).notNull(),
     targetNodeId: id("target_node_id", 80).notNull(),
+    sourcePortId: id("source_port_id", 80).notNull().default("output"),
+    targetPortId: id("target_port_id", 80).notNull().default("input"),
+    dataType: varchar("data_type", { length: 24 }).notNull().default("text"),
     createdAt: timestamp("created_at"),
   },
   (table) => [
@@ -372,6 +425,29 @@ export const canvasSnapshots = mysqlTable(
   },
   (table) => [
     index("canvas_snapshots_canvas_idx").on(table.canvasId, table.createdAt),
+  ],
+);
+
+export const canvasShareLinks = mysqlTable(
+  "xiaoluo_v2_canvas_share_links",
+  {
+    id: id("id", 120).primaryKey(),
+    canvasId: id("canvas_id", 36)
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+    mode: mysqlEnum("mode", ["read_only", "workflow"]).notNull(),
+    graphJson: longtext("graph_json").notNull(),
+    createdBy: id("created_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    expiresAt: datetime("expires_at", { mode: "string", fsp: 3 }),
+    revokedAt: datetime("revoked_at", { mode: "string", fsp: 3 }),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    index("canvas_share_canvas_idx").on(table.canvasId),
+    index("canvas_share_expiry_idx").on(table.expiresAt),
   ],
 );
 
@@ -582,32 +658,202 @@ export const secretRefs = mysqlTable(
   ],
 );
 
-export const modelConnections = mysqlTable("xiaoluo_v2_model_connections", {
-  id: id("id", 120).primaryKey(),
-  workspaceId: id("workspace_id", 36)
-    .notNull()
-    .references(() => workspaces.id, { onDelete: "cascade" }),
-  createdBy: id("created_by", 36)
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
-  name: varchar("name", { length: 180 }).notNull(),
-  protocol: varchar("protocol", { length: 60 }).notNull(),
-  baseUrl: text("base_url").notNull(),
-  modelName: varchar("model_name", { length: 180 }).notNull(),
-  modalitiesJson: text("modalities_json").notNull(),
-  credentialRef: varchar("credential_ref", { length: 80 }),
-  secretRefId: id("secret_ref_id", 120).references(() => secretRefs.id, {
-    onDelete: "set null",
-  }),
-  priority: int("priority").notNull().default(100),
-  fallbackModelId: id("fallback_model_id", 120),
-  enabled: boolean("enabled").notNull().default(true),
-  state: varchar("state", { length: 32 }).notNull().default("attention"),
-  latencyMs: int("latency_ms"),
-  lastCheckedAt: datetime("last_checked_at", { mode: "string", fsp: 3 }),
-  createdAt: timestamp("created_at"),
-  updatedAt: timestamp("updated_at"),
-});
+export const modelConnections = mysqlTable(
+  "xiaoluo_v2_model_connections",
+  {
+    id: id("id", 120).primaryKey(),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    createdBy: id("created_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    name: varchar("name", { length: 180 }).notNull(),
+    protocol: varchar("protocol", { length: 60 }).notNull(),
+    baseUrl: text("base_url").notNull(),
+    modelName: varchar("model_name", { length: 180 }).notNull(),
+    modalitiesJson: text("modalities_json").notNull(),
+    credentialRef: varchar("credential_ref", { length: 80 }),
+    secretRefId: id("secret_ref_id", 120).references(() => secretRefs.id, {
+      onDelete: "set null",
+    }),
+    priority: int("priority").notNull().default(100),
+    fallbackModelId: id("fallback_model_id", 120),
+    maxConcurrency: int("max_concurrency", { unsigned: true })
+      .notNull()
+      .default(2),
+    retryLimit: int("retry_limit", { unsigned: true }).notNull().default(3),
+    circuitFailureThreshold: int("circuit_failure_threshold", {
+      unsigned: true,
+    })
+      .notNull()
+      .default(5),
+    circuitCooldownSeconds: int("circuit_cooldown_seconds", {
+      unsigned: true,
+    })
+      .notNull()
+      .default(60),
+    circuitState: varchar("circuit_state", { length: 20 })
+      .notNull()
+      .default("closed"),
+    circuitFailureCount: int("circuit_failure_count", { unsigned: true })
+      .notNull()
+      .default(0),
+    circuitOpenedAt: datetime("circuit_opened_at", {
+      mode: "string",
+      fsp: 3,
+    }),
+    activeRequests: int("active_requests", { unsigned: true })
+      .notNull()
+      .default(0),
+    lastSuccessAt: datetime("last_success_at", { mode: "string", fsp: 3 }),
+    lastFailureAt: datetime("last_failure_at", { mode: "string", fsp: 3 }),
+    catalogSyncedAt: datetime("catalog_synced_at", {
+      mode: "string",
+      fsp: 3,
+    }),
+    enabled: boolean("enabled").notNull().default(true),
+    state: varchar("state", { length: 32 }).notNull().default("attention"),
+    latencyMs: int("latency_ms"),
+    lastCheckedAt: datetime("last_checked_at", { mode: "string", fsp: 3 }),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    index("model_connections_workspace_priority_idx").on(
+      table.workspaceId,
+      table.enabled,
+      table.priority,
+    ),
+    index("model_connections_circuit_idx").on(
+      table.workspaceId,
+      table.circuitState,
+    ),
+  ],
+);
+
+export const modelCatalogEntries = mysqlTable(
+  "xiaoluo_v2_model_catalog_entries",
+  {
+    id: id("id", 120).primaryKey(),
+    workspaceId: id("workspace_id", 36).notNull(),
+    connectionId: id("connection_id", 120).notNull(),
+    modelId: varchar("model_id", { length: 240 }).notNull(),
+    displayName: varchar("display_name", { length: 240 }).notNull(),
+    modalitiesJson: text("modalities_json").notNull(),
+    available: boolean("available").notNull().default(true),
+    metadataJson: longtext("metadata_json").notNull(),
+    discoveredAt: timestamp("discovered_at"),
+    lastSeenAt: timestamp("last_seen_at"),
+  },
+  (table) => [
+    uniqueIndex("model_catalog_connection_model_unique").on(
+      table.connectionId,
+      table.modelId,
+    ),
+    index("model_catalog_workspace_available_idx").on(
+      table.workspaceId,
+      table.available,
+    ),
+    foreignKey({
+      name: "model_catalog_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "model_catalog_connection_fk",
+      columns: [table.connectionId],
+      foreignColumns: [modelConnections.id],
+    }).onDelete("cascade"),
+  ],
+);
+
+export const modelExecutionAudits = mysqlTable(
+  "xiaoluo_v2_model_execution_audits",
+  {
+    id: id("id", 120).primaryKey(),
+    workspaceId: id("workspace_id", 36).notNull(),
+    userId: id("user_id", 36).notNull(),
+    runId: id("run_id", 120),
+    nodeId: id("node_id", 120),
+    requestedConnectionId: id("requested_connection_id", 120),
+    actualConnectionId: id("actual_connection_id", 120),
+    modelName: varchar("model_name", { length: 240 }).notNull(),
+    modality: varchar("modality", { length: 20 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull(),
+    attempts: int("attempts", { unsigned: true }).notNull().default(1),
+    fallbackUsed: boolean("fallback_used").notNull().default(false),
+    latencyMs: int("latency_ms", { unsigned: true }),
+    errorCode: varchar("error_code", { length: 80 }),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at"),
+    completedAt: datetime("completed_at", { mode: "string", fsp: 3 }),
+  },
+  (table) => [
+    index("model_audits_workspace_created_idx").on(
+      table.workspaceId,
+      table.createdAt,
+    ),
+    index("model_audits_run_idx").on(table.runId),
+    foreignKey({
+      name: "model_audit_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "model_audit_user_fk",
+      columns: [table.userId],
+      foreignColumns: [users.id],
+    }).onDelete("restrict"),
+  ],
+);
+
+export const modelUsageStats = mysqlTable(
+  "xiaoluo_v2_model_usage_stats",
+  {
+    workspaceId: id("workspace_id", 36).notNull(),
+    connectionId: id("connection_id", 120).notNull(),
+    usageDay: varchar("usage_day", { length: 10 }).notNull(),
+    modality: varchar("modality", { length: 20 }).notNull(),
+    totalCount: bigint("total_count", { mode: "number", unsigned: true })
+      .notNull()
+      .default(0),
+    successCount: bigint("success_count", { mode: "number", unsigned: true })
+      .notNull()
+      .default(0),
+    failureCount: bigint("failure_count", { mode: "number", unsigned: true })
+      .notNull()
+      .default(0),
+    retryCount: bigint("retry_count", { mode: "number", unsigned: true })
+      .notNull()
+      .default(0),
+    fallbackCount: bigint("fallback_count", { mode: "number", unsigned: true })
+      .notNull()
+      .default(0),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    primaryKey({
+      name: "model_usage_stats_pk",
+      columns: [
+        table.workspaceId,
+        table.connectionId,
+        table.usageDay,
+        table.modality,
+      ],
+    }),
+    index("model_usage_workspace_day_idx").on(
+      table.workspaceId,
+      table.usageDay,
+    ),
+    foreignKey({
+      name: "model_usage_workspace_fk",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+  ],
+);
 
 export const registryEvents = mysqlTable(
   "xiaoluo_v2_registry_events",
@@ -625,6 +871,25 @@ export const registryEvents = mysqlTable(
     createdAt: timestamp("created_at"),
   },
   (table) => [index("registry_events_created_idx").on(table.createdAt)],
+);
+
+export const rateLimitBuckets = mysqlTable(
+  "xiaoluo_v2_rate_limit_buckets",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    subject: varchar("subject", { length: 160 }).notNull(),
+    route: varchar("route", { length: 160 }).notNull(),
+    windowStartedAt: datetime("window_started_at", {
+      mode: "string",
+      fsp: 3,
+    }).notNull(),
+    count: int("count", { unsigned: true }).notNull().default(1),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    index("rate_limit_subject_route_idx").on(table.subject, table.route),
+    index("rate_limit_updated_idx").on(table.updatedAt),
+  ],
 );
 
 export const kernelRuns = mysqlTable("xiaoluo_v2_kernel_runs", {
@@ -714,7 +979,15 @@ export const generationJobs = mysqlTable(
     status: varchar("status", { length: 32 }).notNull().default("queued"),
     progress: int("progress", { unsigned: true }).notNull().default(0),
     provider: varchar("provider", { length: 120 }).notNull(),
+    modelConnectionId: id("model_connection_id", 120),
     externalJobId: varchar("external_job_id", { length: 240 }),
+    pollUrl: text("poll_url"),
+    cancelUrl: text("cancel_url"),
+    providerStatus: varchar("provider_status", { length: 80 }),
+    pollCount: int("poll_count", { unsigned: true }).notNull().default(0),
+    maxPolls: int("max_polls", { unsigned: true }).notNull().default(180),
+    nextPollAt: datetime("next_poll_at", { mode: "string", fsp: 3 }),
+    lastPolledAt: datetime("last_polled_at", { mode: "string", fsp: 3 }),
     inputJson: longtext("input_json").notNull(),
     outputJson: longtext("output_json"),
     error: text("error"),
@@ -873,5 +1146,65 @@ export const assetRelations = mysqlTable(
   (table) => [
     index("asset_relations_from_idx").on(table.fromAssetId),
     index("asset_relations_to_idx").on(table.toAssetId),
+  ],
+);
+
+export const auditLogs = mysqlTable(
+  "xiaoluo_v2_audit_logs",
+  {
+    id: id("id", 120).primaryKey(),
+    workspaceId: id("workspace_id", 36).references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
+    actorUserId: id("actor_user_id", 36).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    eventType: varchar("event_type", { length: 120 }).notNull(),
+    entityType: varchar("entity_type", { length: 80 }).notNull(),
+    entityId: id("entity_id", 160).notNull(),
+    requestId: varchar("request_id", { length: 120 }),
+    detailJson: longtext("detail_json").notNull(),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    index("audit_workspace_created_idx").on(table.workspaceId, table.createdAt),
+    index("audit_actor_created_idx").on(table.actorUserId, table.createdAt),
+    index("audit_entity_idx").on(table.entityType, table.entityId),
+  ],
+);
+
+export const outboxEvents = mysqlTable(
+  "xiaoluo_v2_outbox_events",
+  {
+    id: id("id", 120).primaryKey(),
+    workspaceId: id("workspace_id", 36).references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
+    aggregateType: varchar("aggregate_type", { length: 80 }).notNull(),
+    aggregateId: id("aggregate_id", 160).notNull(),
+    eventType: varchar("event_type", { length: 120 }).notNull(),
+    payloadJson: longtext("payload_json").notNull(),
+    status: mysqlEnum("status", [
+      "pending",
+      "processing",
+      "published",
+      "failed",
+    ])
+      .notNull()
+      .default("pending"),
+    attempts: int("attempts", { unsigned: true }).notNull().default(0),
+    availableAt: timestamp("available_at"),
+    claimedAt: datetime("claimed_at", { mode: "string", fsp: 3 }),
+    publishedAt: datetime("published_at", { mode: "string", fsp: 3 }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    index("outbox_delivery_idx").on(
+      table.status,
+      table.availableAt,
+      table.createdAt,
+    ),
+    index("outbox_aggregate_idx").on(table.aggregateType, table.aggregateId),
   ],
 );

@@ -18,10 +18,10 @@ import type {
 } from "../types";
 import {
   executeBuiltin,
-  executeModel,
   executeRemotePackage,
   type KernelNodeRequest,
 } from "./kernel-executors";
+import { invokeRoutedModel } from "./model-runtime-router";
 import {
   getFileBucket,
   MAX_FILE_BYTES,
@@ -29,6 +29,8 @@ import {
 } from "./asset-kernel";
 import { mysqlExecute, mysqlNow } from "./mysql";
 import { compileWorkflow } from "./workflow-kernel";
+import { artifactFormat, artifactName } from "./artifact-format";
+import { validateExternalEndpoint } from "./model-adapters";
 
 type RunRow = typeof kernelRuns.$inferSelect;
 
@@ -93,7 +95,10 @@ async function executeQueuedTask(
   const byNode = new Map(dependencyRows.map((item) => [item.nodeId, item]));
   const inputs: KernelUpstreamInput[] = dependencies.map((nodeId) => {
     const dependency = byNode.get(nodeId);
-    if (!dependency || dependency.status !== "succeeded") {
+    if (
+      !dependency ||
+      !["succeeded", "skipped"].includes(dependency.status)
+    ) {
       throw new Error(`上游节点 ${nodeId} 尚未完成`);
     }
     const graphNode = graph.nodes.find((item) => item.id === nodeId);
@@ -182,6 +187,7 @@ async function executeQueuedTask(
         status: "running",
         progress: 10,
         provider: model.id,
+        modelConnectionId: model.id,
         inputJson: JSON.stringify({ request, inputs }),
         startedAt: mysqlNow(),
         createdAt: mysqlNow(),
@@ -192,36 +198,30 @@ async function executeQueuedTask(
     if (pkg?.enabled && pkg.runtimeType === "remote-api") {
       execution = await executeRemotePackage(pkg, request, inputs);
     } else if (model?.enabled) {
-      try {
-        execution = await executeModel(model, request, inputs);
-      } catch (primaryError) {
-        const [fallback] = model.fallbackModelId
-          ? await db
-              .select()
-              .from(modelConnections)
-              .where(
-                and(
-                  eq(modelConnections.id, model.fallbackModelId),
-                  eq(modelConnections.workspaceId, run.workspaceId),
-                  eq(modelConnections.enabled, true),
-                ),
-              )
-              .limit(1)
-          : [];
-        if (!fallback) throw primaryError;
-        execution = await executeModel(fallback, request, inputs);
-      }
+      execution = await invokeRoutedModel(
+        model.id,
+        request,
+        inputs,
+        {
+          workspaceId: run.workspaceId,
+          userId: run.createdBy,
+          runId: run.id,
+          nodeId: node.id,
+        },
+      );
     } else {
       execution = executeBuiltin(request, inputs);
     }
     if (
+      !execution.asyncJob &&
       !execution.output.preview &&
       (execution.output.assetUrl || execution.output.text)
     ) {
       let bytes: ArrayBuffer;
       let mimeType: string;
       if (execution.output.assetUrl) {
-        const response = await fetch(execution.output.assetUrl, {
+        const resultUrl = validateExternalEndpoint(execution.output.assetUrl);
+        const response = await fetch(resultUrl, {
           redirect: "error",
         });
         if (!response.ok) {
@@ -231,16 +231,17 @@ async function executeQueuedTask(
         if (bytes.byteLength > MAX_FILE_BYTES) {
           throw new Error("生成结果超过文件系统单文件限制");
         }
-        mimeType =
-          response.headers.get("content-type") ??
-          (node.kind === "image" ? "image/png" : "video/mp4");
+        mimeType = artifactFormat(
+          node.kind,
+          response.headers.get("content-type"),
+        ).mimeType;
       } else {
         bytes = new TextEncoder().encode(execution.output.text ?? "").buffer;
-        mimeType = "text/plain;charset=utf-8";
+        mimeType = artifactFormat("text").mimeType;
       }
       const asset = await storeAsset(await getDb(), await getFileBucket(), {
         workspaceId: run.workspaceId,
-        name: `${node.title}.${node.kind === "text" ? "txt" : node.kind === "image" ? "png" : "mp4"}`,
+        name: artifactName(node.title, node.kind, mimeType),
         mimeType,
         bytes,
         tags: [node.kind, "AI 生成"],
@@ -296,7 +297,6 @@ async function executeQueuedTask(
     }
     const completedAt = mysqlNow();
     if (generationJobId && model) {
-      const asyncSubmitted = model.protocol === "async-video";
       const data =
         execution.output.data &&
         typeof execution.output.data === "object"
@@ -305,16 +305,31 @@ async function executeQueuedTask(
       await db
         .update(generationJobs)
         .set({
-          status: asyncSubmitted ? "submitted" : "succeeded",
-          progress: asyncSubmitted ? 15 : 100,
+          status: execution.asyncJob ? "submitted" : "succeeded",
+          progress: execution.asyncJob?.progress ?? 100,
+          provider:
+            "actualModelId" in execution
+              ? String(execution.actualModelId)
+              : model.id,
+          modelConnectionId:
+            "actualModelId" in execution
+              ? String(execution.actualModelId)
+              : model.id,
           externalJobId:
-            typeof data.id === "string"
+            execution.asyncJob?.externalJobId ??
+            (typeof data.id === "string"
               ? data.id
               : typeof data.jobId === "string"
                 ? data.jobId
-                : null,
+                : null),
+          pollUrl: execution.asyncJob?.pollUrl ?? null,
+          cancelUrl: execution.asyncJob?.cancelUrl ?? null,
+          providerStatus: execution.asyncJob?.providerStatus ?? "succeeded",
+          nextPollAt: execution.asyncJob
+            ? futureMysql(2_000)
+            : null,
           outputJson: JSON.stringify(execution.output),
-          ...(asyncSubmitted ? {} : { completedAt }),
+          ...(execution.asyncJob ? {} : { completedAt }),
           updatedAt: completedAt,
         })
         .where(eq(generationJobs.id, generationJobId));
@@ -322,13 +337,13 @@ async function executeQueuedTask(
     await db
       .update(kernelTasks)
       .set({
-        status: "succeeded",
+        status: execution.asyncJob ? "waiting" : "succeeded",
         outputJson: JSON.stringify({
           ...execution.output,
           result: execution.result,
         }),
         executor: execution.executor,
-        completedAt,
+        completedAt: execution.asyncJob ? null : completedAt,
         updatedAt: completedAt,
         leaseOwner: null,
         leaseExpiresAt: null,
@@ -336,13 +351,18 @@ async function executeQueuedTask(
       .where(eq(kernelTasks.id, task.id));
     await appendRunEvent(
       run.id,
-      "task.succeeded",
-      { executor: execution.executor },
+      execution.asyncJob ? "task.submitted" : "task.succeeded",
+      {
+        executor: execution.executor,
+        ...(execution.asyncJob
+          ? { externalJobId: execution.asyncJob.externalJobId }
+          : {}),
+      },
       node.id,
     );
     return {
       ...task,
-      status: "succeeded",
+      status: execution.asyncJob ? "waiting" : "succeeded",
       outputJson: JSON.stringify({
         ...execution.output,
         result: execution.result,
@@ -380,6 +400,68 @@ async function executeQueuedTask(
     await appendRunEvent(run.id, "task.failed", { error: message }, node.id);
     throw error;
   }
+}
+
+async function executeTaskWithFailurePolicy(
+  run: RunRow,
+  node: CanvasNode,
+  graph: { nodes: CanvasNode[]; edges: CanvasEdge[] },
+  workerId: string,
+) {
+  const policy = String(node.parameters?.failurePolicy ?? "stop");
+  const maxAttempts = Math.min(
+    5,
+    Math.max(1, Number(node.parameters?.retryLimit ?? 3) || 3),
+  );
+  let latestError: unknown;
+  const allowedAttempts = policy === "retry" ? maxAttempts : 1;
+  for (let attempt = 0; attempt < allowedAttempts; attempt += 1) {
+    try {
+      return await executeQueuedTask(run, node, graph, workerId);
+    } catch (error) {
+      latestError = error;
+      if (attempt + 1 < allowedAttempts) {
+        await appendRunEvent(
+          run.id,
+          "task.retrying",
+          {
+            attempt: attempt + 1,
+            error: error instanceof Error ? error.message : "节点执行失败",
+          },
+          node.id,
+        );
+      }
+    }
+  }
+  if (policy === "skip") {
+    const db = await getDb();
+    const skippedAt = mysqlNow();
+    await db
+      .update(kernelTasks)
+      .set({
+        status: "skipped",
+        error:
+          latestError instanceof Error ? latestError.message : "节点执行失败",
+        completedAt: skippedAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        updatedAt: skippedAt,
+      })
+      .where(
+        and(eq(kernelTasks.runId, run.id), eq(kernelTasks.nodeId, node.id)),
+      );
+    await appendRunEvent(
+      run.id,
+      "task.skipped",
+      {
+        error:
+          latestError instanceof Error ? latestError.message : "节点执行失败",
+      },
+      node.id,
+    );
+    return { status: "skipped" };
+  }
+  throw latestError;
 }
 
 export async function dispatchKernelRun(runId: string, userId: string) {
@@ -466,7 +548,7 @@ export async function dispatchKernelRun(runId: string, userId: string) {
       level.map(async (nodeId) => {
         const node = graph.nodes.find((item) => item.id === nodeId);
         if (!node) throw new Error(`节点 ${nodeId} 不存在`);
-        return executeQueuedTask(run, node, graph, workerId);
+        return executeTaskWithFailurePolicy(run, node, graph, workerId);
       }),
     );
     const rejected = settled.find(
@@ -478,6 +560,24 @@ export async function dispatchKernelRun(runId: string, userId: string) {
           ? rejected.reason
           : new Error("工作流执行失败");
       break;
+    }
+    const waiting = settled.some(
+      (item) =>
+        item.status === "fulfilled" && item.value?.status === "waiting",
+    );
+    if (waiting) {
+      await db
+        .update(kernelRuns)
+        .set({
+          status: "waiting",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          heartbeatAt: mysqlNow(),
+          updatedAt: mysqlNow(),
+        })
+        .where(eq(kernelRuns.id, runId));
+      await appendRunEvent(runId, "run.waiting");
+      return readKernelRun(runId, userId);
     }
     await db
       .update(kernelRuns)

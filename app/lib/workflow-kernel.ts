@@ -100,6 +100,31 @@ export function compileWorkflow(
   return { levels, dependencies, dependents };
 }
 
+export function wouldCreateCycle(
+  nodes: Pick<CanvasNode, "id">[],
+  edges: CanvasEdge[],
+  source: string,
+  target: string,
+) {
+  if (source === target) return true;
+  const dependents = new Map<string, string[]>(
+    nodes.map((node) => [node.id, []]),
+  );
+  edges.forEach((edge) => {
+    dependents.get(edge.source)?.push(edge.target);
+  });
+  const pending = [target];
+  const visited = new Set<string>();
+  while (pending.length) {
+    const current = pending.pop() as string;
+    if (current === source) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    pending.push(...(dependents.get(current) ?? []));
+  }
+  return false;
+}
+
 export function upstreamResults(
   nodeId: string,
   workflow: CompiledWorkflow,

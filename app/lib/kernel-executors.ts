@@ -28,6 +28,32 @@ export interface ExecutorResult {
   executor: string;
   result: string;
   output: KernelNodeOutput;
+  asyncJob?: AsyncJobDescriptor;
+}
+
+export interface AsyncJobDescriptor {
+  externalJobId: string;
+  pollUrl: string;
+  cancelUrl?: string;
+  providerStatus: string;
+  progress: number;
+}
+
+export class ModelExecutionError extends Error {
+  status: number;
+  retryAfterMs: number | null;
+  code: string;
+
+  constructor(
+    message: string,
+    options: { status: number; retryAfterMs?: number | null; code?: string },
+  ) {
+    super(message);
+    this.name = "ModelExecutionError";
+    this.status = options.status;
+    this.retryAfterMs = options.retryAfterMs ?? null;
+    this.code = options.code ?? `HTTP_${options.status}`;
+  }
 }
 
 function upstreamText(inputs: KernelUpstreamInput[]) {
@@ -78,13 +104,52 @@ async function fetchJson(
         payload && typeof payload === "object" && "error" in payload
           ? JSON.stringify(payload.error)
           : `HTTP ${response.status}`;
-      throw new Error(`执行器返回失败：${detail}`);
+      const retryAfter = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
+      throw new ModelExecutionError(`执行器返回失败：${detail}`, {
+        status: response.status,
+        retryAfterMs: Number.isFinite(retryAfterSeconds)
+          ? Math.max(0, retryAfterSeconds * 1000)
+          : null,
+        code:
+          response.status === 429
+            ? "RATE_LIMITED"
+            : response.status >= 500
+              ? "PROVIDER_UNAVAILABLE"
+              : `HTTP_${response.status}`,
+      });
     }
     return payload;
   } finally {
     clearTimeout(timeout);
     sourceSignal?.removeEventListener("abort", abortFromSource);
   }
+}
+
+function credentialHeaders(model: ModelRow, credential?: string) {
+  const headers = new Headers({
+    accept: "application/json",
+    "content-type": "application/json",
+  });
+  if (credential) {
+    if (model.protocol === "gemini") {
+      headers.set("x-goog-api-key", credential);
+    } else if (model.protocol === "anthropic-compatible") {
+      headers.set("x-api-key", credential);
+      headers.set("anthropic-version", "2023-06-01");
+    } else {
+      headers.set("authorization", `Bearer ${credential}`);
+    }
+  }
+  return headers;
+}
+
+async function modelCredential(model: ModelRow) {
+  return model.secretRefId
+    ? resolveSecret(model.secretRefId, model.workspaceId)
+    : model.credentialRef
+      ? process.env[model.credentialRef]
+      : undefined;
 }
 
 function assetUrlFrom(value: unknown): string | undefined {
@@ -154,10 +219,17 @@ function normalizeRemoteOutput(
 ): ExecutorResult {
   const assetUrl = assetUrlFrom(payload);
   const text = textFrom(payload);
+  const kindLabel = {
+    text: "文本",
+    image: "图像",
+    video: "视频",
+    audio: "音频",
+    document: "文档",
+  }[node.kind];
   const result =
     text ??
     (assetUrl
-      ? `${node.kind === "video" ? "视频" : "图像"}结果已生成`
+      ? `${kindLabel}结果已生成`
       : "执行器已返回结构化结果");
   return {
     executor,
@@ -172,6 +244,64 @@ function normalizeRemoteOutput(
   };
 }
 
+function stringField(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    if (typeof record[key] === "string" && record[key]) {
+      return String(record[key]);
+    }
+  }
+  return undefined;
+}
+
+function numberField(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = Number(record[key]);
+    if (Number.isFinite(value)) return Math.max(0, Math.min(100, value));
+  }
+  return undefined;
+}
+
+function asyncDescriptor(
+  payload: unknown,
+  baseUrl: string,
+): AsyncJobDescriptor | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as Record<string, unknown>;
+  const nested =
+    record.data && typeof record.data === "object"
+      ? (record.data as Record<string, unknown>)
+      : record;
+  const externalJobId = stringField(nested, [
+    "job_id",
+    "jobId",
+    "task_id",
+    "taskId",
+    "id",
+  ]);
+  if (!externalJobId) return undefined;
+  const providerStatus = (
+    stringField(nested, ["status", "state"]) ?? "submitted"
+  ).toLowerCase();
+  if (["succeeded", "success", "completed", "done"].includes(providerStatus)) {
+    return undefined;
+  }
+  const base = baseUrl.replace(/\/+$/, "");
+  const pollUrl =
+    stringField(nested, ["poll_url", "pollUrl", "status_url", "statusUrl"]) ??
+    `${base}/${encodeURIComponent(externalJobId)}`;
+  const cancelUrl =
+    stringField(nested, ["cancel_url", "cancelUrl"]) ?? pollUrl;
+  validateExternalEndpoint(pollUrl);
+  validateExternalEndpoint(cancelUrl);
+  return {
+    externalJobId,
+    pollUrl,
+    cancelUrl,
+    providerStatus,
+    progress: numberField(nested, ["progress", "percent"]) ?? 5,
+  };
+}
+
 export function executeBuiltin(
   node: KernelNodeRequest,
   inputs: KernelUpstreamInput[],
@@ -183,7 +313,13 @@ export function executeBuiltin(
   const result =
     node.kind === "text"
       ? `【内核预览】${node.title}\n${node.prompt}\n\n${inputSummary}`
-      : `内核已完成 ${node.title} 的输入编译；配置兼容的${node.kind === "image" ? "图像" : "视频"}模型后即可生成正式结果。`;
+      : `内核已完成 ${node.title} 的输入编译；配置兼容的${{
+          text: "文本",
+          image: "图像",
+          video: "视频",
+          audio: "音频",
+          document: "文档",
+        }[node.kind]}模型后即可生成正式结果。`;
   return {
     executor,
     result,
@@ -207,25 +343,8 @@ export async function executeModel(
   signal?: AbortSignal,
 ): Promise<ExecutorResult> {
   const endpoint = validateExternalEndpoint(model.baseUrl);
-  const credential = model.secretRefId
-    ? await resolveSecret(model.secretRefId, model.workspaceId)
-    : model.credentialRef
-      ? process.env[model.credentialRef]
-      : undefined;
-  const headers = new Headers({
-    accept: "application/json",
-    "content-type": "application/json",
-  });
-  if (credential) {
-    if (model.protocol === "gemini") {
-      headers.set("x-goog-api-key", credential);
-    } else if (model.protocol === "anthropic-compatible") {
-      headers.set("x-api-key", credential);
-      headers.set("anthropic-version", "2023-06-01");
-    } else {
-      headers.set("authorization", `Bearer ${credential}`);
-    }
-  }
+  const credential = await modelCredential(model);
+  const headers = credentialHeaders(model, credential);
   const prompt = executionPrompt(node, inputs);
   const base = endpoint.toString().replace(/\/+$/, "");
   let url = base;
@@ -264,13 +383,17 @@ export async function executeModel(
       prompt,
       ...node.parameters,
     };
-  } else {
+  } else if (node.kind === "video") {
     url = `${base}/videos`;
     body = {
       model: model.modelName,
       prompt,
       ...node.parameters,
     };
+  } else {
+    throw new Error(
+      `${node.kind === "audio" ? "音频" : "文档"}节点请使用通用 REST 或对应 Provider Package`,
+    );
   }
 
   const payload = await fetchJson(url, {
@@ -279,7 +402,82 @@ export async function executeModel(
     body: JSON.stringify(body),
     signal,
   });
-  return normalizeRemoteOutput(payload, node, `model:${model.id}`);
+  const execution = normalizeRemoteOutput(payload, node, `model:${model.id}`);
+  const asyncJob =
+    model.protocol === "async-video"
+      ? asyncDescriptor(payload, base)
+      : undefined;
+  return asyncJob ? { ...execution, asyncJob } : execution;
+}
+
+export async function pollModelJob(
+  model: ModelRow,
+  node: KernelNodeRequest,
+  pollUrl: string,
+  signal?: AbortSignal,
+) {
+  validateExternalEndpoint(pollUrl);
+  const credential = await modelCredential(model);
+  const payload = await fetchJson(
+    pollUrl,
+    {
+      method: "GET",
+      headers: credentialHeaders(model, credential),
+      signal,
+    },
+    30_000,
+  );
+  const record =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  const nested =
+    record.data && typeof record.data === "object"
+      ? (record.data as Record<string, unknown>)
+      : record;
+  const providerStatus = (
+    stringField(nested, ["status", "state"]) ?? "running"
+  ).toLowerCase();
+  const progress = numberField(nested, ["progress", "percent"]) ?? 20;
+  if (["failed", "error", "canceled", "cancelled"].includes(providerStatus)) {
+    throw new ModelExecutionError(
+      stringField(nested, ["error", "message"]) ??
+        `异步任务状态：${providerStatus}`,
+      { status: 502, code: "ASYNC_JOB_FAILED" },
+    );
+  }
+  const execution = normalizeRemoteOutput(
+    payload,
+    node,
+    `model:${model.id}`,
+  );
+  const complete =
+    ["succeeded", "success", "completed", "done"].includes(providerStatus) ||
+    Boolean(execution.output.assetUrl);
+  return {
+    complete,
+    providerStatus,
+    progress: complete ? 100 : progress,
+    execution,
+  };
+}
+
+export async function cancelModelJob(
+  model: ModelRow,
+  cancelUrl: string,
+  signal?: AbortSignal,
+) {
+  validateExternalEndpoint(cancelUrl);
+  const credential = await modelCredential(model);
+  await fetchJson(
+    cancelUrl,
+    {
+      method: "DELETE",
+      headers: credentialHeaders(model, credential),
+      signal,
+    },
+    20_000,
+  );
 }
 
 export async function executeRemotePackage(

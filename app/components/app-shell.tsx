@@ -21,19 +21,53 @@ import { CanvasToolbar } from "./canvas-toolbar";
 import { CanvasView } from "./canvas-view";
 import { CapabilitiesView } from "./capabilities-view";
 import { IconButton } from "./icon-button";
+import { SettingsCenter } from "./settings-center";
 
 function AuthenticatedShell({
   user,
+  onUserUpdate,
   onLogout,
 }: {
   user: AccountUser;
+  onUserUpdate: (user: AccountUser) => void;
   onLogout: () => void;
 }) {
   const os = useIntentOS();
   const [profileOpen, setProfileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const avatar = user.displayName.trim().slice(0, 1) || "洛";
+
+  useEffect(() => {
+    let refreshing = false;
+    const refresh = () => {
+      if (refreshing) return;
+      refreshing = true;
+      void fetch("/api/v2/auth/refresh", { method: "POST" })
+        .then(async (response) => {
+          if (!response.ok) return;
+          const payload = (await response.json().catch(() => ({}))) as {
+            user?: AccountUser;
+          };
+          if (payload.user) onUserUpdate(payload.user);
+        })
+        .finally(() => {
+          refreshing = false;
+        });
+    };
+    const timer = window.setInterval(refresh, 10 * 60 * 1000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [onUserUpdate]);
 
   return (
     <div className={`app-shell ${os.view === "canvas" ? "is-canvas-view" : ""}`}>
@@ -91,7 +125,18 @@ function AuthenticatedShell({
               </div>
             )}
           </div>
-          <button type="button" className="kernel-chip"><i /> AI 微内核在线</button>
+          <button
+            type="button"
+            className={`kernel-chip is-${os.cloudStatus}`}
+            title={os.cloudError || "服务端运行状态"}
+          >
+            <i />
+            {os.cloudStatus === "error"
+              ? "AI 微内核不可用"
+              : os.cloudStatus === "loading"
+                ? "AI 微内核连接中"
+                : "AI 微内核在线"}
+          </button>
         </div>
         <div className="top-actions">
           <IconButton label="帮助中心"><CircleHelp size={18} /></IconButton>
@@ -104,7 +149,7 @@ function AuthenticatedShell({
               aria-expanded={profileOpen}
             >
               <span>{avatar}</span>
-              <div><b>{user.displayName}</b><small>{user.email}</small></div>
+              <div><b>{user.displayName}</b><small>@{user.username}</small></div>
               <ChevronDown size={14} />
             </button>
             {profileOpen && (
@@ -137,16 +182,38 @@ function AuthenticatedShell({
           os.setView("canvas");
           os.setDrawerOpen(true);
         }}
+        onOpenSettings={() => setSettingsOpen(true)}
         onNavigate={os.setView}
       />
 
       <main className="app-main">
         {os.view === "canvas" && <CanvasView os={os} />}
-        {os.view === "assets" && <AssetsView workspaceId={os.workspaceId} />}
+        {os.view === "assets" && (
+          <AssetsView
+            workspaceId={os.workspaceId}
+            onAddToCanvas={(asset) => os.addAssetToCanvas(asset)}
+            onOpenCanvas={async (canvasId) => {
+              await os.setActiveCanvasId(canvasId);
+              os.setView("canvas");
+            }}
+          />
+        )}
         {os.view === "capabilities" && <CapabilitiesView os={os} />}
       </main>
       {accountOpen && (
         <AccountCenter user={user} onClose={() => setAccountOpen(false)} />
+      )}
+      {settingsOpen && (
+        <SettingsCenter
+          os={os}
+          user={user}
+          onUserUpdate={onUserUpdate}
+          onOpenAccount={() => {
+            setSettingsOpen(false);
+            setAccountOpen(true);
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
     </div>
   );
@@ -210,6 +277,7 @@ export function AppShell() {
   return (
     <AuthenticatedShell
       user={user}
+      onUserUpdate={setUser}
       onLogout={() => {
         void fetch("/api/v2/auth/logout", { method: "POST" }).finally(() => {
           setUser(null);

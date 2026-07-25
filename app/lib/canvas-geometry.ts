@@ -63,6 +63,21 @@ export function centeredPortPoint(
   };
 }
 
+export function indexedPortPoint(
+  position: Point,
+  size: Size,
+  side: PortSide,
+  index: number,
+  count: number,
+): Point {
+  const gap = 22;
+  const offset = (index - (Math.max(1, count) - 1) / 2) * gap;
+  return {
+    x: position.x + (side === "output" ? size.width : 0),
+    y: position.y + size.height / 2 + offset,
+  };
+}
+
 export function zoomViewportAt(
   viewport: ViewportTransform,
   nextZoom: number,

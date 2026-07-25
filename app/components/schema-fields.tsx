@@ -1,23 +1,16 @@
 "use client";
 
+import type { JsonSchema } from "../lib/json-schema";
+import { validateJsonSchema } from "../lib/json-schema";
+import { SchemaField } from "./schema-field";
+
 interface SchemaFieldsProps {
   schema?: Record<string, unknown>;
   uiSchema?: Record<string, unknown>;
   value: Record<string, unknown>;
+  workspaceId?: string;
   onChange: (value: Record<string, unknown>) => void;
 }
-
-type FieldSchema = {
-  type?: string;
-  title?: string;
-  description?: string;
-  default?: unknown;
-  enum?: unknown[];
-  format?: string;
-  minimum?: number;
-  maximum?: number;
-  items?: FieldSchema;
-};
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -25,22 +18,16 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function fieldUi(uiSchema: Record<string, unknown>, key: string) {
-  return record(uiSchema[key]);
-}
-
 export function SchemaFields({
   schema,
   uiSchema = {},
   value,
+  workspaceId,
   onChange,
 }: SchemaFieldsProps) {
-  const properties = record(schema?.properties) as Record<string, FieldSchema>;
-  const required = new Set(
-    Array.isArray(schema?.required)
-      ? schema.required.filter((item): item is string => typeof item === "string")
-      : [],
-  );
+  const root = (schema ?? {}) as JsonSchema;
+  const properties = root.properties ?? {};
+  const required = new Set(root.required ?? []);
   const configuredOrder = Array.isArray(uiSchema["ui:order"])
     ? uiSchema["ui:order"].filter(
         (item): item is string => typeof item === "string" && item !== "*",
@@ -50,160 +37,40 @@ export function SchemaFields({
     ...configuredOrder.filter((key) => key in properties),
     ...Object.keys(properties).filter((key) => !configuredOrder.includes(key)),
   ];
+  const issues = validateJsonSchema(root, value);
   if (!keys.length) return null;
-
-  function set(key: string, next: unknown) {
-    onChange({ ...value, [key]: next });
-  }
 
   return (
     <div className="schema-fields">
       <div className="schema-fields-heading">
-        <span>Package 参数</span>
-        <small>Schema 自动渲染</small>
+        <span>能力参数</span>
+        <small>
+          {issues.length
+            ? `${issues.length} 项需要完善`
+            : "Schema 校验通过"}
+        </small>
       </div>
-      {keys.map((key) => {
-        const field = properties[key] ?? {};
-        const ui = fieldUi(uiSchema, key);
-        const label =
-          (typeof ui["ui:title"] === "string" && ui["ui:title"]) ||
-          field.title ||
-          key;
-        const placeholder =
-          typeof ui["ui:placeholder"] === "string" ? ui["ui:placeholder"] : "";
-        const widget =
-          typeof ui["ui:widget"] === "string" ? ui["ui:widget"] : "";
-        const current = value[key] ?? field.default ?? "";
-
-        if (field.type === "boolean") {
-          return (
-            <label className="schema-boolean" key={key}>
-              <input
-                type="checkbox"
-                checked={Boolean(current)}
-                onChange={(event) => set(key, event.target.checked)}
-              />
-              <span>{label}{required.has(key) ? " *" : ""}</span>
-            </label>
-          );
-        }
-
-        if (Array.isArray(field.enum)) {
-          return (
-            <label key={key}>
-              <span>{label}{required.has(key) ? " *" : ""}</span>
-              <select
-                value={String(current)}
-                onChange={(event) => set(key, event.target.value)}
-              >
-                {!required.has(key) && <option value="">请选择</option>}
-                {field.enum.map((option) => (
-                  <option key={String(option)} value={String(option)}>
-                    {String(option)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          );
-        }
-
-        if (field.type === "number" || field.type === "integer") {
-          return (
-            <label key={key}>
-              <span>{label}{required.has(key) ? " *" : ""}</span>
-              <input
-                type="number"
-                value={typeof current === "number" ? current : ""}
-                min={field.minimum}
-                max={field.maximum}
-                step={field.type === "integer" ? 1 : "any"}
-                placeholder={placeholder}
-                onChange={(event) =>
-                  set(
-                    key,
-                    event.target.value === ""
-                      ? ""
-                      : field.type === "integer"
-                        ? Number.parseInt(event.target.value, 10)
-                        : Number(event.target.value),
-                  )
-                }
-              />
-            </label>
-          );
-        }
-
-        if (field.type === "array") {
-          const list = Array.isArray(current) ? current : [];
-          return (
-            <label key={key}>
-              <span>{label}{required.has(key) ? " *" : ""}</span>
-              <input
-                value={list.join(", ")}
-                placeholder={placeholder || "使用逗号分隔多个值"}
-                onChange={(event) =>
-                  set(
-                    key,
-                    event.target.value
-                      .split(",")
-                      .map((item) => item.trim())
-                      .filter(Boolean),
-                  )
-                }
-              />
-            </label>
-          );
-        }
-
-        if (field.type === "object") {
-          return (
-            <label key={key}>
-              <span>{label}{required.has(key) ? " *" : ""}</span>
-              <textarea
-                className="schema-json-input"
-                value={
-                  typeof current === "object"
-                    ? JSON.stringify(current, null, 2)
-                    : String(current)
-                }
-                placeholder={placeholder || "{}"}
-                onChange={(event) => {
-                  try {
-                    set(key, JSON.parse(event.target.value));
-                  } catch {
-                    set(key, event.target.value);
-                  }
-                }}
-              />
-            </label>
-          );
-        }
-
-        const multiline =
-          widget === "textarea" ||
-          field.format === "multiline" ||
-          field.format === "prompt";
-        return (
-          <label key={key}>
-            <span>{label}{required.has(key) ? " *" : ""}</span>
-            {multiline ? (
-              <textarea
-                value={String(current)}
-                placeholder={placeholder}
-                onChange={(event) => set(key, event.target.value)}
-              />
-            ) : (
-              <input
-                type={field.format === "uri" ? "url" : "text"}
-                value={String(current)}
-                placeholder={placeholder}
-                onChange={(event) => set(key, event.target.value)}
-              />
-            )}
-            {field.description && <small>{field.description}</small>}
-          </label>
-        );
-      })}
+      {keys.map((key) => (
+        <SchemaField
+          key={key}
+          fieldKey={key}
+          schema={properties[key]}
+          ui={record(uiSchema[key])}
+          value={value[key] ?? properties[key].default}
+          required={required.has(key)}
+          workspaceId={workspaceId}
+          onChange={(next) => onChange({ ...value, [key]: next })}
+        />
+      ))}
+      {!!issues.length && (
+        <ul className="schema-validation-errors" aria-live="polite">
+          {issues.slice(0, 4).map((issue) => (
+            <li key={`${issue.path}-${issue.message}`}>
+              {issue.path.replace(/^\$\./, "")}：{issue.message}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

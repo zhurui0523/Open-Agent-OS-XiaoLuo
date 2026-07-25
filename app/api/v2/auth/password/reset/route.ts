@@ -14,9 +14,9 @@ export async function POST(request: Request) {
       newPassword?: string;
     };
     const password = body.newPassword ?? "";
-    if (password.length < 10) {
+    if (password.length < 6) {
       return Response.json(
-        { error: "新密码至少需要 10 个字符" },
+        { error: "新密码至少需要 6 个字符" },
         { status: 400 },
       );
     }
@@ -66,4 +66,3 @@ export async function POST(request: Request) {
     return jsonError(error, "重置密码失败");
   }
 }
-

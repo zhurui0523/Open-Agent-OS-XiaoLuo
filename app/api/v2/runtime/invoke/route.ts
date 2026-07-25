@@ -2,9 +2,11 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { packages, registryEvents } from "../../../../../db/schema";
 import type { XiaoLuoPackageManifest } from "../../../../lib/package-contract";
+import { validateJsonSchema } from "../../../../lib/json-schema";
 import { validateExternalEndpoint } from "../../../../lib/model-adapters";
 import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
+import { enforceRateLimit } from "../../../../lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
@@ -27,6 +29,12 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    await enforceRateLimit({
+      subject: user.id,
+      route: `runtime:${payload.packageId}`,
+      max: 60,
+      windowMs: 60_000,
+    });
     const db = await getDb();
     const [row] = await db
       .select()
@@ -48,6 +56,30 @@ export async function POST(request: Request) {
       );
     }
     const manifest = JSON.parse(row.manifestJson) as XiaoLuoPackageManifest;
+    const capability = [
+      ...(manifest.contributes?.skills ?? []),
+      ...(manifest.contributes?.nodes ?? []),
+    ].find((item) => item.id === payload.operation);
+    if (!capability) {
+      return Response.json(
+        { error: "Package 未声明该能力", code: "CAPABILITY_NOT_DECLARED" },
+        { status: 404 },
+      );
+    }
+    const inputIssues = validateJsonSchema(
+      capability.inputSchema,
+      payload.input ?? {},
+    );
+    if (inputIssues.length) {
+      return Response.json(
+        {
+          error: "能力输入未通过 Schema 校验",
+          code: "INPUT_SCHEMA_INVALID",
+          details: inputIssues,
+        },
+        { status: 422 },
+      );
+    }
     const endpoint = new URL(
       manifest.runtime.invokePath ?? "/invoke",
       `${row.runtimeUrl.replace(/\/+$/, "")}/`,
@@ -72,6 +104,9 @@ export async function POST(request: Request) {
         signal: controller.signal,
       });
       const output = await response.json().catch(() => null);
+      const outputIssues = response.ok
+        ? validateJsonSchema(capability.outputSchema, output)
+        : [];
       await db.insert(registryEvents).values({
         id: crypto.randomUUID(),
         workspaceId,
@@ -83,6 +118,16 @@ export async function POST(request: Request) {
           status: response.status,
         }),
       });
+      if (outputIssues.length) {
+        return Response.json(
+          {
+            error: "能力输出未通过 Schema 校验",
+            code: "OUTPUT_SCHEMA_INVALID",
+            details: outputIssues,
+          },
+          { status: 502 },
+        );
+      }
       return Response.json(
         { ok: response.ok, status: response.status, output },
         { status: response.ok ? 200 : 502 },

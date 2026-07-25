@@ -52,6 +52,8 @@ export interface XiaoLuoPackageManifest {
   permissions?: string[];
   contributes?: {
     skills?: CapabilityContribution[];
+    agents?: CapabilityContribution[];
+    workflows?: CapabilityContribution[];
     nodes?: CapabilityContribution[];
     panels?: PanelContribution[];
     modelProviders?: ModelProviderContribution[];
@@ -71,7 +73,13 @@ export class ManifestValidationError extends Error {
 const packageIdPattern = /^[a-z0-9]+(?:[._-][a-z0-9]+){1,}$/;
 const contributionIdPattern = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$/;
 const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const allowedModalities = new Set(["text", "image", "video"]);
+const allowedModalities = new Set([
+  "text",
+  "image",
+  "video",
+  "audio",
+  "document",
+]);
 const exactPermissions = new Set([
   "assets:read",
   "assets:write",
@@ -119,7 +127,9 @@ function validateContribution(
   if (!contributionIdPattern.test(id)) issues.push(`${path}.id 格式无效`);
   if (!title) issues.push(`${path}.title 不能为空`);
   if (!allowedModalities.has(safeString(value.modality))) {
-    issues.push(`${path}.modality 只支持 text、image 或 video`);
+    issues.push(
+      `${path}.modality 只支持 text、image、video、audio 或 document`,
+    );
   }
   for (const key of ["inputSchema", "outputSchema", "uiSchema"]) {
     if (value[key] !== undefined && !isRecord(value[key])) {
@@ -156,14 +166,25 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
   if (!packageIdPattern.test(id)) issues.push("id 必须是稳定的反向域名或命名空间标识");
   if (!name) issues.push("name 不能为空");
   if (!semverPattern.test(version)) issues.push("version 必须使用 SemVer，例如 1.0.0");
-  if (!["skill", "plugin", "model-provider"].includes(type)) {
-    issues.push("type 只支持 skill、plugin 或 model-provider");
+  if (
+    !["skill", "agent", "workflow", "plugin", "model-provider", "adapter"].includes(
+      type,
+    )
+  ) {
+    issues.push(
+      "type 只支持 skill、agent、workflow、plugin、model-provider 或 adapter",
+    );
   }
   if (!["declarative", "sandbox-ui", "remote-api"].includes(runtimeType)) {
     issues.push("runtime.type 只支持 declarative、sandbox-ui 或 remote-api");
   }
-  if (type === "skill" && runtimeType !== "declarative") {
-    issues.push("Skill Package 默认无代码执行权，runtime.type 必须是 declarative");
+  if (
+    ["skill", "agent", "workflow"].includes(type) &&
+    runtimeType !== "declarative"
+  ) {
+    issues.push(
+      "Skill、Agent 与 Workflow Package 默认无代码执行权，runtime.type 必须是 declarative",
+    );
   }
   if (runtimeType !== "declarative" && !validRemoteUrl(runtimeEntry)) {
     issues.push("沙盒 UI 或远程 API 必须提供安全的 HTTPS runtime.entry");
@@ -191,6 +212,10 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
   }
 
   const skills = Array.isArray(contributes.skills) ? contributes.skills : [];
+  const agents = Array.isArray(contributes.agents) ? contributes.agents : [];
+  const workflows = Array.isArray(contributes.workflows)
+    ? contributes.workflows
+    : [];
   const nodes = Array.isArray(contributes.nodes) ? contributes.nodes : [];
   skills.forEach((item, index) =>
     validateContribution(item, `contributes.skills[${index}]`, issues),
@@ -198,13 +223,25 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
   nodes.forEach((item, index) =>
     validateContribution(item, `contributes.nodes[${index}]`, issues),
   );
-  [...skills, ...nodes].forEach((item) => {
+  agents.forEach((item, index) =>
+    validateContribution(item, `contributes.agents[${index}]`, issues),
+  );
+  workflows.forEach((item, index) =>
+    validateContribution(item, `contributes.workflows[${index}]`, issues),
+  );
+  [...skills, ...agents, ...workflows, ...nodes].forEach((item) => {
     if (isRecord(item) && !safeString(item.id).startsWith(`${id}.`)) {
       issues.push(`贡献项 ${safeString(item.id)} 必须使用 Package ID 作为命名空间`);
     }
   });
   if (type === "skill" && skills.length === 0) {
     issues.push("Skill Package 至少需要声明一个 contributes.skills 项");
+  }
+  if (type === "agent" && agents.length === 0) {
+    issues.push("Agent Package 至少需要声明一个 contributes.agents 项");
+  }
+  if (type === "workflow" && workflows.length === 0) {
+    issues.push("Workflow Package 至少需要声明一个 contributes.workflows 项");
   }
 
   const panels = Array.isArray(contributes.panels) ? contributes.panels : [];
@@ -266,6 +303,8 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     permissions: [...new Set(permissions)],
     contributes: {
       skills: skills as CapabilityContribution[],
+      agents: agents as CapabilityContribution[],
+      workflows: workflows as CapabilityContribution[],
       nodes: nodes as CapabilityContribution[],
       panels: panels as PanelContribution[],
       modelProviders: providers as ModelProviderContribution[],
@@ -277,6 +316,8 @@ export function packageContributionCount(manifest: XiaoLuoPackageManifest) {
   const contributes = manifest.contributes ?? {};
   return (
     (contributes.skills?.length ?? 0) +
+    (contributes.agents?.length ?? 0) +
+    (contributes.workflows?.length ?? 0) +
     (contributes.nodes?.length ?? 0) +
     (contributes.panels?.length ?? 0) +
     (contributes.modelProviders?.length ?? 0)

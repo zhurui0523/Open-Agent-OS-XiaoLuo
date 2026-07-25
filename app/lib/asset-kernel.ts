@@ -16,6 +16,158 @@ type AssetRow = typeof assets.$inferSelect;
 
 export const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
+const allowedUploadTypes = new Map<string, string[]>([
+  ["text/plain", ["txt"]],
+  ["text/markdown", ["md", "markdown"]],
+  ["text/csv", ["csv"]],
+  ["application/json", ["json"]],
+  ["application/pdf", ["pdf"]],
+  ["image/png", ["png"]],
+  ["image/jpeg", ["jpg", "jpeg"]],
+  ["image/webp", ["webp"]],
+  ["image/gif", ["gif"]],
+  ["video/mp4", ["mp4"]],
+  ["video/webm", ["webm"]],
+  ["video/quicktime", ["mov"]],
+  ["audio/mpeg", ["mp3"]],
+  ["audio/wav", ["wav"]],
+  ["audio/x-wav", ["wav"]],
+  ["audio/flac", ["flac"]],
+  ["audio/ogg", ["ogg"]],
+  ["audio/mp4", ["m4a"]],
+  ["application/msword", ["doc"]],
+  [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ["docx"],
+  ],
+  ["application/vnd.ms-excel", ["xls"]],
+  [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ["xlsx"],
+  ],
+  ["application/vnd.ms-powerpoint", ["ppt"]],
+  [
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ["pptx"],
+  ],
+  ["application/zip", ["zip"]],
+]);
+
+const mimeByExtension = new Map(
+  [...allowedUploadTypes.entries()].flatMap(([mimeType, extensions]) =>
+    extensions.map((extension) => [extension, mimeType] as const),
+  ),
+);
+
+function startsWith(bytes: Uint8Array, signature: number[], offset = 0) {
+  return signature.every((value, index) => bytes[offset + index] === value);
+}
+
+function hasExpectedSignature(mimeType: string, bytes: Uint8Array) {
+  if (mimeType.startsWith("text/") || mimeType === "application/json") {
+    return !bytes.slice(0, Math.min(bytes.length, 8_192)).includes(0);
+  }
+  if (mimeType === "image/png") {
+    return startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  }
+  if (mimeType === "image/jpeg") return startsWith(bytes, [0xff, 0xd8, 0xff]);
+  if (mimeType === "image/gif") {
+    return (
+      startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
+      startsWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
+    );
+  }
+  if (mimeType === "image/webp") {
+    return (
+      startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      startsWith(bytes, [0x57, 0x45, 0x42, 0x50], 8)
+    );
+  }
+  if (mimeType === "application/pdf") {
+    return startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]);
+  }
+  if (
+    mimeType === "application/zip" ||
+    mimeType.includes("openxmlformats-officedocument")
+  ) {
+    return (
+      startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]) ||
+      startsWith(bytes, [0x50, 0x4b, 0x05, 0x06]) ||
+      startsWith(bytes, [0x50, 0x4b, 0x07, 0x08])
+    );
+  }
+  if (
+    mimeType === "application/msword" ||
+    mimeType === "application/vnd.ms-excel" ||
+    mimeType === "application/vnd.ms-powerpoint"
+  ) {
+    return startsWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+  }
+  if (mimeType === "video/mp4" || mimeType === "video/quicktime") {
+    return startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4);
+  }
+  if (mimeType === "video/webm") {
+    return startsWith(bytes, [0x1a, 0x45, 0xdf, 0xa3]);
+  }
+  if (mimeType === "audio/mpeg") {
+    return (
+      startsWith(bytes, [0x49, 0x44, 0x33]) ||
+      (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+    );
+  }
+  if (mimeType === "audio/wav" || mimeType === "audio/x-wav") {
+    return (
+      startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      startsWith(bytes, [0x57, 0x41, 0x56, 0x45], 8)
+    );
+  }
+  if (mimeType === "audio/flac") {
+    return startsWith(bytes, [0x66, 0x4c, 0x61, 0x43]);
+  }
+  if (mimeType === "audio/ogg") {
+    return startsWith(bytes, [0x4f, 0x67, 0x67, 0x53]);
+  }
+  if (mimeType === "audio/mp4") {
+    return startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4);
+  }
+  return true;
+}
+
+export function validateUploadedFile(input: {
+  name: string;
+  declaredMimeType?: string | null;
+  bytes: ArrayBuffer;
+}) {
+  if (!input.bytes.byteLength) throw new Error("文件内容为空");
+  if (input.bytes.byteLength > MAX_FILE_BYTES) {
+    throw new Error("单个文件暂时不能超过 100 MB");
+  }
+  const normalizedName = sanitizeAssetName(input.name);
+  const extension =
+    normalizedName.includes(".")
+      ? normalizedName.split(".").pop()?.toLowerCase() ?? ""
+      : "";
+  const inferredMime = mimeByExtension.get(extension);
+  const declaredMime = input.declaredMimeType
+    ?.split(";")[0]
+    ?.trim()
+    .toLowerCase();
+  const mimeType =
+    !declaredMime || declaredMime === "application/octet-stream"
+      ? inferredMime
+      : declaredMime;
+  if (!extension || !inferredMime || !mimeType || !allowedUploadTypes.has(mimeType)) {
+    throw new Error("不支持该文件类型；请上传常用文本、图片、音视频、Office、PDF 或 ZIP 文件");
+  }
+  if (!allowedUploadTypes.get(mimeType)?.includes(extension)) {
+    throw new Error("文件扩展名与声明的 MIME 类型不一致");
+  }
+  if (!hasExpectedSignature(mimeType, new Uint8Array(input.bytes))) {
+    throw new Error("文件内容与扩展名不一致，已拒绝上传");
+  }
+  return { name: normalizedName, mimeType };
+}
+
 export interface FileBucketObject {
   body: ReadableStream<Uint8Array> | null;
   size: number;

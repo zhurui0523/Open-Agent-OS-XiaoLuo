@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
+  generationJobs,
   kernelRuns,
   kernelTasks,
   modelConnections,
@@ -10,10 +11,10 @@ import {
 } from "../../../../../db/schema";
 import {
   executeBuiltin,
-  executeModel,
   executeRemotePackage,
   type KernelNodeRequest,
 } from "../../../../lib/kernel-executors";
+import { invokeRoutedModel } from "../../../../lib/model-runtime-router";
 import type {
   CanvasEdge,
   CanvasNode,
@@ -172,9 +173,71 @@ export async function POST(request: Request) {
         pkg?.enabled && pkg.runtimeType === "remote-api"
           ? await executeRemotePackage(pkg, node, inputs, request.signal)
           : model?.enabled
-            ? await executeModel(model, node, inputs, request.signal)
+            ? await invokeRoutedModel(
+                model.id,
+                node,
+                inputs,
+                {
+                  workspaceId: run.workspaceId,
+                  userId: user.id,
+                  runId: run.id,
+                  nodeId: node.id,
+                },
+                request.signal,
+              )
             : executeBuiltin(node, inputs);
       const completedAt = mysqlNow();
+      if (execution.asyncJob && model) {
+        const generationJobId = `generation_${crypto.randomUUID()}`;
+        const actualModelId =
+          "actualModelId" in execution
+            ? String(execution.actualModelId)
+            : model.id;
+        await db.insert(generationJobs).values({
+          id: generationJobId,
+          workspaceId: run.workspaceId,
+          requestedBy: user.id,
+          runId: run.id,
+          nodeId: node.id,
+          kind: node.kind,
+          status: "submitted",
+          progress: execution.asyncJob.progress,
+          provider: actualModelId,
+          modelConnectionId: actualModelId,
+          externalJobId: execution.asyncJob.externalJobId,
+          pollUrl: execution.asyncJob.pollUrl,
+          cancelUrl: execution.asyncJob.cancelUrl ?? null,
+          providerStatus: execution.asyncJob.providerStatus,
+          nextPollAt: new Date(Date.now() + 2_000)
+            .toISOString()
+            .replace("T", " ")
+            .replace("Z", ""),
+          inputJson: JSON.stringify({ node, inputs }),
+          outputJson: JSON.stringify(execution.output),
+          startedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+        await db
+          .update(kernelTasks)
+          .set({
+            status: "waiting",
+            outputJson: JSON.stringify(execution.output),
+            executor: execution.executor,
+            completedAt: null,
+            updatedAt: completedAt,
+          })
+          .where(eq(kernelTasks.id, task.id));
+        return Response.json(
+          {
+            runId: run.id,
+            nodeId: node.id,
+            generationJobId,
+            ...execution,
+          },
+          { status: 202 },
+        );
+      }
       await db
         .update(kernelTasks)
         .set({

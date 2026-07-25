@@ -70,13 +70,21 @@ export function serializeCapability(
     title: row.title,
     description: row.description,
     modality: row.modality as NodeKind,
-    category: packageType === "skill" ? "SKILL" : "插件",
+    category:
+      packageType === "skill"
+        ? "SKILL"
+        : packageType === "agent"
+          ? "Agent"
+          : packageType === "workflow"
+            ? "Workflow"
+            : "插件",
     enabled: row.enabled && packageEnabled,
     packageVersion,
     parameterHint: `${propertyCount} 个输入字段 · Schema 驱动`,
     packageId: row.packageId,
-    contributionType: row.contributionType as "skill" | "node",
+    contributionType: row.contributionType as Capability["contributionType"],
     inputSchema,
+    outputSchema: parseJson<Record<string, unknown>>(row.outputSchemaJson, {}),
     uiSchema: parseJson<Record<string, unknown>>(row.uiSchemaJson, {}),
   };
 }
@@ -91,6 +99,15 @@ export function serializeModel(row: ModelRow): ModelConnection {
     modelName: row.modelName,
     credentialRef: row.credentialRef ?? undefined,
     secretRefId: row.secretRefId ?? undefined,
+    priority: row.priority,
+    fallbackModelId: row.fallbackModelId,
+    maxConcurrency: row.maxConcurrency,
+    retryLimit: row.retryLimit,
+    circuitFailureThreshold: row.circuitFailureThreshold,
+    circuitCooldownSeconds: row.circuitCooldownSeconds,
+    circuitState: row.circuitState as ModelConnection["circuitState"],
+    activeRequests: row.activeRequests,
+    catalogSyncedAt: row.catalogSyncedAt,
     modalities: parseJson<NodeKind[]>(row.modalitiesJson, []),
     state: row.state as ModelConnection["state"],
     latency:
