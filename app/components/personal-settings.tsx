@@ -77,7 +77,6 @@ export function PersonalSettings({
   onOpenAccount,
 }: PersonalSettingsProps) {
   const [section, setSection] = useState<PersonalSection>("profile");
-  const [username, setUsername] = useState(user.username);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [phone, setPhone] = useState("");
   const [phoneCode, setPhoneCode] = useState("");
@@ -139,10 +138,9 @@ export function PersonalSettings({
         message: string;
       }>("/api/v2/account/profile", {
         method: "PATCH",
-        body: JSON.stringify({ username, displayName }),
+        body: JSON.stringify({ displayName }),
       });
       onUserUpdate(payload.user);
-      setUsername(payload.user.username);
       setDisplayName(payload.user.displayName);
       setMessage(payload.message);
     });
@@ -333,20 +331,11 @@ export function PersonalSettings({
               <label>
                 用户名
                 <input
-                  value={username}
-                  minLength={3}
-                  maxLength={32}
-                  pattern="[a-z0-9][a-z0-9_]{2,31}"
-                  onChange={(event) =>
-                    setUsername(
-                      event.target.value
-                        .toLowerCase()
-                        .replace(/[^a-z0-9_]/g, "")
-                        .slice(0, 32),
-                    )
-                  }
+                  value={user.username}
                   autoComplete="username"
-                  required
+                  readOnly
+                  aria-readonly="true"
+                  title="用户名创建后不可修改"
                 />
               </label>
               <label>

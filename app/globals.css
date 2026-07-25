@@ -5693,6 +5693,7 @@ button:disabled {
   color: #b42318;
   font-size: 11px;
   line-height: 1.5;
+  margin-top: 12px;
   padding: 9px 11px;
 }
 
@@ -6949,6 +6950,12 @@ button:disabled {
 }
 
 .personal-form input:disabled {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.personal-form input[readonly] {
+  cursor: not-allowed;
   background: #f8fafc;
   color: #64748b;
 }

@@ -617,7 +617,10 @@ test("ships a secure personal center with profile and device management", async 
   assert.match(auth, /device_name, user_agent, ip_address/);
   assert.match(auth, /email = \? OR username = \?/);
   assert.doesNotMatch(auth, /email = \? OR display_name = \?/);
-  assert.match(profileRoute, /SET username = \?/);
+  assert.match(personal, /value=\{user\.username\}/);
+  assert.match(personal, /readOnly/);
+  assert.doesNotMatch(profileRoute, /SET username = \?/);
+  assert.doesNotMatch(profileRoute, /normalizeUsername/);
   assert.match(schema, /username: varchar\("username"/);
   assert.match(schema, /refreshTokenHash: varchar\("refresh_token_hash"/);
   assert.match(schema, /xiaoluo_v2_user_security_settings/);
