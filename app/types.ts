@@ -130,6 +130,7 @@ export interface ProjectSummary {
 
 export interface Capability {
   id: string;
+  capabilityKey?: string;
   title: string;
   description: string;
   modality: NodeKind;
@@ -142,6 +143,14 @@ export interface Capability {
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   uiSchema?: Record<string, unknown>;
+  ports?: NodePort[];
+  executionMode?: "model" | "remote" | "builtin";
+  modelRequirements?: {
+    required?: boolean;
+    protocols?: ModelProtocol[];
+    capabilityTags?: string[];
+    modelIds?: string[];
+  };
 }
 
 export interface ModelConnection {
@@ -167,6 +176,9 @@ export interface ModelConnection {
   catalogSyncedAt?: string | null;
   enabled?: boolean;
   lastCheckedAt?: string | null;
+  parameterSchema?: Record<string, unknown>;
+  uiSchema?: Record<string, unknown>;
+  capabilityTags?: string[];
 }
 
 export type PackageType =
@@ -221,7 +233,21 @@ export interface RegistrySnapshot {
   packages: InstalledPackage[];
   capabilities: Capability[];
   models: ModelConnection[];
+  modelProviders: ModelProviderTemplate[];
   events: RegistryEvent[];
+}
+
+export interface ModelProviderTemplate {
+  id: string;
+  packageId: string;
+  packageVersion: string;
+  title: string;
+  protocol: ModelProtocol;
+  baseUrl?: string;
+  modalities: NodeKind[];
+  parameterSchema?: Record<string, unknown>;
+  uiSchema?: Record<string, unknown>;
+  capabilityTags?: string[];
 }
 
 export interface ModelConnectionDraft {
@@ -240,6 +266,9 @@ export interface ModelConnectionDraft {
   retryLimit?: number;
   circuitFailureThreshold?: number;
   circuitCooldownSeconds?: number;
+  parameterSchema?: Record<string, unknown>;
+  uiSchema?: Record<string, unknown>;
+  capabilityTags?: string[];
 }
 
 export interface ModelUsageSummary {

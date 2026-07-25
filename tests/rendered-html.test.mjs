@@ -60,7 +60,7 @@ test("ships without a credits, points, quota, or billing system", async () => {
   assert.doesNotMatch(productSource, /credit-ring|6,820/);
 });
 
-test("ships the extension engine without creating user SKILL content", async () => {
+test("ships an empty extension engine that lets users create their own Skills", async () => {
   const [
     data,
     capabilityView,
@@ -83,8 +83,10 @@ test("ships the extension engine without creating user SKILL content", async () 
   assert.match(data, /core\.capability\.audio/);
   assert.match(data, /core\.capability\.document/);
   assert.doesNotMatch(data, /core\.skill\.|analyze-script|create-script|video-dissect/);
-  assert.match(capabilityView, /Skill 引擎已经就位，内容保持为空/);
-  assert.match(capabilityView, /程序不会预装或创建任何具体 Skill/);
+  assert.match(capabilityView, /Skill 契约与节点保持同步/);
+  assert.match(capabilityView, /系统不会预装开发文档中的具体 Skill/);
+  assert.match(capabilityView, /创建 Skill/);
+  assert.match(capabilityView, /SchemaOptionBuilder/);
   assert.doesNotMatch(
     capabilityView,
     /添加模型|模型 Provider Adapter|modelDialog|tab === "models"/,

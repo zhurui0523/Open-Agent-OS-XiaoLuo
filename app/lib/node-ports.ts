@@ -5,7 +5,7 @@ import type {
   PortDataType,
 } from "../types";
 
-const PORTS: Record<CanvasNode["kind"], NodePort[]> = {
+export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
   text: [
     {
       id: "context",
@@ -96,30 +96,54 @@ const PORTS: Record<CanvasNode["kind"], NodePort[]> = {
   ],
 };
 
+type PortAwareNode = Pick<CanvasNode, "kind"> &
+  Partial<Pick<CanvasNode, "parameters">>;
+
+function snapshotPorts(node: PortAwareNode) {
+  const snapshot = node.parameters?.capabilitySnapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return [];
+  }
+  const ports = (snapshot as { ports?: unknown }).ports;
+  if (!Array.isArray(ports)) return [];
+  return ports.filter((port): port is NodePort => {
+    if (!port || typeof port !== "object" || Array.isArray(port)) return false;
+    const candidate = port as Partial<NodePort>;
+    return (
+      typeof candidate.id === "string" &&
+      typeof candidate.label === "string" &&
+      (candidate.direction === "input" || candidate.direction === "output") &&
+      Array.isArray(candidate.dataTypes) &&
+      candidate.dataTypes.length > 0
+    );
+  });
+}
+
 export function portsForNode(
-  node: Pick<CanvasNode, "kind">,
+  node: PortAwareNode,
   direction?: NodePort["direction"],
 ) {
-  const ports = PORTS[node.kind];
+  const ports = snapshotPorts(node);
+  const resolved = ports.length ? ports : DEFAULT_NODE_PORTS[node.kind];
   return direction
-    ? ports.filter((port) => port.direction === direction)
-    : ports;
+    ? resolved.filter((port) => port.direction === direction)
+    : resolved;
 }
 
 export function portForNode(
-  node: Pick<CanvasNode, "kind">,
+  node: PortAwareNode,
   portId: string,
   direction: NodePort["direction"],
 ) {
   return portsForNode(node, direction).find((port) => port.id === portId);
 }
 
-export function defaultOutputPort(node: Pick<CanvasNode, "kind">) {
+export function defaultOutputPort(node: PortAwareNode) {
   return portsForNode(node, "output")[0];
 }
 
 export function compatibleInputPorts(
-  node: Pick<CanvasNode, "kind">,
+  node: PortAwareNode,
   outputType: PortDataType,
 ) {
   return portsForNode(node, "input").filter((port) =>
@@ -132,8 +156,8 @@ export function resolveEdgePorts(
     CanvasEdge,
     "sourcePort" | "targetPort" | "dataType"
   >,
-  source: Pick<CanvasNode, "kind">,
-  target: Pick<CanvasNode, "kind">,
+  source: PortAwareNode,
+  target: PortAwareNode,
 ) {
   const sourcePort =
     portForNode(source, edge.sourcePort, "output") ??
@@ -150,8 +174,8 @@ export function resolveEdgePorts(
 export function normalizeEdgePorts(
   edge: Pick<CanvasEdge, "id" | "source" | "target"> &
     Partial<Pick<CanvasEdge, "sourcePort" | "targetPort" | "dataType">>,
-  source: Pick<CanvasNode, "kind">,
-  target: Pick<CanvasNode, "kind">,
+  source: PortAwareNode,
+  target: PortAwareNode,
 ): CanvasEdge {
   const sourcePort =
     (edge.sourcePort &&
@@ -180,8 +204,8 @@ export function normalizeEdgePorts(
 
 export function validateEdgePorts(
   edge: CanvasEdge,
-  source: Pick<CanvasNode, "kind">,
-  target: Pick<CanvasNode, "kind">,
+  source: PortAwareNode,
+  target: PortAwareNode,
 ) {
   const sourcePort = portForNode(source, edge.sourcePort, "output");
   if (!sourcePort) return "来源端口不存在";

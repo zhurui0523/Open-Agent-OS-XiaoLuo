@@ -68,6 +68,7 @@ export function serializeCapability(
       : 0;
   return {
     id: row.id,
+    capabilityKey: row.capabilityKey,
     title: row.title,
     description: row.description,
     modality: row.modality as NodeKind,
@@ -87,6 +88,12 @@ export function serializeCapability(
     inputSchema,
     outputSchema: parseJson<Record<string, unknown>>(row.outputSchemaJson, {}),
     uiSchema: parseJson<Record<string, unknown>>(row.uiSchemaJson, {}),
+    ports: parseJson<Capability["ports"]>(row.portsJson, []),
+    executionMode: row.executionMode as Capability["executionMode"],
+    modelRequirements: parseJson<Capability["modelRequirements"]>(
+      row.modelRequirementsJson,
+      {},
+    ),
   };
 }
 
@@ -115,6 +122,12 @@ export function serializeModel(row: ModelRow): ModelConnection {
       typeof row.latencyMs === "number" ? `${row.latencyMs} ms` : "尚未检测",
     enabled: row.enabled,
     lastCheckedAt: row.lastCheckedAt,
+    parameterSchema: parseJson<Record<string, unknown>>(
+      row.parameterSchemaJson,
+      {},
+    ),
+    uiSchema: parseJson<Record<string, unknown>>(row.uiSchemaJson, {}),
+    capabilityTags: parseJson<string[]>(row.capabilityTagsJson, []),
   };
 }
 

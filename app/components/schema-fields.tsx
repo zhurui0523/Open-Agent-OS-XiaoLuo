@@ -9,6 +9,7 @@ interface SchemaFieldsProps {
   uiSchema?: Record<string, unknown>;
   value: Record<string, unknown>;
   workspaceId?: string;
+  title?: string;
   onChange: (value: Record<string, unknown>) => void;
 }
 
@@ -23,6 +24,7 @@ export function SchemaFields({
   uiSchema = {},
   value,
   workspaceId,
+  title,
   onChange,
 }: SchemaFieldsProps) {
   const root = (schema ?? {}) as JsonSchema;
@@ -43,7 +45,7 @@ export function SchemaFields({
   return (
     <div className="schema-fields">
       <div className="schema-fields-heading">
-        <span>能力参数</span>
+        <span>{title ?? "能力参数"}</span>
         <small>
           {issues.length
             ? `${issues.length} 项需要完善`

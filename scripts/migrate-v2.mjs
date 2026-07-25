@@ -36,6 +36,7 @@ const migrations = [
   "0008_kind_arclight",
   "0009_wealthy_magma",
   "0010_equal_layla_miller",
+  "0011_dynamic_skill_model_contract",
 ];
 
 async function tableExists(name) {
@@ -235,11 +236,17 @@ async function verify() {
          OR (TABLE_NAME = 'xiaoluo_v2_packages' AND COLUMN_NAME = 'trust_state')
          OR (TABLE_NAME = 'xiaoluo_v2_generation_jobs' AND COLUMN_NAME = 'lease_owner')
          OR (TABLE_NAME = 'xiaoluo_v2_generation_jobs' AND COLUMN_NAME = 'lease_expires_at')
+         OR (TABLE_NAME = 'xiaoluo_v2_package_capabilities' AND COLUMN_NAME = 'ports_json')
+         OR (TABLE_NAME = 'xiaoluo_v2_package_capabilities' AND COLUMN_NAME = 'model_requirements_json')
+         OR (TABLE_NAME = 'xiaoluo_v2_package_capabilities' AND COLUMN_NAME = 'execution_mode')
+         OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'parameter_schema_json')
+         OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'ui_schema_json')
+         OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'capability_tags_json')
        )`,
   );
-  if (absent.length || columns.length !== 18) {
+  if (absent.length || columns.length !== 24) {
     throw new Error(
-      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/18`,
+      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/24`,
     );
   }
   const [nodeKindColumns] = await connection.execute(
@@ -258,7 +265,7 @@ async function verify() {
     JSON.stringify({
       ok: true,
       tables: expectedTables.length,
-      keyColumns: 18,
+      keyColumns: 24,
       canvasNodeKinds: 5,
     }),
   );

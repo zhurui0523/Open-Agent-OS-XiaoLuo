@@ -14,6 +14,11 @@ import {
 } from "../../../lib/registry-serialization";
 import { requireUser } from "../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../lib/workspace-context";
+import type {
+  ModelProviderTemplate,
+  NodeKind,
+} from "../../../types";
+import type { XiaoLuoPackageManifest } from "../../../lib/package-contract";
 
 function routeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Registry unavailable";
@@ -21,6 +26,31 @@ function routeError(error: unknown) {
     return "注册表正在初始化，请稍后刷新。";
   }
   return message;
+}
+
+function modelProviderTemplates(
+  packageRows: Array<typeof packages.$inferSelect>,
+): ModelProviderTemplate[] {
+  return packageRows.flatMap((owner) => {
+    if (!owner.enabled || owner.lifecycleState === "uninstalled") return [];
+    try {
+      const manifest = JSON.parse(owner.manifestJson) as XiaoLuoPackageManifest;
+      return (manifest.contributes?.modelProviders ?? []).map((provider) => ({
+        id: provider.id,
+        packageId: owner.id,
+        packageVersion: owner.version,
+        title: provider.title,
+        protocol: provider.protocol,
+        baseUrl: provider.baseUrl,
+        modalities: provider.modalities ?? (["text"] as NodeKind[]),
+        parameterSchema: provider.parameterSchema ?? {},
+        uiSchema: provider.uiSchema ?? {},
+        capabilityTags: provider.capabilityTags ?? [],
+      }));
+    } catch {
+      return [];
+    }
+  });
 }
 
 export async function GET(request: Request) {
@@ -56,6 +86,9 @@ export async function GET(request: Request) {
             inputSchemaJson: packageCapabilities.inputSchemaJson,
             outputSchemaJson: packageCapabilities.outputSchemaJson,
             uiSchemaJson: packageCapabilities.uiSchemaJson,
+            portsJson: packageCapabilities.portsJson,
+            modelRequirementsJson: packageCapabilities.modelRequirementsJson,
+            executionMode: packageCapabilities.executionMode,
             enabled: packageCapabilities.enabled,
           })
           .from(packageCapabilities)
@@ -104,6 +137,7 @@ export async function GET(request: Request) {
           : [];
       }),
       models: modelRows.map(serializeModel),
+      modelProviders: modelProviderTemplates(packageRows),
       events: eventRows.map(serializeEvent),
     });
   } catch (error) {

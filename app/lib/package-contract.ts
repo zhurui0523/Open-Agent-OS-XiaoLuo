@@ -1,4 +1,6 @@
 import type {
+  ModelProtocol,
+  NodePort,
   NodeKind,
   PackageType,
   PluginRuntimeType,
@@ -16,6 +18,14 @@ export interface CapabilityContribution {
   inputSchema?: JsonSchema;
   outputSchema?: JsonSchema;
   uiSchema?: JsonSchema;
+  ports?: NodePort[];
+  executionMode?: "model" | "remote";
+  modelRequirements?: {
+    required?: boolean;
+    protocols?: ModelProtocol[];
+    capabilityTags?: string[];
+    modelIds?: string[];
+  };
 }
 
 export interface PanelContribution {
@@ -27,13 +37,12 @@ export interface PanelContribution {
 export interface ModelProviderContribution {
   id: string;
   title: string;
-  protocol:
-    | "openai-compatible"
-    | "anthropic-compatible"
-    | "gemini"
-    | "ark"
-    | "async-video"
-    | "generic-rest";
+  protocol: ModelProtocol;
+  baseUrl?: string;
+  modalities?: NodeKind[];
+  parameterSchema?: JsonSchema;
+  uiSchema?: JsonSchema;
+  capabilityTags?: string[];
 }
 
 export interface XiaoLuoPackageManifest {
@@ -80,6 +89,22 @@ const allowedModalities = new Set([
   "video",
   "audio",
   "document",
+]);
+const allowedProtocols = new Set([
+  "openai-compatible",
+  "anthropic-compatible",
+  "gemini",
+  "ark",
+  "async-video",
+  "generic-rest",
+]);
+const allowedPortTypes = new Set([
+  "text",
+  "image",
+  "video",
+  "audio",
+  "document",
+  "json",
 ]);
 const exactPermissions = new Set([
   "assets:read",
@@ -150,6 +175,78 @@ function validateContribution(
   for (const key of ["inputSchema", "outputSchema", "uiSchema"]) {
     if (value[key] !== undefined && !isRecord(value[key])) {
       issues.push(`${path}.${key} 必须是 JSON 对象`);
+    }
+  }
+  if (
+    value.executionMode !== undefined &&
+    !["model", "remote"].includes(safeString(value.executionMode))
+  ) {
+    issues.push(`${path}.executionMode 只支持 model 或 remote`);
+  }
+  if (value.ports !== undefined) {
+    if (!Array.isArray(value.ports) || value.ports.length > 24) {
+      issues.push(`${path}.ports 必须是最多 24 项的数组`);
+    } else {
+      const portIds = new Set<string>();
+      const directions = new Set<string>();
+      value.ports.forEach((port, index) => {
+        const portPath = `${path}.ports[${index}]`;
+        if (!isRecord(port)) {
+          issues.push(`${portPath} 必须是对象`);
+          return;
+        }
+        const portId = safeString(port.id);
+        if (!/^[a-z][a-z0-9._-]{0,63}$/i.test(portId)) {
+          issues.push(`${portPath}.id 格式无效`);
+        } else if (portIds.has(portId)) {
+          issues.push(`${portPath}.id 不能重复`);
+        }
+        portIds.add(portId);
+        if (!safeString(port.label)) issues.push(`${portPath}.label 不能为空`);
+        if (!["input", "output"].includes(safeString(port.direction))) {
+          issues.push(`${portPath}.direction 只支持 input 或 output`);
+        } else {
+          directions.add(safeString(port.direction));
+        }
+        if (
+          !Array.isArray(port.dataTypes) ||
+          !port.dataTypes.length ||
+          port.dataTypes.some((item) => !allowedPortTypes.has(safeString(item)))
+        ) {
+          issues.push(`${portPath}.dataTypes 包含不支持的数据类型`);
+        }
+      });
+      if (value.ports.length && !directions.has("input")) {
+        issues.push(`${path}.ports 至少需要一个输入端口`);
+      }
+      if (value.ports.length && !directions.has("output")) {
+        issues.push(`${path}.ports 至少需要一个输出端口`);
+      }
+    }
+  }
+  if (value.modelRequirements !== undefined) {
+    if (!isRecord(value.modelRequirements)) {
+      issues.push(`${path}.modelRequirements 必须是对象`);
+    } else {
+      const requirements = value.modelRequirements;
+      if (
+        requirements.protocols !== undefined &&
+        (!Array.isArray(requirements.protocols) ||
+          requirements.protocols.some(
+            (item) => !allowedProtocols.has(safeString(item)),
+          ))
+      ) {
+        issues.push(`${path}.modelRequirements.protocols 包含不支持的协议`);
+      }
+      for (const key of ["capabilityTags", "modelIds"]) {
+        if (
+          requirements[key] !== undefined &&
+          (!Array.isArray(requirements[key]) ||
+            requirements[key].some((item) => !safeString(item)))
+        ) {
+          issues.push(`${path}.modelRequirements.${key} 必须是字符串数组`);
+        }
+      }
     }
   }
   return true;
@@ -316,20 +413,70 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
       !isRecord(item) ||
       !safeString(item.id) ||
       !safeString(item.title) ||
-      ![
-        "openai-compatible",
-        "anthropic-compatible",
-        "gemini",
-        "ark",
-        "async-video",
-        "generic-rest",
-      ].includes(
-        safeString(item.protocol),
-      )
+      !allowedProtocols.has(safeString(item.protocol))
     ) {
       issues.push(`contributes.modelProviders[${index}] 定义无效`);
     } else if (!safeString(item.id).startsWith(`${id}.`)) {
       issues.push(`模型 Provider ${safeString(item.id)} 必须使用 Package ID 作为命名空间`);
+    }
+  });
+
+  if (runtimeType !== "remote-api") {
+    (
+      [
+        ["skills", skills],
+        ["agents", agents],
+        ["workflows", workflows],
+        ["nodes", nodes],
+      ] as const
+    ).forEach(([group, items]) => {
+      items.forEach((item, index) => {
+        if (isRecord(item) && safeString(item.executionMode) === "remote") {
+          issues.push(
+            `contributes.${group}[${index}].executionMode=remote 仅适用于 remote-api Runtime`,
+          );
+        }
+      });
+    });
+  }
+
+  providers.forEach((item, index) => {
+    if (!isRecord(item)) return;
+    if (
+      item.baseUrl !== undefined &&
+      safeString(item.baseUrl) &&
+      !validRemoteUrl(safeString(item.baseUrl))
+    ) {
+      issues.push(
+        `contributes.modelProviders[${index}].baseUrl 必须是安全 HTTPS 地址`,
+      );
+    }
+    if (
+      item.modalities !== undefined &&
+      (!Array.isArray(item.modalities) ||
+        item.modalities.some(
+          (modality) => !allowedModalities.has(safeString(modality)),
+        ))
+    ) {
+      issues.push(
+        `contributes.modelProviders[${index}].modalities 包含不支持的模态`,
+      );
+    }
+    for (const key of ["parameterSchema", "uiSchema"]) {
+      if (item[key] !== undefined && !isRecord(item[key])) {
+        issues.push(
+          `contributes.modelProviders[${index}].${key} 必须是 JSON 对象`,
+        );
+      }
+    }
+    if (
+      item.capabilityTags !== undefined &&
+      (!Array.isArray(item.capabilityTags) ||
+        item.capabilityTags.some((tag) => !safeString(tag)))
+    ) {
+      issues.push(
+        `contributes.modelProviders[${index}].capabilityTags 必须是字符串数组`,
+      );
     }
   });
 

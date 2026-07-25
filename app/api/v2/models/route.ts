@@ -53,6 +53,27 @@ function validateDraft(value: unknown): ModelConnectionDraft {
   if (credentialRef && !/^[A-Z][A-Z0-9_]{2,63}$/.test(credentialRef)) {
     throw new Error("凭据引用必须是大写环境变量名，例如 OPENAI_API_KEY");
   }
+  const parameterSchema =
+    draft.parameterSchema &&
+    typeof draft.parameterSchema === "object" &&
+    !Array.isArray(draft.parameterSchema)
+      ? draft.parameterSchema
+      : {};
+  const uiSchema =
+    draft.uiSchema &&
+    typeof draft.uiSchema === "object" &&
+    !Array.isArray(draft.uiSchema)
+      ? draft.uiSchema
+      : {};
+  const capabilityTags = Array.isArray(draft.capabilityTags)
+    ? [
+        ...new Set(
+          draft.capabilityTags
+            .map((item) => String(item).trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      ].slice(0, 32)
+    : [];
   return {
     name,
     protocol: draft.protocol,
@@ -75,6 +96,9 @@ function validateDraft(value: unknown): ModelConnectionDraft {
       10,
       600,
     ),
+    parameterSchema,
+    uiSchema,
+    capabilityTags,
     ...(credentialRef ? { credentialRef } : {}),
   };
 }
@@ -146,6 +170,9 @@ export async function POST(request: Request) {
         baseUrl: draft.baseUrl,
         modelName: draft.modelName,
         modalitiesJson: JSON.stringify(draft.modalities),
+        parameterSchemaJson: JSON.stringify(draft.parameterSchema ?? {}),
+        uiSchemaJson: JSON.stringify(draft.uiSchema ?? {}),
+        capabilityTagsJson: JSON.stringify(draft.capabilityTags ?? []),
         credentialRef: draft.credentialRef ?? null,
         secretRefId: storedSecret?.id ?? payload.secretRefId ?? null,
         priority: draft.priority,
@@ -236,6 +263,9 @@ export async function PATCH(request: Request) {
         baseUrl: draft.baseUrl,
         modelName: draft.modelName,
         modalitiesJson: JSON.stringify(draft.modalities),
+        parameterSchemaJson: JSON.stringify(draft.parameterSchema ?? {}),
+        uiSchemaJson: JSON.stringify(draft.uiSchema ?? {}),
+        capabilityTagsJson: JSON.stringify(draft.capabilityTags ?? []),
         credentialRef: draft.credentialRef ?? null,
         secretRefId:
           storedSecret?.id ?? payload.secretRefId ?? existing.secretRefId,

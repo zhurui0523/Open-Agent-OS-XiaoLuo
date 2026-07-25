@@ -29,6 +29,7 @@ import type {
 } from "../types";
 import { IconButton } from "./icon-button";
 import { PersonalSettings } from "./personal-settings";
+import { SchemaOptionBuilder } from "./schema-option-builder";
 
 type SettingsTab = "account" | "api" | "gesture" | "shortcuts";
 
@@ -46,6 +47,9 @@ const emptyDraft: ModelConnectionDraft = {
   retryLimit: 3,
   circuitFailureThreshold: 5,
   circuitCooldownSeconds: 60,
+  parameterSchema: { type: "object", properties: {} },
+  uiSchema: {},
+  capabilityTags: [],
 };
 
 const emptyUsage: ModelUsageSummary = {
@@ -127,6 +131,12 @@ function draftFromModel(model: ModelConnection): ModelConnectionDraft {
     retryLimit: model.retryLimit ?? 3,
     circuitFailureThreshold: model.circuitFailureThreshold ?? 5,
     circuitCooldownSeconds: model.circuitCooldownSeconds ?? 60,
+    parameterSchema: model.parameterSchema ?? {
+      type: "object",
+      properties: {},
+    },
+    uiSchema: model.uiSchema ?? {},
+    capabilityTags: model.capabilityTags ?? [],
   };
 }
 
@@ -416,7 +426,7 @@ export function SettingsCenter({
                     </span>
                   </div>
                   <div className="model-usage-grid">
-                    {(["text", "image", "video", "audio", "document"] as NodeKind[]).map((kind) => {
+                    {(["text", "image", "video"] as const).map((kind) => {
                       const item = usage[kind];
                       return (
                         <article key={kind} className={`is-${kind}`}>
@@ -546,6 +556,45 @@ export function SettingsCenter({
                     返回列表
                   </button>
                 </div>
+
+                {!!os.modelProviders.filter(
+                  (provider) => provider.protocol !== "generic-rest",
+                ).length && (
+                  <label className="provider-template-picker">
+                    从已安装的模型 Provider 开始
+                    <select
+                      defaultValue=""
+                      onChange={(event) => {
+                        const provider = os.modelProviders.find(
+                          (item) => item.id === event.target.value,
+                        );
+                        if (!provider) return;
+                        setDraft((current) => ({
+                          ...current,
+                          name: current.name || provider.title,
+                          protocol: provider.protocol,
+                          baseUrl: provider.baseUrl ?? current.baseUrl,
+                          modalities: provider.modalities,
+                          parameterSchema: provider.parameterSchema ?? {},
+                          uiSchema: provider.uiSchema ?? {},
+                          capabilityTags: provider.capabilityTags ?? [],
+                        }));
+                      }}
+                    >
+                      <option value="">选择 Provider 模板（可选）</option>
+                      {os.modelProviders
+                        .filter(
+                          (provider) =>
+                            provider.protocol !== "generic-rest",
+                        )
+                        .map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.title} · v{provider.packageVersion}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
 
                 <div className="settings-form-grid">
                   <label>
@@ -750,6 +799,37 @@ export function SettingsCenter({
                     </label>
                   ))}
                 </fieldset>
+
+                <label className="settings-model-tags">
+                  模型能力标签
+                  <input
+                    value={(draft.capabilityTags ?? []).join(", ")}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        capabilityTags: event.target.value
+                          .split(/[,，]/)
+                          .map((item) => item.trim().toLowerCase())
+                          .filter(Boolean),
+                      }))
+                    }
+                    placeholder="例如：vision, long-context, image-edit"
+                  />
+                  <small>Skill 可以使用这些标签筛选兼容模型。</small>
+                </label>
+
+                <SchemaOptionBuilder
+                  title="模型专属节点选项"
+                  schema={draft.parameterSchema}
+                  uiSchema={draft.uiSchema}
+                  onChange={(parameterSchema, uiSchema) =>
+                    setDraft((current) => ({
+                      ...current,
+                      parameterSchema,
+                      uiSchema,
+                    }))
+                  }
+                />
 
                 <footer className="settings-form-actions">
                   <button

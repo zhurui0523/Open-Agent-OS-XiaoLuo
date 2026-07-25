@@ -113,7 +113,18 @@ export async function POST(request: Request) {
           publicKeyPem: publisherIdentity.publicKeyPem,
         }),
     );
-    if (packageSignaturesRequired() && !signatureVerified) {
+    const workspaceDeclarativeSkill =
+      manifest.type === "skill" &&
+      manifest.runtime.type === "declarative" &&
+      manifest.id.startsWith("user.skill.") &&
+      (manifest.permissions ?? []).every((permission) =>
+        ["models:list", "models:invoke"].includes(permission),
+      );
+    if (
+      packageSignaturesRequired() &&
+      !signatureVerified &&
+      !workspaceDeclarativeSkill
+    ) {
       return Response.json(
         { error: "当前服务器要求由可信发布者签名的 Package" },
         { status: 400 },
@@ -174,6 +185,18 @@ export async function POST(request: Request) {
       )
       .limit(1);
     const packageId = existing?.id ?? `package_${crypto.randomUUID()}`;
+    const existingCapabilityRows = existing
+      ? await db
+          .select({
+            id: packageCapabilities.id,
+            capabilityKey: packageCapabilities.capabilityKey,
+          })
+          .from(packageCapabilities)
+          .where(eq(packageCapabilities.packageId, packageId))
+      : [];
+    const capabilityIds = new Map(
+      existingCapabilityRows.map((item) => [item.capabilityKey, item.id]),
+    );
     const now = mysqlNow();
     const packageRow = {
       packageKey: manifest.id,
@@ -326,7 +349,9 @@ export async function POST(request: Request) {
       if (contributions.length) {
         await tx.insert(packageCapabilities).values(
           contributions.map((item) => ({
-            id: `capability_${crypto.randomUUID()}`,
+            id:
+              capabilityIds.get(item.id) ??
+              `capability_${crypto.randomUUID()}`,
             capabilityKey: item.id,
             packageId,
             title: item.title,
@@ -336,6 +361,15 @@ export async function POST(request: Request) {
             inputSchemaJson: JSON.stringify(item.inputSchema ?? {}),
             outputSchemaJson: JSON.stringify(item.outputSchema ?? {}),
             uiSchemaJson: JSON.stringify(item.uiSchema ?? {}),
+            portsJson: JSON.stringify(item.ports ?? []),
+            modelRequirementsJson: JSON.stringify(
+              item.modelRequirements ?? {
+                required: manifest.runtime.type !== "remote-api",
+              },
+            ),
+            executionMode:
+              item.executionMode ??
+              (manifest.runtime.type === "remote-api" ? "remote" : "model"),
             enabled: true,
           })),
         );
@@ -406,14 +440,16 @@ export async function PATCH(request: Request) {
     if (!payload.id || typeof payload.enabled !== "boolean") {
       return Response.json({ error: "id 和 enabled 必填" }, { status: 400 });
     }
+    const packageId = payload.id;
+    const enabled = payload.enabled;
     const db = await getDb();
-    if (payload.enabled) {
+    if (enabled) {
       const [candidate] = await db
         .select({ trustState: packages.trustState })
         .from(packages)
         .where(
           and(
-            eq(packages.id, payload.id),
+            eq(packages.id, packageId),
             eq(packages.workspaceId, workspaceId),
           ),
         )
@@ -428,32 +464,32 @@ export async function PATCH(request: Request) {
         );
       }
     }
-    const eventType = payload.enabled ? "package.enabled" : "package.disabled";
+    const eventType = enabled ? "package.enabled" : "package.disabled";
     const domainRows = domainEventRows({
       workspaceId,
       actorUserId: user.id,
       eventType,
       entityType: "package",
-      entityId: payload.id,
+      entityId: packageId,
       requestId: request.headers.get("x-request-id"),
-      detail: { enabled: payload.enabled },
+      detail: { enabled },
     });
     await db.transaction(async (tx) => {
       await tx
         .update(packages)
         .set({
-          enabled: payload.enabled,
-          lifecycleState: payload.enabled ? "active" : "disabled",
+          enabled,
+          lifecycleState: enabled ? "active" : "disabled",
           updatedAt: sql`CURRENT_TIMESTAMP`,
         })
         .where(
           and(
-            eq(packages.id, payload.id),
+            eq(packages.id, packageId),
             eq(packages.workspaceId, workspaceId),
           ),
         );
       await tx.insert(registryEvents).values(
-        audit(workspaceId, user.id, eventType, payload.id, {}),
+        audit(workspaceId, user.id, eventType, packageId, {}),
       );
       await tx.insert(auditLogs).values(domainRows.audit);
       await tx.insert(outboxEvents).values(domainRows.outbox);
@@ -463,7 +499,7 @@ export async function PATCH(request: Request) {
       .from(packages)
       .where(
         and(
-          eq(packages.id, payload.id),
+          eq(packages.id, packageId),
           eq(packages.workspaceId, workspaceId),
         ),
       )

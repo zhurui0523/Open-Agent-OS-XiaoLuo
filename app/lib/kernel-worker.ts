@@ -22,6 +22,7 @@ import {
   type KernelNodeRequest,
 } from "./kernel-executors";
 import { invokeRoutedModel } from "./model-runtime-router";
+import { validateRuntimeModel } from "./runtime-capability";
 import {
   getFileBucket,
   MAX_FILE_BYTES,
@@ -197,8 +198,13 @@ async function executeQueuedTask(
         updatedAt: mysqlNow(),
       });
     }
+    validateRuntimeModel(capability?.capability, model, node.kind);
     let execution;
-    if (pkg?.enabled && pkg.runtimeType === "remote-api") {
+    if (
+      capability?.capability.executionMode === "remote" &&
+      pkg?.enabled &&
+      pkg.runtimeType === "remote-api"
+    ) {
       execution = await executeRemotePackage(pkg, request, inputs);
     } else if (model?.enabled) {
       execution = await invokeRoutedModel(

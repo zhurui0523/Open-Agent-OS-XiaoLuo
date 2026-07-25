@@ -17,6 +17,7 @@ import type {
   InstalledPackage,
   IntentPlan,
   KernelNodeOutput,
+  ModelProviderTemplate,
   ModelConnectionDraft,
   NodeKind,
   ProjectSummary,
@@ -36,6 +37,13 @@ import {
   compileWorkflow,
   wouldCreateCycle,
 } from "../lib/workflow-kernel";
+import {
+  modelMatchesCapability,
+  nodeCapabilitySnapshot,
+  preferredCapability,
+  preferredModel,
+  snapshotCapability,
+} from "../lib/capability-sync";
 
 interface CanvasHistoryEntry {
   nodes: CanvasNode[];
@@ -87,6 +95,9 @@ export function useIntentOS() {
   const [capabilities, setCapabilities] =
     useState<Capability[]>(coreCapabilities);
   const [models, setModels] = useState(initialModels);
+  const [modelProviders, setModelProviders] = useState<ModelProviderTemplate[]>(
+    [],
+  );
   const [packages, setPackages] = useState<InstalledPackage[]>([]);
   const [registryEvents, setRegistryEvents] = useState<RegistryEvent[]>([]);
   const [registryStatus, setRegistryStatus] = useState<
@@ -323,6 +334,7 @@ export function useIntentOS() {
       setPackages(snapshot.packages);
       setCapabilities([...coreCapabilities, ...snapshot.capabilities]);
       setModels(snapshot.models);
+      setModelProviders(snapshot.modelProviders ?? []);
       setRegistryEvents(snapshot.events);
       setRegistryStatus("ready");
       setRegistryError("");
@@ -333,6 +345,47 @@ export function useIntentOS() {
       );
     }
   }, [workspaceId]);
+
+  useEffect(() => {
+    if (registryStatus !== "ready") return;
+    setNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        const capability = capabilities.find(
+          (item) => item.id === node.capabilityId,
+        );
+        if (!capability) return node;
+        const pinned = nodeCapabilitySnapshot(node);
+        const currentModel = models.find((item) => item.id === node.modelId);
+        const compatibleModel =
+          currentModel &&
+          modelMatchesCapability(currentModel, capability, node.kind)
+            ? currentModel
+            : preferredModel(models, capability, node.kind);
+        const modelId =
+          capability.executionMode === "remote"
+            ? "skill-runtime"
+            : (compatibleModel?.id ?? "unconfigured");
+        if (
+          pinned?.packageVersion === capability.packageVersion &&
+          pinned.id === capability.id &&
+          modelId === node.modelId
+        ) {
+          return node;
+        }
+        changed = true;
+        return {
+          ...node,
+          modelId,
+          parameters: {
+            ...node.parameters,
+            capabilitySnapshot: snapshotCapability(capability),
+          },
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [capabilities, models, registryStatus]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -722,12 +775,12 @@ export function useIntentOS() {
   ) {
     rememberCanvas();
     const id = `node_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const modalityModels = models.filter((model) =>
-      model.modalities.includes(kind),
-    );
-    const modalityCapabilities = capabilities.filter(
-      (capability) => capability.enabled && capability.modality === kind,
-    );
+    const capability =
+      capabilities.find((item) => item.id === preset.capabilityId) ??
+      preferredCapability(capabilities, kind);
+    const model =
+      models.find((item) => item.id === preset.modelId) ??
+      preferredModel(models, capability, kind);
     const next: CanvasNode = {
       id,
       title:
@@ -745,15 +798,21 @@ export function useIntentOS() {
       kind,
       status: "draft",
       capabilityId:
-        preset.capabilityId ??
-        modalityCapabilities[0]?.id ??
-        "manual.text",
-      modelId: preset.modelId ?? modalityModels[0]?.id ?? "unconfigured",
+        preset.capabilityId ?? capability?.id ?? `core.capability.${kind}`,
+      modelId:
+        capability?.executionMode === "remote"
+          ? "skill-runtime"
+          : (preset.modelId ?? model?.id ?? "unconfigured"),
       x: position?.x ?? 320 + (nodes.length % 3) * 72,
       y: position?.y ?? 250 + (nodes.length % 2) * 110,
       createdAt: Date.now(),
       result: preset.result,
-      parameters: preset.parameters,
+      parameters: {
+        ...(preset.parameters ?? {}),
+        ...(capability
+          ? { capabilitySnapshot: snapshotCapability(capability) }
+          : {}),
+      },
     };
     setArrangeMode("free");
     setNodes((current) => [...current, next]);
@@ -1180,8 +1239,11 @@ export function useIntentOS() {
     const nodeIdByTask = new Map<string, string>();
     const plannedNodes: CanvasNode[] = plan.tasks.map((task, index) => {
       const kind: NodeKind = task.kind;
-      const cap = capabilities.find((item) => item.title === task.capability);
-      const model = models.find((item) => item.modalities.includes(kind));
+      const cap =
+        capabilities.find(
+          (item) => item.enabled && item.title === task.capability,
+        ) ?? preferredCapability(capabilities, kind);
+      const model = preferredModel(models, cap, kind);
       const level = levelByTask.get(task.id) ?? 0;
       const row = rowByLevel.get(level) ?? 0;
       rowByLevel.set(level, row + 1);
@@ -1194,12 +1256,18 @@ export function useIntentOS() {
         kind,
         status: "queued",
         capabilityId: cap?.id ?? `core.capability.${kind}`,
-        modelId: model?.id ?? "unconfigured",
+        modelId:
+          cap?.executionMode === "remote"
+            ? "skill-runtime"
+            : (model?.id ?? "unconfigured"),
         x: startX + level * 360,
         y: 140 + row * 260,
         createdAt: timestamp + index,
         progress: 0,
-        parameters: task.parameters ?? {},
+        parameters: {
+          ...(task.parameters ?? {}),
+          ...(cap ? { capabilitySnapshot: snapshotCapability(cap) } : {}),
+        },
         layer: index,
       };
     });
@@ -1724,6 +1792,7 @@ export function useIntentOS() {
     edges,
     capabilities,
     models,
+    modelProviders,
     packages,
     registryEvents,
     registryStatus,

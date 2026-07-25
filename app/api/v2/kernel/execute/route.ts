@@ -15,6 +15,7 @@ import {
   type KernelNodeRequest,
 } from "../../../../lib/kernel-executors";
 import { invokeRoutedModel } from "../../../../lib/model-runtime-router";
+import { validateRuntimeModel } from "../../../../lib/runtime-capability";
 import type {
   CanvasEdge,
   CanvasNode,
@@ -169,8 +170,11 @@ export async function POST(request: Request) {
               .limit(1)
           : [];
 
+      validateRuntimeModel(capability?.capability, model, node.kind);
       const execution =
-        pkg?.enabled && pkg.runtimeType === "remote-api"
+        capability?.capability.executionMode === "remote" &&
+        pkg?.enabled &&
+        pkg.runtimeType === "remote-api"
           ? await executeRemotePackage(pkg, node, inputs, request.signal)
           : model?.enabled
             ? await invokeRoutedModel(

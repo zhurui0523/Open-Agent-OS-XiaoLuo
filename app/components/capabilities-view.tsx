@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Server,
   ShieldCheck,
+  SquarePen,
   Trash2,
   Type,
   Upload,
@@ -32,7 +33,10 @@ import type { IntentOSController } from "../hooks/use-intent-os";
 import type {
   Capability,
   InstalledPackage,
+  ModelProtocol,
+  NodeKind,
 } from "../types";
+import { SchemaOptionBuilder } from "./schema-option-builder";
 
 const modalityIcon = {
   text: Type,
@@ -89,6 +93,9 @@ type RegistryTab = "capabilities" | "packages";
 export function CapabilitiesView({ os }: CapabilitiesViewProps) {
   const [tab, setTab] = useState<RegistryTab>("packages");
   const [packageDialog, setPackageDialog] = useState(false);
+  const [skillDialog, setSkillDialog] = useState<Capability | "new" | null>(
+    null,
+  );
   const [sandbox, setSandbox] = useState<{
     title: string;
     url: string;
@@ -121,6 +128,13 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
           <p>Skill、Agent、Workflow 与插件共用注册表、权限边界和运行时路由。</p>
         </div>
         <div className="header-button-group">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setSkillDialog("new")}
+          >
+            <Code2 size={16} /> 创建 Skill
+          </button>
           <button
             type="button"
             className="primary-button"
@@ -200,7 +214,9 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
           }
         />
       )}
-      {tab === "capabilities" && <CapabilitiesPanel os={os} />}
+      {tab === "capabilities" && (
+        <CapabilitiesPanel os={os} onEdit={setSkillDialog} />
+      )}
 
       {notice && (
         <div className={`extension-toast is-${notice.tone}`} role="status">
@@ -227,6 +243,21 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
             setTab("packages");
             showNotice(
               `${result.package.name} 已${result.action === "installed" ? "安装" : "更新"}，能力投影已刷新。`,
+            );
+          }}
+        />
+      )}
+      {skillDialog && (
+        <SkillBuilderDialog
+          initial={skillDialog === "new" ? undefined : skillDialog}
+          packages={os.packages}
+          onClose={() => setSkillDialog(null)}
+          onInstall={async (raw) => {
+            const result = await os.installPackage(raw);
+            setSkillDialog(null);
+            setTab("capabilities");
+            showNotice(
+              `${result.package.name} 已${result.action === "installed" ? "创建" : "更新"}，节点选项与模型兼容规则已同步。`,
             );
           }}
         />
@@ -289,7 +320,7 @@ function PackagesPanel({
             <span><PackagePlus size={24} /></span>
             <h3>注册表还是空的</h3>
             <p>
-              导入你自己的 .xlpkg 或 manifest.json。程序不会预装或创建任何具体 Skill。
+              系统不会预装开发文档中的具体 Skill；只有你创建或导入后，能力才会进入节点。
             </p>
             <button type="button" className="primary-button" onClick={onImport}>
               <Upload size={15} /> 导入第一个 Package
@@ -451,7 +482,13 @@ function PackagesPanel({
   );
 }
 
-function CapabilitiesPanel({ os }: { os: IntentOSController }) {
+function CapabilitiesPanel({
+  os,
+  onEdit,
+}: {
+  os: IntentOSController;
+  onEdit: (capability: Capability) => void;
+}) {
   return (
     <div className="registry-column">
       <div className="section-title-row">
@@ -463,16 +500,26 @@ function CapabilitiesPanel({ os }: { os: IntentOSController }) {
       </div>
       <div className="contract-grid capability-contract-grid">
         {os.capabilities.map((capability) => (
-          <CapabilityContract key={capability.id} capability={capability} />
+          <CapabilityContract
+            key={capability.id}
+            capability={capability}
+            editable={Boolean(
+              capability.packageId &&
+                os.packages
+                  .find((item) => item.id === capability.packageId)
+                  ?.packageKey?.startsWith("user.skill."),
+            )}
+            onEdit={() => onEdit(capability)}
+          />
         ))}
       </div>
       <div className="skill-reserved-panel">
         <span className="reserved-icon"><Code2 size={22} /></span>
         <div>
-          <h3>Skill 引擎已经就位，内容保持为空</h3>
+          <h3>Skill 契约与节点保持同步</h3>
           <p>
-            系统只实现安装协议、Schema 渲染和能力投影，没有创建开发文档中的具体 Skill。
-            你导入自己的 Skill Package 后，它才会出现在这里。
+            创建或导入自己的 Skill 后，参数 Schema、端口和模型兼容规则会自动投影到画布；
+            已放入画布的节点保留版本快照，避免升级时静默破坏。
           </p>
           <div className="reserved-contracts">
             <span>manifest.json</span>
@@ -487,7 +534,15 @@ function CapabilitiesPanel({ os }: { os: IntentOSController }) {
   );
 }
 
-function CapabilityContract({ capability }: { capability: Capability }) {
+function CapabilityContract({
+  capability,
+  editable,
+  onEdit,
+}: {
+  capability: Capability;
+  editable: boolean;
+  onEdit: () => void;
+}) {
   const Icon = modalityIcon[capability.modality];
   return (
     <article className={`contract-card ${capability.enabled ? "" : "is-disabled"}`}>
@@ -500,6 +555,15 @@ function CapabilityContract({ capability }: { capability: Capability }) {
       <h3>{capability.title}</h3>
       <p>{capability.description}</p>
       {capability.packageId && <code>{capability.packageId}</code>}
+      {editable && (
+        <button
+          type="button"
+          className="contract-edit-button"
+          onClick={onEdit}
+        >
+          <SquarePen size={13} /> 编辑选项
+        </button>
+      )}
       <div className="contract-schema">
         <span>{capability.parameterHint}</span>
         <span>v{capability.packageVersion}</span>
@@ -628,6 +692,304 @@ function PackageDialog({
           >
             {busy ? <LoaderCircle size={15} className="spin" /> : <PackagePlus size={15} />}
             校验并安装
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const skillProtocols: Array<{ value: ModelProtocol; label: string }> = [
+  { value: "openai-compatible", label: "OpenAI 兼容" },
+  { value: "anthropic-compatible", label: "Anthropic 兼容" },
+  { value: "gemini", label: "Gemini" },
+  { value: "ark", label: "火山方舟" },
+  { value: "async-video", label: "异步视频" },
+];
+
+function skillPorts(modality: NodeKind) {
+  const output = {
+    id: modality,
+    label:
+      modality === "text"
+        ? "文本"
+        : modality === "image"
+          ? "图片"
+          : modality === "video"
+            ? "视频"
+            : modality === "audio"
+              ? "音频"
+              : "文档",
+    direction: "output",
+    dataTypes: [modality],
+  };
+  if (modality === "text") {
+    return [
+      {
+        id: "context",
+        label: "上下文",
+        direction: "input",
+        dataTypes: ["text", "document", "json"],
+      },
+      output,
+    ];
+  }
+  return [
+    {
+      id: "prompt",
+      label: "提示词",
+      direction: "input",
+      dataTypes: ["text", "document", "json"],
+    },
+    ...(modality === "image" || modality === "video"
+      ? [
+          {
+            id: "reference",
+            label: "参考素材",
+            direction: "input",
+            dataTypes:
+              modality === "image" ? ["image"] : ["image", "video"],
+          },
+        ]
+      : []),
+    output,
+  ];
+}
+
+function incrementPatchVersion(version: string) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version.trim());
+  if (!match) return "1.0.1";
+  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+function SkillBuilderDialog({
+  initial,
+  packages,
+  onClose,
+  onInstall,
+}: {
+  initial?: Capability;
+  packages: InstalledPackage[];
+  onClose: () => void;
+  onInstall: (raw: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(initial?.title ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [modality, setModality] = useState<NodeKind>(
+    initial?.modality ?? "text",
+  );
+  const [protocols, setProtocols] = useState<ModelProtocol[]>(
+    initial?.modelRequirements?.protocols ?? [],
+  );
+  const [tags, setTags] = useState(
+    initial?.modelRequirements?.capabilityTags?.join(", ") ?? "",
+  );
+  const [inputSchema, setInputSchema] = useState<Record<string, unknown>>(
+    initial?.inputSchema ?? {
+      type: "object",
+      properties: {},
+    },
+  );
+  const [uiSchema, setUiSchema] = useState<Record<string, unknown>>(
+    initial?.uiSchema ?? {},
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    const title = name.trim();
+    if (!title) {
+      setError("请输入 Skill 名称");
+      return;
+    }
+    const suffix =
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 24) || "custom";
+    const owner = initial?.packageId
+      ? packages.find((item) => item.id === initial.packageId)
+      : undefined;
+    const packageId =
+      owner?.packageKey ??
+      `user.skill.${suffix}-${Date.now().toString(36)}`;
+    const nextVersion = initial
+      ? incrementPatchVersion(initial.packageVersion)
+      : "1.0.0";
+    const manifest = {
+      schemaVersion: "2.0",
+      id: packageId,
+      name: title,
+      version: nextVersion,
+      description: description.trim(),
+      type: "skill",
+      runtime: { type: "declarative" },
+      permissions: ["models:list", "models:invoke"],
+      contributes: {
+        skills: [
+          {
+            id: initial?.capabilityKey ?? `${packageId}.main`,
+            title,
+            description: description.trim(),
+            modality,
+            executionMode: "model",
+            ports: skillPorts(modality),
+            inputSchema,
+            outputSchema: {
+              type: "object",
+              properties:
+                modality === "text"
+                  ? { text: { type: "string", title: "文本结果" } }
+                  : {
+                      assetUrl: {
+                        type: "string",
+                        format: modality,
+                        title: `${title}结果`,
+                      },
+                    },
+            },
+            uiSchema,
+            modelRequirements: {
+              required: true,
+              ...(protocols.length ? { protocols } : {}),
+              capabilityTags: tags
+                .split(/[,，]/)
+                .map((item) => item.trim().toLowerCase())
+                .filter(Boolean),
+            },
+          },
+        ],
+      },
+    };
+    setBusy(true);
+    setError("");
+    try {
+      await onInstall(JSON.stringify(manifest));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "创建 Skill 失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="extension-modal-backdrop"
+      role="presentation"
+      onMouseDown={onClose}
+    >
+      <div
+        className="extension-modal skill-builder-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="skill-builder-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <span className="eyebrow">CUSTOM SKILL</span>
+            <h2 id="skill-builder-title">
+              {initial ? "编辑 Skill 选项" : "创建自己的 Skill"}
+            </h2>
+            <p>
+              保存后，选项、端口和兼容模型会同步到画布节点，并保留历史版本快照。
+            </p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="skill-builder-grid">
+          <label>
+            Skill 名称
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="例如：品牌主视觉生成"
+            />
+          </label>
+          <label>
+            节点类型
+            <select
+              value={modality}
+              onChange={(event) =>
+                setModality(event.target.value as NodeKind)
+              }
+            >
+              <option value="text">文本</option>
+              <option value="image">图片</option>
+              <option value="video">视频</option>
+              <option value="audio">音频</option>
+              <option value="document">文档</option>
+            </select>
+          </label>
+          <label className="skill-builder-span">
+            说明
+            <textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="说明这个 Skill 在节点中完成什么任务"
+            />
+          </label>
+          <label className="skill-builder-span">
+            要求的模型能力标签
+            <input
+              value={tags}
+              onChange={(event) => setTags(event.target.value)}
+              placeholder="例如：vision, image-edit；留空表示不限制"
+            />
+          </label>
+        </div>
+        <fieldset className="modality-picker skill-protocol-picker">
+          <legend>兼容模型协议（不选择表示全部兼容）</legend>
+          {skillProtocols.map((protocol) => (
+            <label key={protocol.value}>
+              <input
+                type="checkbox"
+                checked={protocols.includes(protocol.value)}
+                onChange={() =>
+                  setProtocols((current) =>
+                    current.includes(protocol.value)
+                      ? current.filter((item) => item !== protocol.value)
+                      : [...current, protocol.value],
+                  )
+                }
+              />
+              {protocol.label}
+            </label>
+          ))}
+        </fieldset>
+        <SchemaOptionBuilder
+          title="Skill 节点选项"
+          schema={inputSchema}
+          uiSchema={uiSchema}
+          onChange={(schema, nextUiSchema) => {
+            setInputSchema(schema);
+            setUiSchema(nextUiSchema);
+          }}
+        />
+        {error && (
+          <div className="modal-error">
+            <CircleAlert size={14} /> {error}
+          </div>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={busy}
+            onClick={() => void submit()}
+          >
+            {busy ? (
+              <LoaderCircle size={15} className="spin" />
+            ) : (
+              <Code2 size={15} />
+            )}
+            {initial ? "保存并同步" : "创建并同步"}
           </button>
         </div>
       </div>

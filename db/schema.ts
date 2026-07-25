@@ -831,6 +831,11 @@ export const packageCapabilities = mysqlTable(
     inputSchemaJson: longtext("input_schema_json").notNull(),
     outputSchemaJson: longtext("output_schema_json").notNull(),
     uiSchemaJson: longtext("ui_schema_json").notNull(),
+    portsJson: longtext("ports_json").notNull(),
+    modelRequirementsJson: longtext("model_requirements_json").notNull(),
+    executionMode: varchar("execution_mode", { length: 20 })
+      .notNull()
+      .default("model"),
     enabled: boolean("enabled").notNull().default(true),
   },
   (table) => [index("package_capabilities_package_idx").on(table.packageId)],
@@ -901,6 +906,9 @@ export const modelConnections = mysqlTable(
     baseUrl: text("base_url").notNull(),
     modelName: varchar("model_name", { length: 180 }).notNull(),
     modalitiesJson: text("modalities_json").notNull(),
+    parameterSchemaJson: longtext("parameter_schema_json").notNull(),
+    uiSchemaJson: longtext("ui_schema_json").notNull(),
+    capabilityTagsJson: text("capability_tags_json").notNull(),
     credentialRef: varchar("credential_ref", { length: 80 }),
     secretRefId: id("secret_ref_id", 120).references(() => secretRefs.id, {
       onDelete: "set null",

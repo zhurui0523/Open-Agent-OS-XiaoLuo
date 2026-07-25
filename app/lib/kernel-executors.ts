@@ -3,6 +3,10 @@ import type {
   KernelUpstreamInput,
   NodeKind,
 } from "../types";
+import {
+  capabilityExecutionParameters,
+  modelExecutionParameters,
+} from "./capability-sync";
 import type {
   modelConnections,
   packages,
@@ -346,6 +350,11 @@ export async function executeModel(
   inputs: KernelUpstreamInput[],
   signal?: AbortSignal,
 ): Promise<ExecutorResult> {
+  const modelParameters = modelExecutionParameters(node.parameters);
+  node = {
+    ...node,
+    parameters: capabilityExecutionParameters(node.parameters),
+  };
   const endpoint = validateExternalEndpoint(model.baseUrl);
   const credential = await modelCredential(model);
   const headers = credentialHeaders(model, credential);
@@ -355,13 +364,20 @@ export async function executeModel(
   let body: Record<string, unknown>;
 
   if (model.protocol === "generic-rest" || model.protocol === "async-video") {
-    body = { model: model.modelName, node, inputs, prompt };
+    body = {
+      ...modelParameters,
+      model: model.modelName,
+      node,
+      inputs,
+      prompt,
+    };
   } else if (model.protocol === "gemini") {
     if (node.kind !== "text") {
       throw new Error("Gemini 连接当前仅支持文本节点");
     }
     url = `${base}/models/${encodeURIComponent(model.modelName)}:generateContent`;
     body = {
+      ...modelParameters,
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     };
   } else if (model.protocol === "anthropic-compatible") {
@@ -370,29 +386,31 @@ export async function executeModel(
     }
     url = `${base}/messages`;
     body = {
-      model: model.modelName,
+      ...modelParameters,
       max_tokens: 4096,
+      model: model.modelName,
       messages: [{ role: "user", content: prompt }],
     };
   } else if (node.kind === "text") {
     url = `${base}/chat/completions`;
     body = {
+      ...modelParameters,
       model: model.modelName,
       messages: [{ role: "user", content: prompt }],
     };
   } else if (node.kind === "image") {
     url = `${base}/images/generations`;
     body = {
+      ...modelParameters,
       model: model.modelName,
       prompt,
-      ...node.parameters,
     };
   } else if (node.kind === "video") {
     url = `${base}/videos`;
     body = {
+      ...modelParameters,
       model: model.modelName,
       prompt,
-      ...node.parameters,
     };
   } else {
     throw new Error(
@@ -490,6 +508,10 @@ export async function executeRemotePackage(
   inputs: KernelUpstreamInput[],
   signal?: AbortSignal,
 ): Promise<ExecutorResult> {
+  node = {
+    ...node,
+    parameters: capabilityExecutionParameters(node.parameters),
+  };
   const allowedTrustStates = packageSignaturesRequired()
     ? ["trusted"]
     : ["trusted", "reviewed"];

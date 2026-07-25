@@ -33,6 +33,12 @@ import type {
   PortDataType,
 } from "../types";
 import { portColor, portsForNode } from "../lib/node-ports";
+import {
+  modelMatchesCapability,
+  nodeCapabilitySnapshot,
+  preferredModel,
+  snapshotCapability,
+} from "../lib/capability-sync";
 import { IconButton } from "./icon-button";
 import { SchemaFields } from "./schema-fields";
 import { SchemaOutput } from "./schema-output";
@@ -395,15 +401,33 @@ export function NodeCard({
   const status = statusMeta[node.status];
   const StatusIcon = status.icon;
   const KindIcon = kindMeta[node.kind].icon;
-  const compatibleCapabilities = capabilities.filter(
+  const modalityCapabilities = capabilities.filter(
     (capability) => capability.enabled && capability.modality === node.kind,
   );
-  const compatibleModels = models.filter((model) =>
-    model.modalities.includes(node.kind),
+  const packageCapabilities = modalityCapabilities.filter(
+    (capability) => capability.packageId,
   );
   const activeCapability = capabilities.find(
     (capability) => capability.id === node.capabilityId,
   );
+  const compatibleCapabilities = packageCapabilities.length
+    ? [
+        ...(activeCapability &&
+        !packageCapabilities.some((item) => item.id === activeCapability.id)
+          ? [activeCapability]
+          : []),
+        ...packageCapabilities,
+      ]
+    : modalityCapabilities;
+  const capabilityContract =
+    activeCapability ?? nodeCapabilitySnapshot(node);
+  const compatibleModels = models.filter((model) =>
+    modelMatchesCapability(model, capabilityContract, node.kind),
+  );
+  const outputSchema = capabilityContract?.outputSchema;
+  const kernelOutput = node.parameters?.kernelOutput as
+    | KernelNodeOutput
+    | undefined;
   const inputPorts = portsForNode(node, "input");
   const outputPorts = portsForNode(node, "output");
 
@@ -556,23 +580,44 @@ export function NodeCard({
                   const capability = capabilities.find(
                     (item) => item.id === event.target.value,
                   );
+                  const currentModel = models.find(
+                    (model) => model.id === node.modelId,
+                  );
+                  const nextModel = capability
+                    ? preferredModel(models, capability, node.kind)
+                    : undefined;
+                  const nextModelId =
+                    capability?.executionMode === "remote"
+                      ? "skill-runtime"
+                      : currentModel &&
+                          modelMatchesCapability(
+                            currentModel,
+                            capability,
+                            node.kind,
+                          )
+                        ? currentModel.id
+                        : (nextModel?.id ?? "unconfigured");
                   onUpdate({
                     capabilityId: event.target.value,
+                    modelId: nextModelId,
                     parameters: {
-                      ...node.parameters,
+                      ...(node.parameters?.failurePolicy
+                        ? { failurePolicy: node.parameters.failurePolicy }
+                        : {}),
+                      ...(node.parameters?.retryLimit !== undefined
+                        ? { retryLimit: node.parameters.retryLimit }
+                        : {}),
+                      ...(nextModelId === node.modelId &&
+                      node.parameters?.modelParameters
+                        ? {
+                            modelParameters:
+                              node.parameters.modelParameters,
+                          }
+                        : {}),
                       ...(capability
                         ? {
-                            capabilitySnapshot: {
-                              id: capability.id,
-                              title: capability.title,
-                              packageId: capability.packageId ?? null,
-                              packageVersion: capability.packageVersion,
-                              contributionType:
-                                capability.contributionType ?? null,
-                              inputSchema: capability.inputSchema ?? {},
-                              outputSchema: capability.outputSchema ?? {},
-                              uiSchema: capability.uiSchema ?? {},
-                            },
+                            capabilitySnapshot:
+                              snapshotCapability(capability),
                           }
                         : {}),
                     },
@@ -596,8 +641,20 @@ export function NodeCard({
               <select
                 aria-label="模型"
                 value={node.modelId}
-                onChange={(event) => onUpdate({ modelId: event.target.value })}
+                disabled={capabilityContract?.executionMode === "remote"}
+                onChange={(event) =>
+                  onUpdate({
+                    modelId: event.target.value,
+                    parameters: {
+                      ...node.parameters,
+                      modelParameters: {},
+                    },
+                  })
+                }
               >
+                {capabilityContract?.executionMode === "remote" && (
+                  <option value="skill-runtime">Skill 内置执行服务</option>
+                )}
                 {!compatibleModels.some((model) => model.id === node.modelId) && (
                   <option value="unconfigured">未配置兼容模型</option>
                 )}
@@ -658,15 +715,47 @@ export function NodeCard({
             </div>
           )}
 
-          {activeCapability?.inputSchema && (
+          {capabilityContract?.inputSchema && (
             <SchemaFields
-              schema={activeCapability.inputSchema}
-              uiSchema={activeCapability.uiSchema}
+              schema={capabilityContract.inputSchema}
+              uiSchema={capabilityContract.uiSchema}
               value={node.parameters ?? {}}
               workspaceId={workspaceId}
               onChange={(parameters) => onUpdate({ parameters })}
             />
           )}
+
+          {capabilityContract?.executionMode !== "remote" &&
+            models.find((model) => model.id === node.modelId)
+              ?.parameterSchema && (
+              <SchemaFields
+                title="模型参数"
+                schema={
+                  models.find((model) => model.id === node.modelId)
+                    ?.parameterSchema
+                }
+                uiSchema={
+                  models.find((model) => model.id === node.modelId)?.uiSchema
+                }
+                value={
+                  node.parameters?.modelParameters &&
+                  typeof node.parameters.modelParameters === "object" &&
+                  !Array.isArray(node.parameters.modelParameters)
+                    ? (node.parameters
+                        .modelParameters as Record<string, unknown>)
+                    : {}
+                }
+                workspaceId={workspaceId}
+                onChange={(modelParameters) =>
+                  onUpdate({
+                    parameters: {
+                      ...node.parameters,
+                      modelParameters,
+                    },
+                  })
+                }
+              />
+            )}
         </div>
       )}
 
@@ -676,21 +765,19 @@ export function NodeCard({
         </div>
       )}
 
-      {!selected &&
-        activeCapability?.outputSchema &&
-        node.parameters?.kernelOutput && (
+      {!selected && outputSchema && kernelOutput ? (
           <SchemaOutput
-            schema={activeCapability.outputSchema}
+            schema={outputSchema}
             value={
-              (node.parameters.kernelOutput as KernelNodeOutput).data ??
-              node.parameters.kernelOutput
+              kernelOutput.data ??
+              kernelOutput
             }
           />
-        )}
+        ) : null}
 
       {!selected &&
         node.result &&
-        !(activeCapability?.outputSchema && node.parameters?.kernelOutput) && (
+        !(outputSchema && kernelOutput) && (
           <div className="node-result">{node.result}</div>
         )}
 

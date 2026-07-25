@@ -136,6 +136,11 @@ export async function POST(request: Request) {
               inputSchema: JSON.parse(row.capability.inputSchemaJson),
               outputSchema: JSON.parse(row.capability.outputSchemaJson),
               uiSchema: JSON.parse(row.capability.uiSchemaJson),
+              ports: JSON.parse(row.capability.portsJson),
+              executionMode: row.capability.executionMode,
+              modelRequirements: JSON.parse(
+                row.capability.modelRequirementsJson,
+              ),
             },
           },
         };
