@@ -24,7 +24,10 @@ import {
   MAX_FILE_BYTES,
   storeAsset,
 } from "./asset-kernel";
-import { validateExternalEndpoint } from "./model-adapters";
+import {
+  fetchExternalEndpoint,
+  readResponseBytesLimited,
+} from "./model-adapters";
 import { mysqlExecute, mysqlNow } from "./mysql";
 import { artifactFormat, artifactName } from "./artifact-format";
 
@@ -65,12 +68,15 @@ async function persistAsyncResult(
   let bytes: ArrayBuffer;
   let mimeType: string;
   if (execution.output.assetUrl) {
-    const resultUrl = validateExternalEndpoint(execution.output.assetUrl);
-    const response = await fetch(resultUrl, { redirect: "error" });
+    const response = await fetchExternalEndpoint(
+      execution.output.assetUrl,
+      {},
+      60_000,
+    );
     if (!response.ok) {
       throw new Error(`无法读取异步生成结果：HTTP ${response.status}`);
     }
-    bytes = await response.arrayBuffer();
+    bytes = await readResponseBytesLimited(response, MAX_FILE_BYTES);
     mimeType = artifactFormat(
       node.kind,
       response.headers.get("content-type"),
@@ -78,9 +84,6 @@ async function persistAsyncResult(
   } else {
     bytes = new TextEncoder().encode(execution.output.text ?? "").buffer;
     mimeType = artifactFormat("text").mimeType;
-  }
-  if (bytes.byteLength > MAX_FILE_BYTES) {
-    throw new Error("异步生成结果超过文件系统单文件限制");
   }
   const db = await getDb();
   const asset = await storeAsset(db, await getFileBucket(), {

@@ -26,6 +26,7 @@ import {
   scanPackageManifest,
   verifyPackageSignature,
 } from "../../../lib/package-trust";
+import { packageSignaturesRequired } from "../../../lib/server-runtime-config";
 
 function errorResponse(error: unknown) {
   if (error instanceof Response) return error;
@@ -112,10 +113,7 @@ export async function POST(request: Request) {
           publicKeyPem: publisherIdentity.publicKeyPem,
         }),
     );
-    if (
-      process.env.REQUIRE_PACKAGE_SIGNATURES === "true" &&
-      !signatureVerified
-    ) {
+    if (packageSignaturesRequired() && !signatureVerified) {
       return Response.json(
         { error: "当前服务器要求由可信发布者签名的 Package" },
         { status: 400 },

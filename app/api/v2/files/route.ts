@@ -25,7 +25,10 @@ import {
 } from "../../../lib/asset-kernel";
 import { requireWorkspaceContext } from "../../../lib/cloud-context";
 import { mysqlNow, mysqlRows } from "../../../lib/mysql";
-import { validateExternalEndpoint } from "../../../lib/model-adapters";
+import {
+  fetchExternalEndpoint,
+  readResponseBytesLimited,
+} from "../../../lib/model-adapters";
 import type { NodeKind } from "../../../types";
 import { artifactFormat } from "../../../lib/artifact-format";
 
@@ -71,17 +74,9 @@ async function generatedBytes(payload: {
   assetUrl?: string;
 }) {
   if (payload.assetUrl) {
-    const url = validateExternalEndpoint(payload.assetUrl);
-    const response = await fetch(url, { redirect: "error" });
+    const response = await fetchExternalEndpoint(payload.assetUrl, {}, 60_000);
     if (!response.ok) throw new Error(`无法读取生成结果：HTTP ${response.status}`);
-    const declaredSize = Number(response.headers.get("content-length") ?? 0);
-    if (declaredSize > MAX_FILE_BYTES) {
-      throw new Error("生成文件超过 100 MB，未写入资产库");
-    }
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength > MAX_FILE_BYTES) {
-      throw new Error("生成文件超过 100 MB，未写入资产库");
-    }
+    const bytes = await readResponseBytesLimited(response, MAX_FILE_BYTES);
     return {
       bytes,
       mimeType: artifactFormat(

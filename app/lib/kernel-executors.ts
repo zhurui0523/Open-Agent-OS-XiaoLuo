@@ -8,8 +8,13 @@ import type {
   packages,
 } from "../../db/schema";
 import type { XiaoLuoPackageManifest } from "./package-contract";
-import { validateExternalEndpoint } from "./model-adapters";
+import {
+  fetchExternalEndpoint,
+  readResponseJsonLimited,
+  validateExternalEndpoint,
+} from "./model-adapters";
 import { resolveSecret } from "./secret-vault";
+import { packageSignaturesRequired } from "./server-runtime-config";
 
 type ModelRow = typeof modelConnections.$inferSelect;
 type PackageRow = typeof packages.$inferSelect;
@@ -93,12 +98,11 @@ async function fetchJson(
   const abortFromSource = () => controller.abort();
   sourceSignal?.addEventListener("abort", abortFromSource, { once: true });
   try {
-    const response = await fetch(url, {
+    const response = await fetchExternalEndpoint(url, {
       ...init,
-      redirect: "error",
       signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => null);
+    }, timeoutMs);
+    const payload = await readResponseJsonLimited(response).catch(() => null);
     if (!response.ok) {
       const detail =
         payload && typeof payload === "object" && "error" in payload
@@ -486,7 +490,10 @@ export async function executeRemotePackage(
   inputs: KernelUpstreamInput[],
   signal?: AbortSignal,
 ): Promise<ExecutorResult> {
-  if (!["trusted", "reviewed"].includes(pkg.trustState)) {
+  const allowedTrustStates = packageSignaturesRequired()
+    ? ["trusted"]
+    : ["trusted", "reviewed"];
+  if (!allowedTrustStates.includes(pkg.trustState)) {
     throw new Error("该插件尚未通过 Package 信任审核");
   }
   if (pkg.runtimeType !== "remote-api" || !pkg.runtimeUrl) {

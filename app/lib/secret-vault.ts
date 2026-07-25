@@ -18,13 +18,16 @@ function base64ToBytes(value: string) {
 }
 
 async function encryptionKey() {
-  const configured =
-    process.env.SECRET_ENCRYPTION_KEY ||
-    serverRuntimeConfig().database.mysql.password;
-  if (!configured) throw new Error("服务端未配置 Secret 加密密钥");
+  const configured = process.env.SECRET_ENCRYPTION_KEY?.trim();
+  if (!configured && process.env.NODE_ENV === "production") {
+    throw new Error("生产环境必须配置独立的 SECRET_ENCRYPTION_KEY");
+  }
+  const developmentKey =
+    configured || serverRuntimeConfig().database.mysql.password;
+  if (!developmentKey) throw new Error("服务端未配置 Secret 加密密钥");
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(configured),
+    new TextEncoder().encode(developmentKey),
   );
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, [
     "encrypt",

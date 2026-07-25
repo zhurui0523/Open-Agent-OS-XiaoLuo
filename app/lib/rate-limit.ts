@@ -20,6 +20,21 @@ function mysqlDate(value: Date) {
   return value.toISOString().slice(0, 23).replace("T", " ");
 }
 
+export function requestClientIp(request: Request) {
+  return (
+    request.headers.get("cf-connecting-ip") ??
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    request.headers.get("x-real-ip") ??
+    "unknown"
+  )
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .slice(0, 64);
+}
+
+export async function privateRateLimitSubject(value: string) {
+  return sha256(value.trim().toLowerCase());
+}
+
 export async function enforceRateLimit(input: {
   subject: string;
   route: string;

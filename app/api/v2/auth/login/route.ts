@@ -6,6 +6,11 @@ import {
   verifyPassword,
 } from "../../../../lib/auth";
 import { ensureUserHome } from "../../../../lib/workspace-store";
+import {
+  enforceRateLimit,
+  privateRateLimitSubject,
+  requestClientIp,
+} from "../../../../lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
@@ -15,6 +20,24 @@ export async function POST(request: Request) {
       password?: string;
     };
     const identifier = (body.identifier ?? body.email)?.trim() ?? "";
+    const [ipSubject, identifierSubject] = await Promise.all([
+      privateRateLimitSubject(`ip:${requestClientIp(request)}`),
+      privateRateLimitSubject(`identifier:${identifier || "missing"}`),
+    ]);
+    await Promise.all([
+      enforceRateLimit({
+        subject: ipSubject,
+        route: "auth.login.ip",
+        max: 60,
+        windowMs: 15 * 60 * 1000,
+      }),
+      enforceRateLimit({
+        subject: identifierSubject,
+        route: "auth.login.identifier",
+        max: 10,
+        windowMs: 15 * 60 * 1000,
+      }),
+    ]);
     const user = await userByLoginIdentifier(identifier);
     if (
       !user ||

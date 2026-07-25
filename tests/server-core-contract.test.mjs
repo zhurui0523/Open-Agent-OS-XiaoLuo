@@ -144,7 +144,7 @@ test("versions packages and removes them through lifecycle state", async () => {
   assert.match(route, /integritySha256/);
   assert.match(route, /packageVersions/);
   assert.match(route, /uninstalled/);
-  assert.match(route, /REQUIRE_PACKAGE_SIGNATURES/);
+  assert.match(route, /packageSignaturesRequired/);
   assert.match(schema, /packageKey/);
   assert.match(schema, /lifecycleState/);
 });

@@ -4,7 +4,10 @@ import { packages, registryEvents } from "../../../../../db/schema";
 import {
   type XiaoLuoPackageManifest,
 } from "../../../../lib/package-contract";
-import { validateExternalEndpoint } from "../../../../lib/model-adapters";
+import {
+  fetchExternalEndpoint,
+  validateExternalEndpoint,
+} from "../../../../lib/model-adapters";
 import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 import { runtimeServiceReadiness } from "../../../../lib/server-runtime-config";
@@ -87,13 +90,13 @@ export async function POST(request: Request) {
     const timeout = setTimeout(() => controller.abort(), 8000);
     const startedAt = Date.now();
     try {
-      const response = await fetch(
+      const response = await fetchExternalEndpoint(
         joinUrl(runtimeUrl, manifest.runtime.healthPath ?? "/health"),
         {
           headers: { accept: "application/json" },
-          redirect: "error",
           signal: controller.signal,
         },
+        8_000,
       );
       const result = {
         ok: response.ok,

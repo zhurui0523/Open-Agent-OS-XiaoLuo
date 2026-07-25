@@ -30,7 +30,10 @@ import {
 import { mysqlExecute, mysqlNow } from "./mysql";
 import { compileWorkflow } from "./workflow-kernel";
 import { artifactFormat, artifactName } from "./artifact-format";
-import { validateExternalEndpoint } from "./model-adapters";
+import {
+  fetchExternalEndpoint,
+  readResponseBytesLimited,
+} from "./model-adapters";
 
 type RunRow = typeof kernelRuns.$inferSelect;
 
@@ -220,17 +223,15 @@ async function executeQueuedTask(
       let bytes: ArrayBuffer;
       let mimeType: string;
       if (execution.output.assetUrl) {
-        const resultUrl = validateExternalEndpoint(execution.output.assetUrl);
-        const response = await fetch(resultUrl, {
-          redirect: "error",
-        });
+        const response = await fetchExternalEndpoint(
+          execution.output.assetUrl,
+          {},
+          60_000,
+        );
         if (!response.ok) {
           throw new Error(`无法读取生成结果：HTTP ${response.status}`);
         }
-        bytes = await response.arrayBuffer();
-        if (bytes.byteLength > MAX_FILE_BYTES) {
-          throw new Error("生成结果超过文件系统单文件限制");
-        }
+        bytes = await readResponseBytesLimited(response, MAX_FILE_BYTES);
         mimeType = artifactFormat(
           node.kind,
           response.headers.get("content-type"),

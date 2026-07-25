@@ -28,6 +28,63 @@ function trimSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
+function ipv4Parts(host: string) {
+  const parts = host.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) {
+    return null;
+  }
+  const values = parts.map(Number);
+  return values.every((part) => part >= 0 && part <= 255) ? values : null;
+}
+
+function isNonPublicIpv4(host: string) {
+  const parts = ipv4Parts(host);
+  if (!parts) return false;
+  const [first, second] = parts;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 0) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    first >= 224
+  );
+}
+
+function isNonPublicIpv6(host: string) {
+  const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!normalized.includes(":")) return false;
+  const mappedIpv4 = normalized.match(/(?:^|:)ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (mappedIpv4) return isNonPublicIpv4(mappedIpv4);
+  const first = normalized.split(":")[0] || "0";
+  const firstBlock = Number.parseInt(first, 16);
+  return (
+    normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("fe80:") ||
+    normalized.startsWith("fe90:") ||
+    normalized.startsWith("fea0:") ||
+    normalized.startsWith("feb0:") ||
+    normalized.startsWith("2001:db8:") ||
+    (Number.isFinite(firstBlock) && firstBlock >= 0xfc00 && firstBlock <= 0xfdff) ||
+    (Number.isFinite(firstBlock) && firstBlock >= 0xff00)
+  );
+}
+
+function allowedProductionPorts() {
+  const configured =
+    process.env.EXTERNAL_API_ALLOWED_PORTS?.split(",")
+      .map((value) => Number(value.trim()))
+      .filter(
+        (value) => Number.isInteger(value) && value >= 1 && value <= 65535,
+      ) ?? [];
+  return new Set(configured.length ? configured : [443]);
+}
+
 export function validateExternalEndpoint(raw: string) {
   let url: URL;
   try {
@@ -36,6 +93,7 @@ export function validateExternalEndpoint(raw: string) {
     throw new Error("端点地址格式无效");
   }
   const host = url.hostname.toLowerCase();
+  const normalizedHost = host.replace(/^\[|\]$/g, "");
   const isLocalDev =
     process.env.NODE_ENV !== "production" &&
     url.protocol === "http:" &&
@@ -44,16 +102,92 @@ export function validateExternalEndpoint(raw: string) {
     throw new Error("生产环境只允许 HTTPS 端点");
   }
   if (
-    host === "0.0.0.0" ||
-    host === "::1" ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    /^169\.254\./.test(host)
+    url.username ||
+    url.password ||
+    normalizedHost === "localhost" ||
+    normalizedHost.endsWith(".localhost") ||
+    normalizedHost.endsWith(".local") ||
+    normalizedHost.endsWith(".internal") ||
+    normalizedHost.endsWith(".home.arpa") ||
+    normalizedHost === "metadata.google.internal" ||
+    normalizedHost === "metadata.azure.internal" ||
+    isNonPublicIpv4(normalizedHost) ||
+    isNonPublicIpv6(normalizedHost)
   ) {
     throw new Error("不允许访问回环、链路本地或私有网络地址");
   }
+  if (
+    process.env.NODE_ENV === "production" &&
+    !allowedProductionPorts().has(Number(url.port || 443))
+  ) {
+    throw new Error("端点端口不在服务器出站访问白名单内");
+  }
   return url;
+}
+
+export async function fetchExternalEndpoint(
+  raw: string | URL,
+  init: RequestInit = {},
+  timeoutMs = 30_000,
+) {
+  const url = validateExternalEndpoint(raw.toString());
+  const timeoutSignal = AbortSignal.timeout(
+    Math.max(1_000, Math.min(timeoutMs, 120_000)),
+  );
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeoutSignal])
+    : timeoutSignal;
+  return fetch(url, {
+    ...init,
+    redirect: "error",
+    signal,
+  });
+}
+
+export async function readResponseBytesLimited(
+  response: Response,
+  maxBytes: number,
+) {
+  const declaredSize = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+    throw new Error(`远程响应超过 ${Math.ceil(maxBytes / 1024 / 1024)} MB 限制`);
+  }
+  if (!response.body) return new ArrayBuffer(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel("response size limit exceeded");
+        throw new Error(
+          `远程响应超过 ${Math.ceil(maxBytes / 1024 / 1024)} MB 限制`,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined.buffer;
+}
+
+export async function readResponseJsonLimited(
+  response: Response,
+  maxBytes = 2 * 1024 * 1024,
+) {
+  const bytes = await readResponseBytesLimited(response, maxBytes);
+  if (!bytes.byteLength) return null;
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 
 function requestFor(config: ModelAdapterConfig) {
@@ -168,10 +302,12 @@ export async function probeModelAdapter(
   const timeout = setTimeout(() => controller.abort(), 8000);
   const startedAt = Date.now();
   try {
-    const response = await fetch(requestFor(config), {
-      signal: controller.signal,
-      redirect: "error",
-    });
+    const request = requestFor(config);
+    const response = await fetchExternalEndpoint(
+      request.url,
+      { headers: request.headers, signal: controller.signal },
+      8_000,
+    );
     const latencyMs = Date.now() - startedAt;
     if (response.ok) {
       let discoveredModels: string[] | undefined;
@@ -180,7 +316,7 @@ export async function probeModelAdapter(
         config.protocol !== "generic-rest" &&
         config.protocol !== "async-video"
       ) {
-        const payload = await response.json().catch(() => null);
+        const payload = await readResponseJsonLimited(response).catch(() => null);
         catalog = catalogFromPayload(payload, config);
         discoveredModels = catalog.map((item) => item.id);
       }

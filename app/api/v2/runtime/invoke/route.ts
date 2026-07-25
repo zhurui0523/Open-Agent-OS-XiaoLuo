@@ -3,7 +3,11 @@ import { getDb } from "../../../../../db";
 import { packages, registryEvents } from "../../../../../db/schema";
 import type { XiaoLuoPackageManifest } from "../../../../lib/package-contract";
 import { validateJsonSchema } from "../../../../lib/json-schema";
-import { validateExternalEndpoint } from "../../../../lib/model-adapters";
+import {
+  fetchExternalEndpoint,
+  readResponseJsonLimited,
+  validateExternalEndpoint,
+} from "../../../../lib/model-adapters";
 import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 import { enforceRateLimit } from "../../../../lib/rate-limit";
@@ -98,7 +102,7 @@ export async function POST(request: Request) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchExternalEndpoint(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
@@ -106,10 +110,9 @@ export async function POST(request: Request) {
           input: payload.input ?? null,
           context: { packageId: row.id, packageVersion: row.version },
         }),
-        redirect: "error",
         signal: controller.signal,
-      });
-      const output = await response.json().catch(() => null);
+      }, 30_000);
+      const output = await readResponseJsonLimited(response).catch(() => null);
       const outputIssues = response.ok
         ? validateJsonSchema(capability.outputSchema, output)
         : [];

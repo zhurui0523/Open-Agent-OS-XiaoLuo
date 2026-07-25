@@ -50,10 +50,23 @@ function port(value: string | undefined) {
 }
 
 function sslMode(value: string | undefined): MysqlRuntimeConfig["sslMode"] {
-  if (value === "disabled" || value === "preferred" || value === "required") {
-    return value;
+  const mode =
+    value === "disabled" || value === "preferred" || value === "required"
+      ? value
+      : process.env.NODE_ENV === "production"
+        ? "required"
+        : "preferred";
+  if (process.env.NODE_ENV === "production" && mode !== "required") {
+    throw new Error("生产环境必须配置 DB_SSL_MODE=required");
   }
-  return "preferred";
+  return mode;
+}
+
+export function packageSignaturesRequired() {
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.REQUIRE_PACKAGE_SIGNATURES?.trim().toLowerCase() === "true"
+  );
 }
 
 /**
@@ -155,8 +168,7 @@ export function runtimeServiceReadiness(): RuntimeServiceReadiness {
       endpointOrigin: safeOrigin(isolatedEndpoint),
     },
     packageTrust: {
-      signaturesRequired:
-        process.env.REQUIRE_PACKAGE_SIGNATURES?.trim().toLowerCase() === "true",
+      signaturesRequired: packageSignaturesRequired(),
     },
   };
 }
