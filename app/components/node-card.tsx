@@ -16,7 +16,9 @@ import {
   Layers3,
   Minimize2,
   Pause,
+  PackageCheck,
   Play,
+  Puzzle,
   RotateCcw,
   Sparkles,
   Type,
@@ -33,6 +35,7 @@ import type {
   PortDataType,
 } from "../types";
 import { portColor, portsForNode } from "../lib/node-ports";
+import { roleForNode } from "../lib/node-role";
 import {
   modelMatchesCapability,
   nodeCapabilitySnapshot,
@@ -65,6 +68,13 @@ const kindMeta = {
   video: { label: "视频", icon: Video },
   audio: { label: "音频", icon: AudioLines },
   document: { label: "文档", icon: FileOutput },
+};
+
+const roleMeta = {
+  material: { label: "素材", icon: Layers3 },
+  plugin: { label: "插件运行器", icon: Puzzle },
+  execution: { label: "Skill 执行", icon: Sparkles },
+  result: { label: "结果占位", icon: PackageCheck },
 };
 
 interface NodeCardProps {
@@ -433,16 +443,25 @@ export function NodeCard({
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const status = statusMeta[node.status];
   const StatusIcon = status.icon;
-  const KindIcon = kindMeta[node.kind].icon;
+  const role = roleForNode(node);
+  const RoleIcon = roleMeta[role].icon;
   const modalityCapabilities = capabilities.filter(
-    (capability) => capability.enabled && capability.modality === node.kind,
+    (capability) =>
+      capability.enabled &&
+      capability.category === "SKILL" &&
+      capability.modality === node.kind,
   );
   const packageCapabilities = modalityCapabilities.filter(
     (capability) => capability.packageId,
   );
-  const activeCapability = capabilities.find(
-    (capability) => capability.id === node.capabilityId,
-  );
+  const activeCapability =
+    role === "execution"
+      ? capabilities.find(
+          (capability) =>
+            capability.id === node.capabilityId &&
+            capability.category === "SKILL",
+        )
+      : undefined;
   const compatibleCapabilities = packageCapabilities.length
     ? [
         ...(activeCapability &&
@@ -453,7 +472,9 @@ export function NodeCard({
       ]
     : modalityCapabilities;
   const capabilityContract =
-    activeCapability ?? nodeCapabilitySnapshot(node);
+    role === "plugin"
+      ? nodeCapabilitySnapshot(node)
+      : activeCapability ?? nodeCapabilitySnapshot(node);
   const compatibleModels = models.filter((model) =>
     modelMatchesCapability(model, capabilityContract, node.kind),
   );
@@ -536,7 +557,7 @@ export function NodeCard({
   return (
     <article
       ref={cardRef}
-      className={`canvas-node node-${node.status} ${selected ? "is-selected" : ""} ${multiSelected ? "is-multi-selected" : ""} ${node.collapsed ? "is-collapsed" : ""}`}
+      className={`canvas-node node-${node.status} node-role-${role} ${selected ? "is-selected" : ""} ${multiSelected ? "is-multi-selected" : ""} ${node.collapsed ? "is-collapsed" : ""}`}
       style={{ left: node.x, top: node.y, zIndex: node.layer ?? 0 }}
       onPointerDown={(event) => {
         if (
@@ -559,9 +580,9 @@ export function NodeCard({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
       >
-        <span className={`node-kind kind-${node.kind}`}>
-          <KindIcon size={14} aria-hidden="true" />
-          {kindMeta[node.kind].label}
+        <span className={`node-kind kind-${node.kind} role-${role}`}>
+          <RoleIcon size={14} aria-hidden="true" />
+          {roleMeta[role].label} · {kindMeta[node.kind].label}
         </span>
         <GripHorizontal size={16} aria-hidden="true" />
         {node.collapsed && <strong className="collapsed-node-title">{node.title}</strong>}
@@ -594,15 +615,18 @@ export function NodeCard({
 
       {selected && (
         <div className="node-workbench-content">
-          <textarea
-            className="node-prompt-input"
-            aria-label="节点任务描述"
-            value={node.prompt}
-            onChange={(event) => onUpdate({ prompt: event.target.value })}
-          />
+          {role !== "result" && (
+            <textarea
+              className="node-prompt-input"
+              aria-label={role === "material" ? "素材说明" : "节点任务描述"}
+              value={node.prompt}
+              onChange={(event) => onUpdate({ prompt: event.target.value })}
+            />
+          )}
 
           <NodeWorkbench node={node} onUpdate={onUpdate} />
 
+          {role === "execution" && (
           <div className="node-fields">
             <label>
               <span>能力</span>
@@ -741,14 +765,50 @@ export function NodeCard({
               </label>
             )}
           </div>
+          )}
 
-          {!activeCapability && (
+          {role === "plugin" && (
+            <div className="plugin-runner-contract">
+              <div>
+                <b>独立插件运行器</b>
+                <small>
+                  {String(node.parameters?.runtimeType ?? "未配置运行时")}
+                  {node.parameters?.packageVersion
+                    ? ` · v${String(node.parameters.packageVersion)}`
+                    : ""}
+                </small>
+              </div>
+              <label>
+                <span>批处理方式</span>
+                <select
+                  aria-label="批处理方式"
+                  value={String(node.parameters?.batchMode ?? "combine")}
+                  onChange={(event) =>
+                    onUpdate({
+                      parameters: {
+                        ...node.parameters,
+                        batchMode: event.target.value,
+                      },
+                    })
+                  }
+                >
+                  <option value="combine">合并全部输入</option>
+                  <option value="each">逐素材处理</option>
+                  <option value="broadcast">广播到下游</option>
+                  <option value="aggregate">聚合结果</option>
+                </select>
+              </label>
+            </div>
+          )}
+
+          {role === "execution" && !activeCapability && (
             <div className="node-missing-capability" role="status">
               当前 Package 已停用或卸载。历史参数和结果仍保留；请重新安装或选择替代能力后再执行。
             </div>
           )}
 
-          {capabilityContract?.inputSchema && (
+          {(role === "execution" || role === "plugin") &&
+            capabilityContract?.inputSchema && (
             <SchemaFields
               schema={capabilityContract.inputSchema}
               uiSchema={capabilityContract.uiSchema}
@@ -758,7 +818,8 @@ export function NodeCard({
             />
           )}
 
-          {capabilityContract?.executionMode !== "remote" &&
+          {role === "execution" &&
+            capabilityContract?.executionMode !== "remote" &&
             models.find((model) => model.id === node.modelId)
               ?.parameterSchema && (
               <SchemaFields
@@ -814,7 +875,7 @@ export function NodeCard({
           <div className="node-result">{node.result}</div>
         )}
 
-      {selected && (
+      {selected && (role === "execution" || role === "plugin") && (
         <div className="node-actions">
           <IconButton label="运行节点" onClick={onRun}>
             <Play size={15} />

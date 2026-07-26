@@ -5,6 +5,7 @@ import { jsonError, requireUser } from "../../../../lib/auth";
 import { requireCanvasAccess } from "../../../../lib/authorization";
 import { mysqlNow } from "../../../../lib/mysql";
 import { readCanvasGraph } from "../../../../lib/workspace-store";
+import { sanitizeWorkflowGraph } from "../../../../lib/workflow-marketplace";
 
 async function tokenHash(token: string) {
   const digest = await crypto.subtle.digest(
@@ -90,6 +91,10 @@ export async function POST(request: Request) {
     await requireCanvasAccess(user.id, payload.canvasId, "manage");
     const graph = await readCanvasGraph(payload.canvasId);
     if (!graph) return Response.json({ error: "画布不存在" }, { status: 404 });
+    const sharedGraph =
+      payload.mode === "workflow"
+        ? sanitizeWorkflowGraph(graph).graph
+        : graph;
     const token = `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const id = `share_${crypto.randomUUID()}`;
     const days = Math.min(365, Math.max(1, payload.expiresInDays ?? 30));
@@ -103,7 +108,7 @@ export async function POST(request: Request) {
       canvasId: payload.canvasId,
       tokenHash: await tokenHash(token),
       mode: payload.mode as "read_only" | "workflow",
-      graphJson: JSON.stringify(graph),
+      graphJson: JSON.stringify(sharedGraph),
       createdBy: user.id,
       expiresAt,
       createdAt: mysqlNow(),

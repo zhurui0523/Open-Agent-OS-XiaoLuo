@@ -17,6 +17,11 @@ import {
   WorkflowCompileError,
 } from "../../../../lib/workflow-kernel";
 import type { CanvasEdge, CanvasNode } from "../../../../types";
+import { roleForNode } from "../../../../lib/node-role";
+import {
+  validateEdgePorts,
+  validatePortCardinality,
+} from "../../../../lib/node-ports";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -50,6 +55,12 @@ function validGraph(value: unknown): {
       !["text", "image", "video", "audio", "document"].includes(node.kind)
     ) {
       throw new Error("工作流包含无效节点");
+    }
+    if (
+      node.role !== undefined &&
+      !["material", "plugin", "execution", "result"].includes(node.role)
+    ) {
+      throw new Error("工作流包含无效节点角色");
     }
   });
   graph.edges.forEach((edge) => {
@@ -89,10 +100,25 @@ export async function POST(request: Request) {
       return errorResponse(new Error("Idempotency-Key 必填"));
     }
     const graph = validGraph(payload);
+    const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+    for (const edge of graph.edges) {
+      const source = nodesById.get(edge.source);
+      const target = nodesById.get(edge.target);
+      if (!source || !target) throw new Error("连线引用了不存在的节点");
+      const incompatibility = validateEdgePorts(edge, source, target);
+      if (incompatibility) throw new Error(`连线 ${edge.id}：${incompatibility}`);
+      const cardinality = validatePortCardinality(
+        edge,
+        graph.edges.filter((candidate) => candidate.id !== edge.id),
+        target,
+      );
+      if (cardinality) throw new Error(`连线 ${edge.id}：${cardinality}`);
+    }
     const db = await getDb();
     const capabilityIds = [
       ...new Set(
         graph.nodes
+          .filter((node) => roleForNode(node) === "execution")
           .map((node) => node.capabilityId)
           .filter((id) => id && !id.startsWith("core.")),
       ),
@@ -104,6 +130,8 @@ export async function POST(request: Request) {
             packageId: packages.id,
             packageKey: packages.packageKey,
             packageVersion: packages.version,
+            packageType: packages.packageType,
+            packageEnabled: packages.enabled,
           })
           .from(packageCapabilities)
           .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
@@ -117,6 +145,59 @@ export async function POST(request: Request) {
     const capabilityById = new Map(
       capabilityRows.map((row) => [row.capability.id, row]),
     );
+    const pluginPackageIds = [
+      ...new Set(
+        graph.nodes
+          .filter((node) => roleForNode(node) === "plugin")
+          .map((node) =>
+            typeof node.parameters?.packageId === "string"
+              ? node.parameters.packageId
+              : "",
+          )
+          .filter(Boolean),
+      ),
+    ];
+    const pluginRows = pluginPackageIds.length
+      ? await db
+          .select()
+          .from(packages)
+          .where(
+            and(
+              inArray(packages.id, pluginPackageIds),
+              eq(packages.workspaceId, access.workspaceId),
+              eq(packages.enabled, true),
+            ),
+          )
+      : [];
+    const pluginById = new Map(pluginRows.map((row) => [row.id, row]));
+    for (const node of graph.nodes) {
+      const role = roleForNode(node);
+      if (role === "execution") {
+        const row = capabilityById.get(node.capabilityId);
+        if (
+          !row ||
+          !row.packageEnabled ||
+          row.packageType !== "skill" ||
+          row.capability.contributionType !== "skill"
+        ) {
+          throw new Error(
+            `执行节点“${node.title}”必须选择已安装且启用的 Skill`,
+          );
+        }
+      }
+      if (role === "plugin") {
+        const packageId =
+          typeof node.parameters?.packageId === "string"
+            ? node.parameters.packageId
+            : "";
+        const plugin = pluginById.get(packageId);
+        if (!plugin || plugin.packageType !== "plugin") {
+          throw new Error(
+            `插件运行器“${node.title}”必须绑定当前工作区已启用的 Plugin Package`,
+          );
+        }
+      }
+    }
     const runtimeGraph = {
       nodes: graph.nodes.map((node) => {
         const row = capabilityById.get(node.capabilityId);

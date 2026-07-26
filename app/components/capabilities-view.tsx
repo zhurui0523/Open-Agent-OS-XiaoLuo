@@ -9,7 +9,7 @@ import {
   Code2,
   Cpu,
   Database,
-  FileJson,
+  Download,
   Image as ImageIcon,
   LoaderCircle,
   PackagePlus,
@@ -24,17 +24,19 @@ import {
   Type,
   Upload,
   Video,
+  Workflow,
   AudioLines,
   FileOutput,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import type {
   Capability,
   InstalledPackage,
   ModelProtocol,
   NodeKind,
+  WorkflowMarketplaceItem,
 } from "../types";
 import { SchemaOptionBuilder } from "./schema-option-builder";
 
@@ -88,10 +90,10 @@ interface CapabilitiesViewProps {
   os: IntentOSController;
 }
 
-type RegistryTab = "capabilities" | "packages";
+type RegistryTab = "marketplace" | "capabilities" | "packages";
 
 export function CapabilitiesView({ os }: CapabilitiesViewProps) {
-  const [tab, setTab] = useState<RegistryTab>("packages");
+  const [tab, setTab] = useState<RegistryTab>("marketplace");
   const [packageDialog, setPackageDialog] = useState(false);
   const [skillDialog, setSkillDialog] = useState<Capability | "new" | null>(
     null,
@@ -104,12 +106,47 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
     tone: "success" | "error" | "info";
     text: string;
   } | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowMarketplaceItem[]>([]);
+  const [marketplaceStatus, setMarketplaceStatus] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [marketplaceError, setMarketplaceError] = useState("");
+
+  const refreshMarketplace = useCallback(async () => {
+    if (!os.workspaceId) return;
+    setMarketplaceStatus("loading");
+    setMarketplaceError("");
+    try {
+      const current = new URLSearchParams(window.location.search);
+      const query = new URLSearchParams({ workspaceId: os.workspaceId });
+      if (current.get("workflow")) query.set("id", current.get("workflow") as string);
+      if (current.get("token")) query.set("token", current.get("token") as string);
+      const response = await fetch(
+        `/api/v2/workflows/marketplace?${query.toString()}`,
+      );
+      const payload = (await response.json().catch(() => ({}))) as {
+        workflows?: WorkflowMarketplaceItem[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "读取能力商城失败");
+      }
+      setWorkflows(payload.workflows ?? []);
+      setMarketplaceStatus("ready");
+    } catch (error) {
+      setMarketplaceError(
+        error instanceof Error ? error.message : "读取能力商城失败",
+      );
+      setMarketplaceStatus("error");
+    }
+  }, [os.workspaceId]);
+
+  useEffect(() => {
+    void refreshMarketplace();
+  }, [refreshMarketplace]);
 
   const extensionCount = os.packages.filter(
     (item) => item.packageType !== "skill",
-  ).length;
-  const skillCount = os.packages.filter(
-    (item) => item.packageType === "skill",
   ).length;
 
   function showNotice(
@@ -125,7 +162,7 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         <div>
           <span className="eyebrow">EXTENSION PLATFORM · CONTRACT V2</span>
           <h1>扩展中心</h1>
-          <p>Skill、Agent、Workflow 与插件共用注册表、权限边界和运行时路由。</p>
+          <p>Skill、插件与 Workflow 分层管理；Agent 只服务于 Intent 对话与规划。</p>
         </div>
         <div className="header-button-group">
           <button
@@ -170,19 +207,28 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
           </span>
           <p>扩展包</p>
           <strong>{extensionCount}</strong>
-          <small>Agent · Workflow · Plugin</small>
+          <small>Skill · Plugin · Provider</small>
         </button>
-        <button type="button" onClick={() => setTab("packages")}>
+        <button type="button" onClick={() => setTab("marketplace")}>
           <span className="stat-icon stat-amber">
-            <FileJson size={19} />
+            <Workflow size={19} />
           </span>
-          <p>SKILL Package</p>
-          <strong>{skillCount}</strong>
-          <small>内容由你后续接入</small>
+          <p>Workflow 商城</p>
+          <strong>{workflows.length}</strong>
+          <small>发布 · 安装 · 派生</small>
         </button>
       </div>
 
       <div className="registry-tabs" role="tablist" aria-label="扩展分类">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "marketplace"}
+          className={tab === "marketplace" ? "is-active" : ""}
+          onClick={() => setTab("marketplace")}
+        >
+          <Workflow size={15} /> 能力商城
+        </button>
         <button
           type="button"
           role="tab"
@@ -203,6 +249,16 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         </button>
       </div>
 
+      {tab === "marketplace" && (
+        <MarketplacePanel
+          os={os}
+          workflows={workflows}
+          status={marketplaceStatus}
+          error={marketplaceError}
+          onRefresh={refreshMarketplace}
+          onNotice={showNotice}
+        />
+      )}
       {tab === "packages" && (
         <PackagesPanel
           os={os}
@@ -270,6 +326,221 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         />
       )}
     </section>
+  );
+}
+
+function MarketplacePanel({
+  os,
+  workflows,
+  status,
+  error,
+  onRefresh,
+  onNotice,
+}: {
+  os: IntentOSController;
+  workflows: WorkflowMarketplaceItem[];
+  status: "loading" | "ready" | "error";
+  error: string;
+  onRefresh: () => Promise<void>;
+  onNotice: (
+    text: string,
+    tone?: "success" | "error" | "info",
+  ) => void;
+}) {
+  const [category, setCategory] = useState<"skill" | "plugin" | "workflow">(
+    "workflow",
+  );
+  const [busyId, setBusyId] = useState("");
+  const packageItems = os.packages.filter(
+    (item) => item.enabled && item.packageType === category,
+  );
+
+  async function install(item: WorkflowMarketplaceItem) {
+    setBusyId(item.id);
+    try {
+      const query = new URLSearchParams(window.location.search);
+      const result = await os.installWorkflow(
+        item.id,
+        item.version,
+        query.get("token") ?? undefined,
+      );
+      const missing = [
+        ...result.missing.skills.map((value) => `Skill：${value}`),
+        ...result.missing.plugins.map((value) => `插件：${value}`),
+        ...result.missing.models.map((value) => `模型：${value}`),
+      ];
+      onNotice(
+        missing.length
+          ? `Workflow 已安装，待补齐 ${missing.join("、")}`
+          : "Workflow 已安装为独立画布，依赖已完成映射。",
+        missing.length ? "info" : "success",
+      );
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "安装失败", "error");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  return (
+    <div className="workflow-marketplace">
+      <div className="marketplace-heading">
+        <div>
+          <h2>能力商城</h2>
+          <p>
+            Skill 是执行能力，插件是独立运行器，Workflow 是可安装的一整套画布。
+            Agent 只在 Intent 对话器中工作，不进入画布与商城。
+          </p>
+        </div>
+        <button
+          type="button"
+          className="secondary-button compact"
+          onClick={() => void onRefresh()}
+        >
+          <RefreshCw size={14} /> 刷新
+        </button>
+      </div>
+
+      <div className="marketplace-categories" role="tablist">
+        {([
+          ["skill", "Skill"],
+          ["plugin", "插件"],
+          ["workflow", "Workflow"],
+        ] as const).map(([value, label]) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={category === value}
+            className={category === value ? "is-active" : ""}
+            key={value}
+            onClick={() => setCategory(value)}
+          >
+            {value === "workflow" ? (
+              <Workflow size={15} />
+            ) : value === "plugin" ? (
+              <PlugZap size={15} />
+            ) : (
+              <Code2 size={15} />
+            )}
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {category === "workflow" ? (
+        status === "loading" ? (
+          <RegistryLoading label="正在读取 Workflow 商城" />
+        ) : status === "error" ? (
+          <div className="registry-banner is-error">
+            <CircleAlert size={16} />
+            <span>{error}</span>
+            <button type="button" onClick={() => void onRefresh()}>
+              重试
+            </button>
+          </div>
+        ) : workflows.length ? (
+          <div className="workflow-market-grid">
+            {workflows.map((item) => (
+              <article className="workflow-market-card" key={item.id}>
+                <header>
+                  <span><Workflow size={19} /></span>
+                  <div>
+                    <h3>{item.title}</h3>
+                    <small>
+                      @{item.author.username} · v{item.version} · {item.visibility}
+                    </small>
+                  </div>
+                  <b>{item.category}</b>
+                </header>
+                <p>{item.description}</p>
+                <div className="workflow-card-counts">
+                  <span>{item.materialCount} 素材位</span>
+                  <span>{item.pluginCount} 插件</span>
+                  <span>{item.executionCount} 执行节点</span>
+                  <span>{item.resultCount} 结果位</span>
+                </div>
+                <div className="workflow-card-tags">
+                  {item.tags.map((tag) => <span key={tag}>#{tag}</span>)}
+                  {!item.tags.length && <span>#通用</span>}
+                </div>
+                <div className="workflow-card-requirements">
+                  <small>
+                    依赖 {item.requirements.skills.length} 个 Skill ·{" "}
+                    {item.requirements.plugins.length} 个插件 ·{" "}
+                    {item.requirements.models.length} 类模型
+                  </small>
+                  <small>已安装 {item.installCount} 次</small>
+                </div>
+                <footer>
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    onClick={async () => {
+                      const current = new URL(window.location.href);
+                      current.searchParams.set("view", "capabilities");
+                      current.searchParams.set("workflow", item.id);
+                      await navigator.clipboard
+                        .writeText(current.toString())
+                        .catch(() => undefined);
+                      onNotice("Workflow 分享链接已复制。");
+                    }}
+                  >
+                    <Workflow size={14} /> 分享
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button compact"
+                    disabled={busyId === item.id}
+                    onClick={() => void install(item)}
+                  >
+                    {busyId === item.id ? (
+                      <LoaderCircle size={14} className="spin" />
+                    ) : (
+                      <Download size={14} />
+                    )}
+                    安装到当前项目
+                  </button>
+                </footer>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="extension-empty">
+            <span><Workflow size={24} /></span>
+            <h3>还没有可用的 Workflow</h3>
+            <p>回到画布点击“分享”，即可发布第一个可安装 Workflow。</p>
+          </div>
+        )
+      ) : packageItems.length ? (
+        <div className="workflow-market-grid">
+          {packageItems.map((item) => (
+            <article className="workflow-market-card package-market-card" key={item.id}>
+              <header>
+                <span>
+                  {category === "skill" ? <Code2 size={19} /> : <PlugZap size={19} />}
+                </span>
+                <div>
+                  <h3>{item.name}</h3>
+                  <small>v{item.version} · {runtimeMeta[item.runtimeType].label}</small>
+                </div>
+                <b>已安装</b>
+              </header>
+              <p>{item.description || "未填写说明"}</p>
+              <div className="workflow-card-tags">
+                <span>{item.contributionCount} 项能力</span>
+                <span>{item.trustState ?? "unverified"}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="extension-empty">
+          <span>{category === "skill" ? <Code2 size={24} /> : <PlugZap size={24} />}</span>
+          <h3>当前工作空间还没有{category === "skill" ? " Skill" : "插件"}</h3>
+          <p>通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。</p>
+        </div>
+      )}
+    </div>
   );
 }
 

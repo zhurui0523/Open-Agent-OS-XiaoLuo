@@ -233,11 +233,11 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(canvasView, /visibleWorldBounds/);
   assert.match(canvasView, /onContextMenu=\{handleStageContextMenu\}/);
   assert.match(canvasView, /screenToWorld\(screenPoint/);
-  assert.match(contextMenu, /文本占位卡片/);
-  assert.match(contextMenu, /图片占位卡片/);
-  assert.match(contextMenu, /视频占位卡片/);
-  assert.match(contextMenu, /新建专业节点/);
-  assert.match(contextMenu, /添加 AI 插件卡片/);
+  assert.match(contextMenu, /文本素材卡片/);
+  assert.match(contextMenu, /图片素材卡片/);
+  assert.match(contextMenu, /视频素材卡片/);
+  assert.match(contextMenu, /新建 Skill 执行节点/);
+  assert.match(contextMenu, /添加插件运行器/);
   assert.match(contextMenu, /自由画布/);
   assert.match(contextMenu, /时间排序/);
   assert.match(contextMenu, /类型排序/);

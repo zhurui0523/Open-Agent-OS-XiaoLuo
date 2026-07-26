@@ -18,7 +18,9 @@ import type {
 } from "../types";
 import {
   executeBuiltin,
+  executeIsolatedPackage,
   executeRemotePackage,
+  type ExecutorResult,
   type KernelNodeRequest,
 } from "./kernel-executors";
 import { invokeRoutedModel } from "./model-runtime-router";
@@ -31,6 +33,7 @@ import {
 import { mysqlExecute, mysqlNow } from "./mysql";
 import { compileWorkflow } from "./workflow-kernel";
 import { artifactFormat, artifactName } from "./artifact-format";
+import { batchModeForNode, roleForNode } from "./node-role";
 import {
   fetchExternalEndpoint,
   readResponseBytesLimited,
@@ -146,6 +149,7 @@ async function executeQueuedTask(
     modelId: node.modelId,
     parameters: node.parameters,
   };
+  const role = roleForNode(node);
 
   try {
     const [capability] = await db
@@ -162,8 +166,27 @@ async function executeQueuedTask(
         ),
       )
       .limit(1);
+    const pluginPackageId =
+      role === "plugin" && typeof node.parameters?.packageId === "string"
+        ? node.parameters.packageId
+        : "";
+    const [pluginPackage] = pluginPackageId
+      ? await db
+          .select()
+          .from(packages)
+          .where(
+            and(
+              eq(packages.id, pluginPackageId),
+              eq(packages.workspaceId, run.workspaceId),
+              eq(packages.enabled, true),
+            ),
+          )
+          .limit(1)
+      : [];
     const [model] =
-      node.modelId && node.modelId !== "unconfigured"
+      role === "execution" &&
+      node.modelId &&
+      node.modelId !== "unconfigured"
         ? await db
             .select()
             .from(modelConnections)
@@ -175,9 +198,9 @@ async function executeQueuedTask(
             )
             .limit(1)
         : [];
-    const pkg = capability?.pkg;
+    const pkg = role === "plugin" ? pluginPackage : capability?.pkg;
     const generationJobId =
-      model?.enabled && node.kind !== "text"
+      role === "execution" && model?.enabled && node.kind !== "text"
         ? `generation_${crypto.randomUUID()}`
         : null;
     if (generationJobId && model) {
@@ -198,30 +221,83 @@ async function executeQueuedTask(
         updatedAt: mysqlNow(),
       });
     }
-    validateRuntimeModel(capability?.capability, model, node.kind);
-    let execution;
-    if (
+    let execution: ExecutorResult;
+    if (role === "material" || role === "result") {
+      execution = executeBuiltin(request, inputs);
+    } else if (role === "plugin") {
+      if (!pkg) {
+        throw new Error("插件运行器尚未绑定可用的 Plugin Package");
+      }
+      const executePlugin = (pluginInputs: KernelUpstreamInput[]) => {
+        if (pkg.runtimeType === "remote-api") {
+          return executeRemotePackage(pkg, request, pluginInputs);
+        }
+        if (pkg.runtimeType === "isolated-worker") {
+          return executeIsolatedPackage(pkg, request, pluginInputs);
+        }
+        if (pkg.runtimeType === "sandbox-ui") {
+          throw new Error("UI 沙盒插件不能作为后端自动化运行器执行");
+        }
+        throw new Error("该插件没有可执行的远程或隔离运行时");
+      };
+      const batchMode = batchModeForNode(node);
+      if (batchMode === "each" && inputs.length > 1) {
+        const items = await Promise.all(
+          inputs.map(async (input) => ({
+            inputNodeId: input.nodeId,
+            execution: await executePlugin([input]),
+          })),
+        );
+        execution = {
+          executor: `plugin:${pkg.id}:batch-each`,
+          result: `插件已逐项处理 ${items.length} 个输入素材`,
+          output: {
+            type: "json",
+            text: `已完成 ${items.length} 个素材的批处理`,
+            data: {
+              mode: "each",
+              items: items.map((item) => ({
+                inputNodeId: item.inputNodeId,
+                result: item.execution.result,
+                output: item.execution.output,
+              })),
+            },
+            executor: `plugin:${pkg.id}:batch-each`,
+          },
+        };
+      } else {
+        execution = await executePlugin(inputs);
+      }
+    } else {
+      if (!capability?.capability) {
+        throw new Error("执行节点必须选择已安装且启用的 Skill");
+      }
+      validateRuntimeModel(capability.capability, model, node.kind);
+      if (
       capability?.capability.executionMode === "remote" &&
       pkg?.enabled &&
       pkg.runtimeType === "remote-api"
-    ) {
-      execution = await executeRemotePackage(pkg, request, inputs);
-    } else if (model?.enabled) {
-      execution = await invokeRoutedModel(
-        model.id,
-        request,
-        inputs,
-        {
-          workspaceId: run.workspaceId,
-          userId: run.createdBy,
-          runId: run.id,
-          nodeId: node.id,
-        },
-      );
-    } else {
-      execution = executeBuiltin(request, inputs);
+      ) {
+        execution = await executeRemotePackage(pkg, request, inputs);
+      } else if (model?.enabled) {
+        execution = await invokeRoutedModel(
+          model.id,
+          request,
+          inputs,
+          {
+            workspaceId: run.workspaceId,
+            userId: run.createdBy,
+            runId: run.id,
+            nodeId: node.id,
+          },
+        );
+      } else {
+        throw new Error("当前 Skill 需要配置兼容模型后才能执行");
+      }
     }
     if (
+      role !== "material" &&
+      role !== "result" &&
       !execution.asyncJob &&
       !execution.output.preview &&
       (execution.output.assetUrl || execution.output.text)

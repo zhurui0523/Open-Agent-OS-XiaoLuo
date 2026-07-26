@@ -11,7 +11,10 @@ import {
   replaceCanvasGraph,
 } from "../../../lib/workspace-store";
 import type { CanvasEdge, CanvasNode } from "../../../types";
-import { validateEdgePorts } from "../../../lib/node-ports";
+import {
+  validateEdgePorts,
+  validatePortCardinality,
+} from "../../../lib/node-ports";
 import {
   compileWorkflow,
   WorkflowCompileError,
@@ -44,6 +47,11 @@ function validNodes(value: unknown): value is CanvasNode[] {
           node.kind === "video" ||
           node.kind === "audio" ||
           node.kind === "document") &&
+        (node.role === undefined ||
+          node.role === "material" ||
+          node.role === "plugin" ||
+          node.role === "execution" ||
+          node.role === "result") &&
         typeof node.x === "number" &&
         Number.isFinite(node.x) &&
         typeof node.y === "number" &&
@@ -70,7 +78,10 @@ function validEdges(value: unknown, nodeIds: Set<string>): value is CanvasEdge[]
           edge.dataType === "video" ||
           edge.dataType === "audio" ||
           edge.dataType === "document" ||
-          edge.dataType === "json") &&
+          edge.dataType === "json" ||
+          edge.dataType === "asset" ||
+          edge.dataType === "asset_list" ||
+          edge.dataType === "collection") &&
         edge.source !== edge.target &&
         nodeIds.has(edge.source) &&
         nodeIds.has(edge.target),
@@ -215,6 +226,20 @@ export async function PUT(request: Request) {
           {
             error: `连线 ${edge.id} 不兼容：${incompatibility}`,
             code: "INCOMPATIBLE_PORTS",
+          },
+          { status: 422 },
+        );
+      }
+      const cardinality = validatePortCardinality(
+        edge,
+        body.edges.filter((candidate) => candidate.id !== edge.id),
+        target,
+      );
+      if (cardinality) {
+        return Response.json(
+          {
+            error: `连线 ${edge.id} 不兼容：${cardinality}`,
+            code: "PORT_CARDINALITY_EXCEEDED",
           },
           { status: 422 },
         );

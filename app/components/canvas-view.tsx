@@ -34,6 +34,8 @@ import { CanvasSpatialIndex } from "../lib/canvas-spatial-index";
 import type {
   NodeKind,
   PortDataType,
+  WorkflowMarketplaceItem,
+  WorkflowVisibility,
 } from "../types";
 import { SUPPORTED_FILE_ACCEPT } from "../lib/file-formats";
 import { CanvasContextMenu } from "./canvas-context-menu";
@@ -131,6 +133,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const [isPanning, setIsPanning] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [connectionDraft, setConnectionDraft] =
@@ -703,41 +706,6 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     uploadInputRef.current?.click();
   }
 
-  async function shareCanvas() {
-    if (!os.activeCanvasId) return;
-    const choice = window.prompt(
-      "输入分享类型：readonly（只读链接）或 workflow（Workflow 模板）",
-      "readonly",
-    );
-    if (choice === null) return;
-    const mode =
-      choice.trim().toLowerCase() === "workflow"
-        ? "workflow"
-        : "read_only";
-    try {
-      const response = await fetch("/api/v2/canvases/share", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          canvasId: os.activeCanvasId,
-          mode,
-          expiresInDays: 30,
-        }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        share?: { url: string };
-        error?: string;
-      };
-      if (!response.ok || !payload.share?.url) {
-        throw new Error(payload.error ?? "创建分享失败");
-      }
-      await navigator.clipboard.writeText(payload.share.url).catch(() => undefined);
-      window.prompt("分享链接已生成并尝试复制，可手动复制：", payload.share.url);
-    } catch (cause) {
-      window.alert(cause instanceof Error ? cause.message : "创建分享失败");
-    }
-  }
-
   async function handleCanvasUpload(
     event: React.ChangeEvent<HTMLInputElement>,
   ) {
@@ -792,6 +760,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           y: uploadAnchorRef.current.y + index * 36,
         },
         {
+          role: "material",
           title: file.name,
           prompt,
           result: `已进入 AI 文件系统 · ${sizeLabel}`,
@@ -972,7 +941,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             <button
               type="button"
               className="secondary-button compact"
-              onClick={() => void shareCanvas()}
+              onClick={() => setShareOpen(true)}
             >
               <Share2 size={15} /> 分享
             </button>
@@ -1270,23 +1239,62 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               canCopy={Boolean(os.selectedNodeIds.length)}
               multiSelectActive={os.activeTool === "multi-select"}
               arrangeMode={os.arrangeMode}
-              onAddNode={addNodeAtContext}
+              onAddNode={(kind) =>
+                addNodeAtContext(kind, {
+                  role: "material",
+                  prompt: "连接到插件运行器或 Skill 执行节点后作为输入素材。",
+                })
+              }
               onAddCapability={(capability) =>
                 addNodeAtContext(capability.modality, {
+                  role: "execution",
                   title: capability.title,
                   prompt: capability.description,
                   capabilityId: capability.id,
                 })
               }
               onAddPlugin={(plugin) =>
-                addNodeAtContext("text", {
-                  title: plugin.name,
-                  prompt: plugin.description,
-                  parameters: {
-                    packageId: plugin.id,
-                    runtimeType: plugin.runtimeType,
-                  },
-                })
+                {
+                  const contribution = plugin.nodeContributions?.[0];
+                  addNodeAtContext(contribution?.modality ?? "text", {
+                    role: "plugin",
+                    title: plugin.name,
+                    prompt:
+                      contribution?.description ||
+                      plugin.description ||
+                      "接收一个或多个素材，使用隔离运行时处理后输出给下游 Skill。",
+                    capabilityId: contribution?.id ?? "core.plugin.runner",
+                    parameters: {
+                      nodeRole: "plugin",
+                      packageId: plugin.id,
+                      packageKey: plugin.packageKey,
+                      packageVersion: plugin.version,
+                      runtimeType: plugin.runtimeType,
+                      runtimeLanguage: plugin.runtimeLanguage,
+                      batchMode: "combine",
+                      ...(contribution
+                        ? {
+                            capabilitySnapshot: {
+                              id: contribution.id,
+                              capabilityKey: contribution.id,
+                              title: contribution.title,
+                              description: contribution.description,
+                              packageId: plugin.id,
+                              packageKey: plugin.packageKey,
+                              packageVersion: plugin.version,
+                              contributionType: "node",
+                              inputSchema: contribution.inputSchema,
+                              outputSchema: contribution.outputSchema,
+                              uiSchema: contribution.uiSchema,
+                              ports: contribution.ports,
+                              executionMode: "remote",
+                              modelRequirements: { required: false },
+                            },
+                          }
+                        : {}),
+                    },
+                  });
+                }
               }
               onUndo={os.undoCanvas}
               onRedo={os.redoCanvas}
@@ -1348,6 +1356,253 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           onCancel={os.cancelRun}
         />
       )}
+      {shareOpen && (
+        <CanvasShareDialog
+          canvasId={os.activeCanvasId}
+          canvasTitle={activeCanvas.title}
+          workspaceId={os.workspaceId}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CanvasShareDialog({
+  canvasId,
+  canvasTitle,
+  workspaceId,
+  onClose,
+}: {
+  canvasId: string;
+  canvasTitle: string;
+  workspaceId: string;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"read_only" | "workflow">("workflow");
+  const [title, setTitle] = useState(canvasTitle);
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState("通用");
+  const [tags, setTags] = useState("");
+  const [visibility, setVisibility] =
+    useState<WorkflowVisibility>("public");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [shareUrl, setShareUrl] = useState("");
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      if (mode === "read_only") {
+        const response = await fetch("/api/v2/canvases/share", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            canvasId,
+            mode: "read_only",
+            expiresInDays: 30,
+          }),
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          share?: { url?: string };
+          error?: string;
+        };
+        if (!response.ok || !payload.share?.url) {
+          throw new Error(payload.error ?? "创建只读分享失败");
+        }
+        setShareUrl(payload.share.url);
+        await navigator.clipboard
+          .writeText(payload.share.url)
+          .catch(() => undefined);
+        return;
+      }
+
+      const existingResponse = await fetch(
+        `/api/v2/workflows/marketplace?workspaceId=${encodeURIComponent(workspaceId)}`,
+      );
+      const existingPayload = (await existingResponse
+        .json()
+        .catch(() => ({}))) as {
+        workflows?: WorkflowMarketplaceItem[];
+      };
+      const existing = existingPayload.workflows?.find(
+        (item) => item.sourceCanvasId === canvasId,
+      );
+      const response = await fetch("/api/v2/workflows/marketplace", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          canvasId,
+          listingId: existing?.id,
+          title,
+          description,
+          category,
+          tags: tags
+            .split(/[,，\s]+/)
+            .map((item) => item.trim())
+            .filter(Boolean),
+          visibility,
+          changelog: existing
+            ? `从画布发布版本 ${existing.version + 1}`
+            : "首次发布",
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        workflow?: { shareUrl?: string; version?: number };
+        error?: string;
+      };
+      if (!response.ok || !payload.workflow?.shareUrl) {
+        throw new Error(payload.error ?? "发布 Workflow 失败");
+      }
+      setShareUrl(payload.workflow.shareUrl);
+      await navigator.clipboard
+        .writeText(payload.workflow.shareUrl)
+        .catch(() => undefined);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "分享失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="extension-modal-backdrop"
+      role="presentation"
+      onMouseDown={onClose}
+    >
+      <div
+        className="extension-modal canvas-share-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="canvas-share-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <span className="eyebrow">SHARE & PUBLISH</span>
+            <h2 id="canvas-share-title">分享画布</h2>
+            <p>只读链接用于查看；Workflow 会发布为可安装、可派生的完整画布能力。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="share-mode-tabs">
+          <button
+            type="button"
+            className={mode === "workflow" ? "is-active" : ""}
+            onClick={() => {
+              setMode("workflow");
+              setShareUrl("");
+            }}
+          >
+            <Layers3 size={15} /> 发布 Workflow
+          </button>
+          <button
+            type="button"
+            className={mode === "read_only" ? "is-active" : ""}
+            onClick={() => {
+              setMode("read_only");
+              setShareUrl("");
+            }}
+          >
+            <Share2 size={15} /> 只读链接
+          </button>
+        </div>
+
+        {mode === "workflow" && !shareUrl && (
+          <div className="workflow-publish-form">
+            <label>
+              <span>Workflow 名称</span>
+              <input value={title} onChange={(event) => setTitle(event.target.value)} />
+            </label>
+            <label className="span-two">
+              <span>说明</span>
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="说明目标、输入素材要求和最终结果。"
+              />
+            </label>
+            <label>
+              <span>分类</span>
+              <input value={category} onChange={(event) => setCategory(event.target.value)} />
+            </label>
+            <label>
+              <span>可见范围</span>
+              <select
+                value={visibility}
+                onChange={(event) =>
+                  setVisibility(event.target.value as WorkflowVisibility)
+                }
+              >
+                <option value="public">公开能力商城</option>
+                <option value="workspace">当前工作空间</option>
+                <option value="link">仅持链接用户</option>
+                <option value="private">仅自己</option>
+              </select>
+            </label>
+            <label className="span-two">
+              <span>标签（逗号分隔）</span>
+              <input
+                value={tags}
+                onChange={(event) => setTags(event.target.value)}
+                placeholder="短视频, 营销, 批处理"
+              />
+            </label>
+            <div className="workflow-privacy-note span-two">
+              <Sparkles size={16} />
+              <p>
+                发布时会移除 API Key、密钥、模型连接 ID、账号信息和私有素材地址；
+                素材会转换为占位卡片，结果会恢复为空占位。
+              </p>
+            </div>
+          </div>
+        )}
+
+        {mode === "read_only" && !shareUrl && (
+          <div className="workflow-privacy-note">
+            <Share2 size={16} />
+            <p>生成 30 天有效的只读快照链接，不允许安装、修改或运行。</p>
+          </div>
+        )}
+
+        {shareUrl && (
+          <div className="share-result">
+            <Check size={22} />
+            <div>
+              <b>{mode === "workflow" ? "Workflow 已发布" : "只读链接已创建"}</b>
+              <p>链接已尝试复制到剪贴板，也可以在下方手动复制。</p>
+            </div>
+            <input readOnly value={shareUrl} onFocus={(event) => event.currentTarget.select()} />
+          </div>
+        )}
+
+        {error && (
+          <div className="modal-error">
+            <CircleAlert size={14} /> {error}
+          </div>
+        )}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            {shareUrl ? "完成" : "取消"}
+          </button>
+          {!shareUrl && (
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busy || (mode === "workflow" && !title.trim())}
+              onClick={() => void submit()}
+            >
+              {busy ? <Sparkles size={15} /> : <Share2 size={15} />}
+              {mode === "workflow" ? "发布到能力商城" : "创建只读链接"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

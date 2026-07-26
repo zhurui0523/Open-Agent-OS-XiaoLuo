@@ -105,6 +105,9 @@ const allowedPortTypes = new Set([
   "audio",
   "document",
   "json",
+  "asset",
+  "asset_list",
+  "collection",
 ]);
 const exactPermissions = new Set([
   "assets:read",
@@ -214,6 +217,20 @@ function validateContribution(
           port.dataTypes.some((item) => !allowedPortTypes.has(safeString(item)))
         ) {
           issues.push(`${portPath}.dataTypes 包含不支持的数据类型`);
+        }
+        if (
+          port.cardinality !== undefined &&
+          !["one", "many"].includes(safeString(port.cardinality))
+        ) {
+          issues.push(`${portPath}.cardinality 只支持 one 或 many`);
+        }
+        if (
+          port.maxConnections !== undefined &&
+          (!Number.isInteger(port.maxConnections) ||
+            Number(port.maxConnections) < 1 ||
+            Number(port.maxConnections) > 10_000)
+        ) {
+          issues.push(`${portPath}.maxConnections 必须是 1-10000 的整数`);
         }
       });
       if (value.ports.length && !directions.has("input")) {

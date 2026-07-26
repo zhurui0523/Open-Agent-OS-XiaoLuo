@@ -32,6 +32,7 @@ import {
   compatibleInputPorts,
   defaultOutputPort,
   portForNode,
+  validatePortCardinality,
 } from "../lib/node-ports";
 import {
   compileWorkflow,
@@ -55,7 +56,13 @@ interface CanvasHistoryEntry {
 type NodePreset = Partial<
   Pick<
     CanvasNode,
-    "title" | "prompt" | "capabilityId" | "modelId" | "result" | "parameters"
+    | "title"
+    | "prompt"
+    | "role"
+    | "capabilityId"
+    | "modelId"
+    | "result"
+    | "parameters"
   >
 >;
 
@@ -775,12 +782,28 @@ export function useIntentOS() {
   ) {
     rememberCanvas();
     const id = `node_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const inferredRole =
+      preset.role ??
+      (preset.parameters?.source === "asset-kernel"
+        ? "material"
+        : preset.parameters?.packageId && preset.parameters?.runtimeType
+          ? "plugin"
+          : preset.parameters?.resultSlot === true
+            ? "result"
+            : "execution");
     const capability =
-      capabilities.find((item) => item.id === preset.capabilityId) ??
-      preferredCapability(capabilities, kind);
+      inferredRole === "execution"
+        ? capabilities.find((item) => item.id === preset.capabilityId) ??
+          preferredCapability(
+            capabilities.filter((item) => item.category === "SKILL"),
+            kind,
+          )
+        : undefined;
     const model =
-      models.find((item) => item.id === preset.modelId) ??
-      preferredModel(models, capability, kind);
+      inferredRole === "execution"
+        ? models.find((item) => item.id === preset.modelId) ??
+          preferredModel(models, capability, kind)
+        : undefined;
     const next: CanvasNode = {
       id,
       title:
@@ -796,11 +819,24 @@ export function useIntentOS() {
                 : "新文本节点"),
       prompt: preset.prompt ?? "在这里描述这个节点需要完成的任务。",
       kind,
+      role: inferredRole,
       status: "draft",
       capabilityId:
-        preset.capabilityId ?? capability?.id ?? `core.capability.${kind}`,
+        inferredRole === "execution"
+          ? preset.capabilityId ?? capability?.id ?? "unconfigured-skill"
+          : inferredRole === "plugin"
+            ? preset.capabilityId ?? "core.plugin.runner"
+            : inferredRole === "result"
+              ? "core.result.placeholder"
+              : "core.material.source",
       modelId:
-        capability?.executionMode === "remote"
+        inferredRole === "plugin"
+          ? "plugin-runtime"
+          : inferredRole !== "execution"
+            ? "none"
+            : !capability
+              ? "unconfigured"
+              : capability.executionMode === "remote"
           ? "skill-runtime"
           : (preset.modelId ?? model?.id ?? "unconfigured"),
       x: position?.x ?? 320 + (nodes.length % 3) * 72,
@@ -809,13 +845,55 @@ export function useIntentOS() {
       result: preset.result,
       parameters: {
         ...(preset.parameters ?? {}),
+        nodeRole: inferredRole,
         ...(capability
           ? { capabilitySnapshot: snapshotCapability(capability) }
           : {}),
       },
     };
     setArrangeMode("free");
-    setNodes((current) => [...current, next]);
+    if (inferredRole === "execution") {
+      const resultId = `result_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const resultNode: CanvasNode = {
+        id: resultId,
+        title: `${next.title} · 结果`,
+        prompt: "执行前保持为空，完成后自动沉淀为可复用资产。",
+        kind,
+        role: "result",
+        status: "waiting",
+        capabilityId: "core.result.placeholder",
+        modelId: "none",
+        x: next.x + 340,
+        y: next.y,
+        createdAt: (next.createdAt ?? Date.now()) + 1,
+        parameters: {
+          nodeRole: "result",
+          resultSlot: true,
+          resultOf: id,
+        },
+      };
+      const output = defaultOutputPort(next);
+      const input = compatibleInputPorts(
+        resultNode,
+        output.dataTypes[0],
+      )[0];
+      setNodes((current) => [...current, next, resultNode]);
+      if (input) {
+        setEdges((current) => [
+          ...current,
+          {
+            id: `edge_result_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            source: next.id,
+            target: resultNode.id,
+            sourcePort: output.id,
+            targetPort: input.id,
+            dataType: output.dataTypes[0],
+          },
+        ]);
+      }
+    } else {
+      setNodes((current) => [...current, next]);
+    }
     setSelectedNodeIdState(id);
     setSelectedNodeIds([id]);
     return id;
@@ -838,6 +916,7 @@ export function useIntentOS() {
         : `${Math.max(1, Math.round(asset.size / 1024))} KB`;
     setView("canvas");
     return addNode(kind, position, {
+      role: "material",
       title: asset.name,
       prompt: asset.description || `使用资产 ${asset.name} 继续创作。`,
       result: `已引用 AI 文件系统资产 · ${sizeLabel}`,
@@ -930,6 +1009,18 @@ export function useIntentOS() {
             ? "目标节点没有兼容的输入端口"
             : "这条连接已经存在",
       );
+      return false;
+    }
+    const cardinalityError = validatePortCardinality(
+      {
+        target,
+        targetPort: targetPort.id,
+      },
+      edges,
+      targetNode,
+    );
+    if (cardinalityError) {
+      setCloudError(cardinalityError);
       return false;
     }
     if (wouldCreateCycle(nodes, edges, source, target)) {
@@ -1241,8 +1332,15 @@ export function useIntentOS() {
       const kind: NodeKind = task.kind;
       const cap =
         capabilities.find(
-          (item) => item.enabled && item.title === task.capability,
-        ) ?? preferredCapability(capabilities, kind);
+          (item) =>
+            item.enabled &&
+            item.category === "SKILL" &&
+            item.title === task.capability,
+        ) ??
+        preferredCapability(
+          capabilities.filter((item) => item.category === "SKILL"),
+          kind,
+        );
       const model = preferredModel(models, cap, kind);
       const level = levelByTask.get(task.id) ?? 0;
       const row = rowByLevel.get(level) ?? 0;
@@ -1254,10 +1352,13 @@ export function useIntentOS() {
         title: task.title,
         prompt: `${plan.goal}｜${task.title}`,
         kind,
+        role: "execution",
         status: "queued",
-        capabilityId: cap?.id ?? `core.capability.${kind}`,
+        capabilityId: cap?.id ?? "unconfigured-skill",
         modelId:
-          cap?.executionMode === "remote"
+          !cap
+            ? "unconfigured"
+            : cap.executionMode === "remote"
             ? "skill-runtime"
             : (model?.id ?? "unconfigured"),
         x: startX + level * 360,
@@ -1266,14 +1367,14 @@ export function useIntentOS() {
         progress: 0,
         parameters: {
           ...(task.parameters ?? {}),
+          nodeRole: "execution",
           ...(cap ? { capabilitySnapshot: snapshotCapability(cap) } : {}),
         },
         layer: index,
       };
     });
-    setNodes(plannedNodes);
     const nodeById = new Map(plannedNodes.map((node) => [node.id, node]));
-    setEdges(plan.tasks.flatMap((task) => {
+    const plannedEdges = plan.tasks.flatMap((task) => {
       const targetId = nodeIdByTask.get(task.id);
       const target = targetId ? nodeById.get(targetId) : undefined;
       if (!target) return [];
@@ -1293,7 +1394,61 @@ export function useIntentOS() {
           dataType: output.dataTypes[0],
         }];
       });
-    }));
+    });
+    const dependencyIds = new Set(
+      plan.tasks.flatMap((task) => task.dependsOn),
+    );
+    const resultNodes: CanvasNode[] = plan.tasks
+      .filter((task) => !dependencyIds.has(task.id))
+      .flatMap((task, index) => {
+        const sourceId = nodeIdByTask.get(task.id);
+        const source = sourceId ? nodeById.get(sourceId) : undefined;
+        if (!source) return [];
+        return [{
+          id: `planned_result_${task.id}_${timestamp}`,
+          title: `${task.title} · 结果`,
+          prompt: "执行前保持为空，完成后自动沉淀为可复用资产。",
+          kind: source.kind,
+          role: "result" as const,
+          status: "waiting" as const,
+          capabilityId: "core.result.placeholder",
+          modelId: "none",
+          x: source.x + 360,
+          y: source.y,
+          createdAt: timestamp + plan.tasks.length + index,
+          progress: 0,
+          parameters: {
+            nodeRole: "result",
+            resultSlot: true,
+            resultOf: source.id,
+          },
+          layer: plan.tasks.length + index,
+        }];
+      });
+    const resultEdges = resultNodes.flatMap((resultNode, index) => {
+      const sourceId =
+        typeof resultNode.parameters?.resultOf === "string"
+          ? resultNode.parameters.resultOf
+          : "";
+      const source = nodeById.get(sourceId);
+      if (!source) return [];
+      const output = defaultOutputPort(source);
+      const input = compatibleInputPorts(
+        resultNode,
+        output.dataTypes[0],
+      )[0];
+      if (!input) return [];
+      return [{
+        id: `planned_result_edge_${source.id}_${index}`,
+        source: source.id,
+        target: resultNode.id,
+        sourcePort: output.id,
+        targetPort: input.id,
+        dataType: output.dataTypes[0],
+      }];
+    });
+    setNodes([...plannedNodes, ...resultNodes]);
+    setEdges([...plannedEdges, ...resultEdges]);
     setSelectedNodeIdState(plannedNodes[0]?.id ?? null);
     setSelectedNodeIds(plannedNodes[0] ? [plannedNodes[0].id] : []);
     setPlan(null);
@@ -1689,6 +1844,37 @@ export function useIntentOS() {
     return result;
   }
 
+  async function installWorkflow(
+    listingId: string,
+    version?: number,
+    token?: string,
+  ) {
+    if (!projectId) throw new Error("请先选择项目");
+    const result = await requestJson<{
+      canvas: CanvasSummary;
+      missing: {
+        skills: string[];
+        plugins: string[];
+        models: string[];
+      };
+    }>("/api/v2/workflows/install", {
+      method: "POST",
+      body: JSON.stringify({
+        listingId,
+        projectId,
+        ...(version ? { version } : {}),
+        ...(token ? { token } : {}),
+      }),
+    });
+    const canvasPayload = await requestJson<{ canvases: CanvasSummary[] }>(
+      `/api/v2/canvases?projectId=${encodeURIComponent(projectId)}`,
+    );
+    setCanvases(canvasPayload.canvases);
+    await loadCanvas(result.canvas.id);
+    setView("canvas");
+    return result;
+  }
+
   async function setPackageEnabled(id: string, enabled: boolean) {
     await requestJson("/api/v2/packages", {
       method: "PATCH",
@@ -1875,6 +2061,7 @@ export function useIntentOS() {
     testModel,
     refreshRegistry,
     installPackage,
+    installWorkflow,
     setPackageEnabled,
     uninstallPackage,
     testPlugin,

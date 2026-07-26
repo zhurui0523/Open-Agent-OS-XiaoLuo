@@ -19,6 +19,13 @@ import {
 } from "./model-adapters";
 import { resolveSecret } from "./secret-vault";
 import { packageSignaturesRequired } from "./server-runtime-config";
+import { roleForNode } from "./node-role";
+import {
+  inspectIsolatedExecution,
+  isolatedExecutionPolicy,
+  submitIsolatedExecution,
+  type IsolatedRuntime,
+} from "./isolated-worker";
 
 type ModelRow = typeof modelConnections.$inferSelect;
 type PackageRow = typeof packages.$inferSelect;
@@ -314,6 +321,66 @@ export function executeBuiltin(
   node: KernelNodeRequest,
   inputs: KernelUpstreamInput[],
 ): ExecutorResult {
+  const role = roleForNode({ parameters: node.parameters });
+  if (role === "material") {
+    const assetUrl =
+      typeof node.parameters?.assetContentUrl === "string"
+        ? node.parameters.assetContentUrl
+        : undefined;
+    const assetId =
+      typeof node.parameters?.assetId === "string"
+        ? node.parameters.assetId
+        : undefined;
+    const result = assetUrl || node.prompt.trim()
+      ? `素材“${node.title}”已就绪`
+      : `素材“${node.title}”仍是空占位`;
+    return {
+      executor: "kernel.material-source",
+      result,
+      output: {
+        type: node.kind,
+        ...(node.kind === "text" ? { text: node.prompt } : {}),
+        ...(assetUrl ? { assetUrl } : {}),
+        data: {
+          ...(assetId ? { assetId } : {}),
+          assetUri: node.parameters?.assetUri ?? null,
+          mimeType: node.parameters?.mimeType ?? null,
+          name: node.parameters?.fileName ?? node.title,
+          placeholder: !assetUrl && !node.prompt.trim(),
+        },
+        executor: "kernel.material-source",
+        preview: true,
+      },
+    };
+  }
+  if (role === "result") {
+    const upstream = inputs[0]?.output;
+    const output =
+      upstream && typeof upstream === "object"
+        ? (upstream as KernelNodeOutput & { result?: string })
+        : null;
+    const result =
+      output?.result ??
+      output?.text ??
+      (inputs.length
+        ? `已接收 ${inputs.length} 个上游结果`
+        : "等待上游执行结果");
+    return {
+      executor: "kernel.result-slot",
+      result,
+      output: {
+        type: output?.type ?? node.kind,
+        ...(output?.text ? { text: output.text } : {}),
+        ...(output?.assetUrl ? { assetUrl: output.assetUrl } : {}),
+        data: {
+          sourceNodeIds: inputs.map((input) => input.nodeId),
+          value: inputs.length === 1 ? upstream : inputs.map((input) => input.output),
+        },
+        executor: "kernel.result-slot",
+        preview: true,
+      },
+    };
+  }
   const executor = "kernel.builtin-preview";
   const inputSummary = inputs.length
     ? `已接收 ${inputs.length} 个上游节点结果`
@@ -542,4 +609,88 @@ export async function executeRemotePackage(
     signal,
   });
   return normalizeRemoteOutput(payload, node, `plugin:${pkg.id}`);
+}
+
+export async function executeIsolatedPackage(
+  pkg: PackageRow,
+  node: KernelNodeRequest,
+  inputs: KernelUpstreamInput[],
+): Promise<ExecutorResult> {
+  if (pkg.runtimeType !== "isolated-worker") {
+    throw new Error("该插件不是 isolated-worker 运行时");
+  }
+  if (pkg.trustState !== "trusted") {
+    throw new Error("隔离 Worker 只执行可信签名插件");
+  }
+  const manifest = JSON.parse(pkg.manifestJson) as XiaoLuoPackageManifest;
+  const runtime = manifest.runtime.language as IsolatedRuntime | undefined;
+  if (
+    !runtime ||
+    !["node", "python", "cli"].includes(runtime) ||
+    !manifest.runtime.entry
+  ) {
+    throw new Error("插件未声明有效的隔离运行语言或入口");
+  }
+  const permissions = JSON.parse(pkg.permissionsJson) as string[];
+  const networkOrigins = permissions
+    .filter((permission) => permission.startsWith("network:https://"))
+    .map((permission) => permission.slice(8));
+  const policy = isolatedExecutionPolicy(networkOrigins);
+  const args = Array.isArray(node.parameters?.args)
+    ? node.parameters.args
+        .filter((item): item is string => typeof item === "string")
+        .slice(0, 100)
+    : [];
+  const secretRefIds = Array.isArray(node.parameters?.secretRefIds)
+    ? node.parameters.secretRefIds
+        .filter(
+          (item): item is string =>
+            typeof item === "string" &&
+            /^secret_[A-Za-z0-9-]+$/.test(item),
+        )
+        .slice(0, 20)
+    : [];
+  const submitted = await submitIsolatedExecution({
+    jobId: `kernel_plugin_${crypto.randomUUID()}`,
+    package: {
+      id: pkg.id,
+      key: pkg.packageKey,
+      version: pkg.version,
+      integritySha256: pkg.integritySha256,
+      entry: manifest.runtime.entry,
+    },
+    runtime,
+    args,
+    stdin: JSON.stringify({
+      operation: "executeNode",
+      node,
+      upstream: inputs,
+    }).slice(0, 100_000),
+    secretRefIds,
+    policy,
+  });
+  let result = submitted;
+  const deadline = Date.now() + policy.wallTimeMs;
+  while (
+    !["succeeded", "failed", "canceled"].includes(result.status) &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    result = await inspectIsolatedExecution(result.executionId);
+  }
+  if (result.status !== "succeeded") {
+    throw new Error(
+      result.status === "failed"
+        ? result.stderr || "隔离插件执行失败"
+        : result.status === "canceled"
+          ? "隔离插件执行已取消"
+          : "隔离插件执行超时",
+    );
+  }
+  const payload =
+    result.output ??
+    (result.stdout
+      ? { text: result.stdout }
+      : { exitCode: result.exitCode });
+  return normalizeRemoteOutput(payload, node, `plugin:${pkg.id}:isolated`);
 }

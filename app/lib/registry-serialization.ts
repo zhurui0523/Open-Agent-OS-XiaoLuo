@@ -52,6 +52,17 @@ export function serializePackage(row: PackageRow): InstalledPackage {
     installedAt: row.installedAt,
     updatedAt: row.updatedAt,
     contributionCount: manifest ? packageContributionCount(manifest) : 0,
+    runtimeLanguage: manifest?.runtime.language,
+    nodeContributions: (manifest?.contributes?.nodes ?? []).map((item) => ({
+      id: item.id,
+      title: item.title,
+      description: item.description ?? "",
+      modality: item.modality,
+      inputSchema: item.inputSchema ?? {},
+      outputSchema: item.outputSchema ?? {},
+      uiSchema: item.uiSchema ?? {},
+      ports: item.ports ?? [],
+    })),
   };
 }
 

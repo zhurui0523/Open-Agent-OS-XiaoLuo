@@ -4,6 +4,7 @@ import type {
   NodePort,
   PortDataType,
 } from "../types";
+import { roleForNode } from "./node-role.ts";
 
 export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
   text: [
@@ -97,7 +98,70 @@ export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
 };
 
 type PortAwareNode = Pick<CanvasNode, "kind"> &
-  Partial<Pick<CanvasNode, "parameters">>;
+  Partial<Pick<CanvasNode, "role" | "parameters">>;
+
+const ALL_CONTENT_TYPES: PortDataType[] = [
+  "text",
+  "image",
+  "video",
+  "audio",
+  "document",
+  "json",
+  "asset",
+  "asset_list",
+  "collection",
+];
+
+function rolePorts(
+  node: PortAwareNode,
+  hasSnapshotPorts = false,
+): NodePort[] | null {
+  const role = roleForNode(node);
+  if (role === "material") {
+    return [
+      {
+        id: "material",
+        label: "素材",
+        direction: "output",
+        dataTypes: [node.kind, "asset"],
+        cardinality: "many",
+      },
+    ];
+  }
+  if (role === "plugin") {
+    if (hasSnapshotPorts) return null;
+    return [
+      {
+        id: "materials",
+        label: "批量素材",
+        direction: "input",
+        dataTypes: ALL_CONTENT_TYPES,
+        cardinality: "many",
+      },
+      {
+        id: "plugin_output",
+        label: "插件结果",
+        direction: "output",
+        dataTypes: ALL_CONTENT_TYPES,
+        cardinality: "many",
+      },
+    ];
+  }
+  if (role === "result") {
+    return [
+      {
+        id: "result",
+        label: "结果",
+        direction: "input",
+        dataTypes: ALL_CONTENT_TYPES,
+        required: true,
+        cardinality: "one",
+        maxConnections: 1,
+      },
+    ];
+  }
+  return null;
+}
 
 function snapshotPorts(node: PortAwareNode) {
   const snapshot = node.parameters?.capabilitySnapshot;
@@ -124,7 +188,19 @@ export function portsForNode(
   direction?: NodePort["direction"],
 ) {
   const ports = snapshotPorts(node);
-  const resolved = ports.length ? ports : DEFAULT_NODE_PORTS[node.kind];
+  const resolved =
+    rolePorts(node, ports.length > 0) ??
+    (ports.length
+      ? ports.map((port) =>
+          port.direction === "input"
+            ? { ...port, cardinality: port.cardinality ?? "many" }
+            : port,
+        )
+      : DEFAULT_NODE_PORTS[node.kind].map((port) =>
+          port.direction === "input"
+            ? { ...port, cardinality: port.cardinality ?? "many" }
+            : port,
+        ));
   return direction
     ? resolved.filter((port) => port.direction === direction)
     : resolved;
@@ -220,6 +296,24 @@ export function validateEdgePorts(
   return null;
 }
 
+export function validatePortCardinality(
+  edge: Pick<CanvasEdge, "target" | "targetPort">,
+  edges: Array<Pick<CanvasEdge, "target" | "targetPort">>,
+  target: PortAwareNode,
+) {
+  const port = portForNode(target, edge.targetPort, "input");
+  if (!port) return "目标端口不存在";
+  const maximum =
+    port.maxConnections ?? (port.cardinality === "one" ? 1 : Number.POSITIVE_INFINITY);
+  const connections = edges.filter(
+    (item) =>
+      item.target === edge.target && item.targetPort === edge.targetPort,
+  ).length;
+  return connections >= maximum
+    ? `${port.label}最多允许 ${maximum} 条输入连接`
+    : null;
+}
+
 export function portColor(type: PortDataType) {
   return {
     text: "#6366f1",
@@ -228,5 +322,8 @@ export function portColor(type: PortDataType) {
     audio: "#ec4899",
     document: "#64748b",
     json: "#8b5cf6",
+    asset: "#0ea5e9",
+    asset_list: "#14b8a6",
+    collection: "#a855f7",
   }[type];
 }

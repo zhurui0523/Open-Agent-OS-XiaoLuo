@@ -53,6 +53,7 @@ interface NodeRow extends RowDataPacket {
   title: string;
   prompt: string;
   kind: CanvasNode["kind"];
+  role: CanvasNode["role"];
   status: CanvasNode["status"];
   capabilityId: string;
   modelId: string;
@@ -80,6 +81,17 @@ function parsedJson<T>(value: string | T, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function parsedViewport(
+  value: string | { x?: number; y?: number; zoom?: number },
+) {
+  const parsed = parsedJson(value, {});
+  return {
+    x: Number.isFinite(parsed.x) ? Number(parsed.x) : 0,
+    y: Number.isFinite(parsed.y) ? Number(parsed.y) : 0,
+    zoom: Number.isFinite(parsed.zoom) ? Number(parsed.zoom) : 92,
+  };
 }
 
 function timestamp(value: Date | string) {
@@ -261,7 +273,7 @@ export async function listCanvases(
     revision: Number(row.revision),
     starred: Boolean(row.starred),
     arrangeMode: row.arrangeMode,
-    viewport: parsedJson(row.viewportJson, { x: 0, y: 0, zoom: 92 }),
+    viewport: parsedViewport(row.viewportJson),
   }));
 }
 
@@ -314,6 +326,7 @@ export async function readCanvasGraph(canvasId: string) {
          title,
          prompt,
          kind,
+         node_role AS role,
          status,
          capability_id AS capabilityId,
          model_id AS modelId,
@@ -348,6 +361,7 @@ export async function readCanvasGraph(canvasId: string) {
     title: row.title,
     prompt: row.prompt,
     kind: row.kind,
+    role: row.role ?? undefined,
     status: row.status,
     capabilityId: row.capabilityId,
     modelId: row.modelId,
@@ -387,7 +401,7 @@ export async function readCanvasGraph(canvasId: string) {
     projectName: canvas.projectName,
     revision: Number(canvas.revision),
     arrangeMode: canvas.arrangeMode,
-    viewport: parsedJson(canvas.viewportJson, { x: 0, y: 0, zoom: 92 }),
+    viewport: parsedViewport(canvas.viewportJson),
     updatedAt: timestamp(canvas.updatedAt),
     nodes,
     edges,
@@ -429,13 +443,14 @@ export async function replaceCanvasGraph(input: {
     for (const node of input.nodes) {
       await connection.execute(
         `INSERT INTO xiaoluo_v2_canvas_nodes (
-           id, canvas_id, kind, title, prompt, status, capability_id, model_id,
+           id, canvas_id, kind, node_role, title, prompt, status, capability_id, model_id,
            x, y, progress, result, parameters_json, client_created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           node.id,
           input.canvasId,
           node.kind,
+          node.role ?? String(node.parameters?.nodeRole ?? "execution"),
           node.title,
           node.prompt,
           node.status,

@@ -88,7 +88,7 @@ export function CanvasContextMenu({
       capabilities.filter(
         (capability) =>
           capability.enabled &&
-          ["SKILL", "Agent", "Workflow"].includes(capability.category),
+          capability.category === "SKILL",
       ),
     [capabilities],
   );
@@ -149,7 +149,7 @@ export function CanvasContextMenu({
         onClick={() => run(() => onAddNode("text"))}
       >
         <FileText size={19} />
-        <span>文本占位卡片</span>
+        <span>文本素材卡片</span>
       </button>
       <button
         type="button"
@@ -190,7 +190,7 @@ export function CanvasContextMenu({
         onClick={() => run(() => onAddNode("image"))}
       >
         <ImageIcon size={19} />
-        <span>图片占位卡片</span>
+        <span>图片素材卡片</span>
       </button>
       <button
         type="button"
@@ -199,7 +199,7 @@ export function CanvasContextMenu({
         onClick={() => run(() => onAddNode("video"))}
       >
         <Video size={19} />
-        <span>视频占位卡片</span>
+        <span>视频素材卡片</span>
       </button>
       <button
         type="button"
@@ -208,7 +208,7 @@ export function CanvasContextMenu({
         onClick={() => run(() => onAddNode("audio"))}
       >
         <AudioLines size={19} />
-        <span>音频占位卡片</span>
+        <span>音频素材卡片</span>
       </button>
       <button
         type="button"
@@ -217,7 +217,7 @@ export function CanvasContextMenu({
         onClick={() => run(() => onAddNode("document"))}
       >
         <FileOutput size={19} />
-        <span>文档占位卡片</span>
+        <span>文档素材卡片</span>
       </button>
 
       <div
@@ -238,13 +238,13 @@ export function CanvasContextMenu({
           }
         >
           <Workflow size={19} />
-          <span>新建专业节点</span>
+          <span>新建 Skill 执行节点</span>
           <ChevronRight size={17} />
         </button>
         <div
           className={submenuClass("professional")}
           role="menu"
-          aria-label="专业节点"
+          aria-label="Skill 执行节点"
         >
           {professionalCapabilities.length ? (
             professionalCapabilities.map((capability) => (
@@ -271,7 +271,7 @@ export function CanvasContextMenu({
             >
               <Puzzle size={17} />
               <span>
-                添加专业能力
+                创建或安装 Skill
                 <small>前往能力中心</small>
               </span>
             </button>
@@ -297,13 +297,13 @@ export function CanvasContextMenu({
           }
         >
           <Puzzle size={19} />
-          <span>添加 AI 插件卡片</span>
+          <span>添加插件运行器</span>
           <ChevronRight size={17} />
         </button>
         <div
           className={submenuClass("plugin")}
           role="menu"
-          aria-label="AI 插件卡片"
+          aria-label="插件运行器"
         >
           {pluginPackages.length ? (
             pluginPackages.map((plugin) => (

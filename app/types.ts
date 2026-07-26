@@ -37,7 +37,10 @@ export type PortDataType =
   | "video"
   | "audio"
   | "document"
-  | "json";
+  | "json"
+  | "asset"
+  | "asset_list"
+  | "collection";
 
 export interface NodePort {
   id: string;
@@ -45,7 +48,12 @@ export interface NodePort {
   direction: "input" | "output";
   dataTypes: PortDataType[];
   required?: boolean;
+  cardinality?: "one" | "many";
+  maxConnections?: number;
 }
+
+export type CanvasNodeRole = "material" | "plugin" | "execution" | "result";
+export type NodeBatchMode = "combine" | "each" | "broadcast" | "aggregate";
 
 export type NodeStatus =
   | "draft"
@@ -63,6 +71,7 @@ export interface CanvasNode {
   title: string;
   prompt: string;
   kind: NodeKind;
+  role?: CanvasNodeRole;
   status: NodeStatus;
   capabilityId: string;
   modelId: string;
@@ -219,6 +228,17 @@ export interface InstalledPackage {
   installedAt: string;
   updatedAt: string;
   contributionCount: number;
+  nodeContributions?: Array<{
+    id: string;
+    title: string;
+    description: string;
+    modality: NodeKind;
+    inputSchema: Record<string, unknown>;
+    outputSchema: Record<string, unknown>;
+    uiSchema: Record<string, unknown>;
+    ports: NodePort[];
+  }>;
+  runtimeLanguage?: "node" | "python" | "cli";
 }
 
 export interface RegistryEvent {
@@ -227,6 +247,44 @@ export interface RegistryEvent {
   entityId: string;
   detail: Record<string, unknown>;
   createdAt: string;
+}
+
+export type WorkflowVisibility = "private" | "workspace" | "link" | "public";
+
+export interface WorkflowMarketplaceItem {
+  id: string;
+  workflowKey: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  visibility: WorkflowVisibility;
+  status: "draft" | "published" | "unlisted" | "archived";
+  version: number;
+  author: {
+    id: string;
+    username: string;
+    displayName: string;
+  };
+  workspaceId: string;
+  sourceCanvasId?: string | null;
+  nodeCount: number;
+  materialCount: number;
+  pluginCount: number;
+  executionCount: number;
+  resultCount: number;
+  installCount: number;
+  requirements: {
+    skills: Array<{ key: string; version?: string }>;
+    plugins: Array<{ key: string; version?: string }>;
+    models: Array<{
+      modality: NodeKind;
+      protocols?: ModelProtocol[];
+      capabilityTags?: string[];
+    }>;
+  };
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface RegistrySnapshot {
@@ -397,6 +455,7 @@ export type RunState =
   | "idle"
   | "awaiting_confirmation"
   | "ready"
+  | "queued"
   | "running"
   | "waiting"
   | "paused"

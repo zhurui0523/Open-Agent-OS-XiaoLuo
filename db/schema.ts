@@ -364,6 +364,14 @@ export const canvasNodes = mysqlTable(
       "audio",
       "document",
     ]).notNull(),
+    nodeRole: mysqlEnum("node_role", [
+      "material",
+      "plugin",
+      "execution",
+      "result",
+    ])
+      .notNull()
+      .default("execution"),
     title: varchar("title", { length: 240 }).notNull(),
     prompt: text("prompt").notNull(),
     status: varchar("status", { length: 32 }).notNull(),
@@ -448,6 +456,130 @@ export const canvasShareLinks = mysqlTable(
   (table) => [
     index("canvas_share_canvas_idx").on(table.canvasId),
     index("canvas_share_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export const workflowListings = mysqlTable(
+  "xiaoluo_v2_workflow_listings",
+  {
+    id: id("id", 120).primaryKey(),
+    workflowKey: id("workflow_key", 180).notNull().unique(),
+    ownerWorkspaceId: id("owner_workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    authorUserId: id("author_user_id", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    sourceCanvasId: id("source_canvas_id", 36).references(() => canvases.id, {
+      onDelete: "set null",
+    }),
+    title: varchar("title", { length: 180 }).notNull(),
+    description: text("description").notNull(),
+    category: varchar("category", { length: 80 }).notNull().default("通用"),
+    tagsJson: longtext("tags_json").notNull(),
+    visibility: mysqlEnum("visibility", [
+      "private",
+      "workspace",
+      "link",
+      "public",
+    ])
+      .notNull()
+      .default("private"),
+    status: mysqlEnum("status", [
+      "draft",
+      "published",
+      "unlisted",
+      "archived",
+    ])
+      .notNull()
+      .default("draft"),
+    latestVersion: int("latest_version", { unsigned: true })
+      .notNull()
+      .default(1),
+    installCount: int("install_count", { unsigned: true })
+      .notNull()
+      .default(0),
+    shareTokenHash: varchar("share_token_hash", { length: 64 }).unique(),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    index("workflow_listings_marketplace_idx").on(
+      table.status,
+      table.visibility,
+      table.updatedAt,
+    ),
+    index("workflow_listings_workspace_idx").on(
+      table.ownerWorkspaceId,
+      table.updatedAt,
+    ),
+    index("workflow_listings_author_idx").on(table.authorUserId),
+  ],
+);
+
+export const workflowVersions = mysqlTable(
+  "xiaoluo_v2_workflow_versions",
+  {
+    id: id("id", 120).primaryKey(),
+    listingId: id("listing_id", 120)
+      .notNull()
+      .references(() => workflowListings.id, { onDelete: "cascade" }),
+    version: int("version", { unsigned: true }).notNull(),
+    graphJson: longtext("graph_json").notNull(),
+    requirementsJson: longtext("requirements_json").notNull(),
+    manifestJson: longtext("manifest_json").notNull(),
+    changelog: text("changelog").notNull(),
+    integritySha256: varchar("integrity_sha256", { length: 64 }).notNull(),
+    createdBy: id("created_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    uniqueIndex("workflow_versions_listing_version_unique").on(
+      table.listingId,
+      table.version,
+    ),
+    index("workflow_versions_listing_idx").on(
+      table.listingId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const workflowInstallations = mysqlTable(
+  "xiaoluo_v2_workflow_installations",
+  {
+    id: id("id", 120).primaryKey(),
+    listingId: id("listing_id", 120)
+      .notNull()
+      .references(() => workflowListings.id, { onDelete: "cascade" }),
+    versionId: id("version_id", 120)
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "restrict" }),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    projectId: id("project_id", 36)
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    canvasId: id("canvas_id", 36)
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    installedBy: id("installed_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    installedAt: timestamp("installed_at"),
+  },
+  (table) => [
+    index("workflow_installations_listing_idx").on(
+      table.listingId,
+      table.installedAt,
+    ),
+    index("workflow_installations_workspace_idx").on(
+      table.workspaceId,
+      table.installedAt,
+    ),
   ],
 );
 

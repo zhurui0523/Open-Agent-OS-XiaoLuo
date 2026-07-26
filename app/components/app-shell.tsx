@@ -44,6 +44,16 @@ function AuthenticatedShell({
   const avatar = user.displayName.trim().slice(0, 1) || "洛";
 
   useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (
+      query.get("view") === "capabilities" ||
+      query.has("workflow")
+    ) {
+      os.setView("capabilities");
+    }
+  }, [os.setView]);
+
+  useEffect(() => {
     let refreshing = false;
     const refresh = () => {
       if (refreshing) return;
@@ -206,7 +216,9 @@ function AuthenticatedShell({
         {os.view === "assets" && (
           <AssetsView
             workspaceId={os.workspaceId}
-            onAddToCanvas={(asset) => os.addAssetToCanvas(asset)}
+            onAddToCanvas={(asset) => {
+              os.addAssetToCanvas(asset);
+            }}
             onOpenCanvas={async (canvasId) => {
               await os.setActiveCanvasId(canvasId);
               os.setView("canvas");
