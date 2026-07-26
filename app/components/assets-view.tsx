@@ -36,6 +36,11 @@ import type {
   FileSystemAsset,
   FileSystemFolder,
 } from "../types";
+import {
+  SUPPORTED_FILE_ACCEPT,
+  SUPPORTED_FILE_GROUPS,
+} from "../lib/file-formats";
+import { AssetContentPreview } from "./asset-content-preview";
 import { IconButton } from "./icon-button";
 import { TaskCenter } from "./task-center";
 
@@ -148,22 +153,27 @@ function AssetMedia({
   detail?: boolean;
 }) {
   if (asset.kind === "image") {
-    // Remote OSS URLs are user-controlled and cannot be enumerated in Next image config.
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={asset.contentUrl} alt={asset.name} loading="lazy" />;
+    return (
+      <AssetContentPreview
+        name={asset.name}
+        kind={asset.kind}
+        mimeType={asset.mimeType}
+        contentUrl={asset.contentUrl}
+        downloadUrl={asset.downloadUrl}
+        compact={!detail}
+      />
+    );
   }
-  if (asset.kind === "video" && detail) {
-    return <video src={asset.contentUrl} controls preload="metadata" />;
-  }
-  if (asset.kind === "audio" && detail) {
-    return <audio src={asset.contentUrl} controls preload="metadata" />;
-  }
-  if (
-    detail &&
-    (asset.kind === "text" ||
-      asset.mimeType === "application/pdf")
-  ) {
-    return <iframe src={asset.contentUrl} title={`${asset.name} 预览`} />;
+  if (detail) {
+    return (
+      <AssetContentPreview
+        name={asset.name}
+        kind={asset.kind}
+        mimeType={asset.mimeType}
+        contentUrl={asset.contentUrl}
+        downloadUrl={asset.downloadUrl}
+      />
+    );
   }
   return (
     <span className={`asset-glyph file-kind-${asset.kind}`}>
@@ -935,6 +945,7 @@ export function AssetsView({
         ref={uploadRef}
         type="file"
         multiple
+        accept={SUPPORTED_FILE_ACCEPT}
         className="canvas-file-input"
         onChange={(event) => {
           if (event.target.files) void uploadFiles(event.target.files);
@@ -944,6 +955,7 @@ export function AssetsView({
       <input
         ref={versionRef}
         type="file"
+        accept={SUPPORTED_FILE_ACCEPT}
         className="canvas-file-input"
         onChange={(event) => {
           const file = event.target.files?.[0];
@@ -959,6 +971,22 @@ export function AssetsView({
           <span>自动去重、建立版本并生成 asset:// 地址</span>
         </div>
       )}
+
+      <details className="supported-file-formats">
+        <summary>查看支持的上传格式</summary>
+        <div>
+          {SUPPORTED_FILE_GROUPS.map((group) => (
+            <span key={group.label}>
+              <b>{group.label}</b>
+              {group.extensions.join("、")}
+            </span>
+          ))}
+        </div>
+        <small>
+          单文件最大 100 MB。图片、视频、音频、文本、PDF 可直接预览；
+          DOCX、XLSX、PPTX 会提取可读文本，旧版 Office 与 ZIP 可存储、下载并拖入画布。
+        </small>
+      </details>
 
       {selected && (
         <div className="preview-backdrop" onMouseDown={() => setSelected(null)}>

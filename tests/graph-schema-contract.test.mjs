@@ -138,7 +138,7 @@ test("ships scalable canvas, asset management, sharing, and async task controls"
   assert.match(canvas, /requestAnimationFrame/);
   assert.match(canvas, /selectionBox/);
   assert.match(canvas, /os\.selectNodes/);
-  assert.match(canvas, /file\.type\.startsWith\("audio\/"\)/);
+  assert.match(canvas, /SUPPORTED_FILE_ACCEPT/);
   assert.match(drawer, /已归档/);
   assert.match(drawer, /回收站/);
   assert.match(drawer, /onDuplicate/);

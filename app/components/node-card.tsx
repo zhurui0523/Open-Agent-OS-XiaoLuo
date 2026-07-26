@@ -40,6 +40,7 @@ import {
   snapshotCapability,
 } from "../lib/capability-sync";
 import { IconButton } from "./icon-button";
+import { AssetContentPreview } from "./asset-content-preview";
 import { SchemaFields } from "./schema-fields";
 import { SchemaOutput } from "./schema-output";
 
@@ -113,6 +114,20 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
       ? parameters.assetContentUrl
       : undefined;
   const mediaUrl = kernelOutput?.assetUrl ?? assetContentUrl;
+  const assetFileName =
+    typeof parameters.fileName === "string"
+      ? parameters.fileName
+      : node.title;
+  const assetMimeType =
+    typeof parameters.mimeType === "string"
+      ? parameters.mimeType
+      : "application/octet-stream";
+  const assetDownloadUrl =
+    typeof parameters.assetDownloadUrl === "string"
+      ? parameters.assetDownloadUrl
+      : undefined;
+  const isAssetReference =
+    parameters.source === "asset-kernel" && Boolean(assetContentUrl);
   const progressLabel =
     node.status === "running"
       ? `生成中 ${node.progress ?? 0}%`
@@ -130,7 +145,16 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
       </header>
 
       <div className={`workbench-preview schema-driven-preview preview-${node.kind}`}>
-        {node.kind === "text" && (
+        {node.kind === "text" && isAssetReference && mediaUrl && (
+          <AssetContentPreview
+            name={assetFileName}
+            kind="text"
+            mimeType={assetMimeType}
+            contentUrl={mediaUrl}
+            downloadUrl={assetDownloadUrl}
+          />
+        )}
+        {node.kind === "text" && !isAssetReference && (
           <><Type size={15} /><p>{kernelOutput?.text ?? node.result ?? "暂无输出"}</p></>
         )}
         {node.kind === "image" && mediaUrl && (
@@ -143,7 +167,16 @@ function NodeWorkbench({ node, onUpdate }: NodeWorkbenchProps) {
         {node.kind === "audio" && mediaUrl && (
           <audio src={mediaUrl} controls preload="metadata" />
         )}
-        {node.kind === "document" && (
+        {node.kind === "document" && isAssetReference && mediaUrl && (
+          <AssetContentPreview
+            name={assetFileName}
+            kind="document"
+            mimeType={assetMimeType}
+            contentUrl={mediaUrl}
+            downloadUrl={assetDownloadUrl}
+          />
+        )}
+        {node.kind === "document" && !isAssetReference && (
           <><FileOutput size={22} /><span>{mediaUrl ? "文档已生成" : "暂无输出"}</span></>
         )}
         {!mediaUrl && !["text", "document"].includes(node.kind) && (

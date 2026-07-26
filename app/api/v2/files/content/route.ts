@@ -83,6 +83,7 @@ export async function GET(request: Request) {
       "cache-control": "private, max-age=3600",
       "content-type": version.mimeType,
       etag: object.httpEtag ?? object.etag,
+      "x-content-type-options": "nosniff",
       "x-asset-uri": `${asset.uri}@${version.version}`,
       "x-content-sha256": version.contentHash,
     });

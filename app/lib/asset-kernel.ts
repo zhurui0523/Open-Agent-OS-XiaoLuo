@@ -8,6 +8,11 @@ import type {
   AssetKind,
   FileSystemAsset,
 } from "../types";
+import {
+  canonicalUploadMimeType,
+  fileExtension,
+  SUPPORTED_FILE_GROUPS,
+} from "./file-formats";
 import { serverRuntimeConfig } from "./server-runtime-config";
 import { mysqlNow } from "./mysql";
 
@@ -15,49 +20,6 @@ type Database = Awaited<ReturnType<typeof getDb>>;
 type AssetRow = typeof assets.$inferSelect;
 
 export const MAX_FILE_BYTES = 100 * 1024 * 1024;
-
-const allowedUploadTypes = new Map<string, string[]>([
-  ["text/plain", ["txt"]],
-  ["text/markdown", ["md", "markdown"]],
-  ["text/csv", ["csv"]],
-  ["application/json", ["json"]],
-  ["application/pdf", ["pdf"]],
-  ["image/png", ["png"]],
-  ["image/jpeg", ["jpg", "jpeg"]],
-  ["image/webp", ["webp"]],
-  ["image/gif", ["gif"]],
-  ["video/mp4", ["mp4"]],
-  ["video/webm", ["webm"]],
-  ["video/quicktime", ["mov"]],
-  ["audio/mpeg", ["mp3"]],
-  ["audio/wav", ["wav"]],
-  ["audio/x-wav", ["wav"]],
-  ["audio/flac", ["flac"]],
-  ["audio/ogg", ["ogg"]],
-  ["audio/mp4", ["m4a"]],
-  ["application/msword", ["doc"]],
-  [
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ["docx"],
-  ],
-  ["application/vnd.ms-excel", ["xls"]],
-  [
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ["xlsx"],
-  ],
-  ["application/vnd.ms-powerpoint", ["ppt"]],
-  [
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ["pptx"],
-  ],
-  ["application/zip", ["zip"]],
-]);
-
-const mimeByExtension = new Map(
-  [...allowedUploadTypes.entries()].flatMap(([mimeType, extensions]) =>
-    extensions.map((extension) => [extension, mimeType] as const),
-  ),
-);
 
 function startsWith(bytes: Uint8Array, signature: number[], offset = 0) {
   return signature.every((value, index) => bytes[offset + index] === value);
@@ -83,6 +45,17 @@ function hasExpectedSignature(mimeType: string, bytes: Uint8Array) {
       startsWith(bytes, [0x57, 0x45, 0x42, 0x50], 8)
     );
   }
+  if (mimeType === "image/avif") {
+    return (
+      startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4) &&
+      new TextDecoder("ascii")
+        .decode(bytes.slice(8, Math.min(bytes.length, 32)))
+        .includes("avif")
+    );
+  }
+  if (mimeType === "image/bmp") {
+    return startsWith(bytes, [0x42, 0x4d]);
+  }
   if (mimeType === "application/pdf") {
     return startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]);
   }
@@ -103,11 +76,18 @@ function hasExpectedSignature(mimeType: string, bytes: Uint8Array) {
   ) {
     return startsWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
   }
-  if (mimeType === "video/mp4" || mimeType === "video/quicktime") {
+  if (
+    mimeType === "video/mp4" ||
+    mimeType === "video/quicktime" ||
+    mimeType === "audio/mp4"
+  ) {
     return startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4);
   }
   if (mimeType === "video/webm") {
     return startsWith(bytes, [0x1a, 0x45, 0xdf, 0xa3]);
+  }
+  if (mimeType === "video/ogg") {
+    return startsWith(bytes, [0x4f, 0x67, 0x67, 0x53]);
   }
   if (mimeType === "audio/mpeg") {
     return (
@@ -127,8 +107,11 @@ function hasExpectedSignature(mimeType: string, bytes: Uint8Array) {
   if (mimeType === "audio/ogg") {
     return startsWith(bytes, [0x4f, 0x67, 0x67, 0x53]);
   }
-  if (mimeType === "audio/mp4") {
-    return startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4);
+  if (mimeType === "audio/aac") {
+    return (
+      bytes[0] === 0xff &&
+      (bytes[1] === 0xf1 || bytes[1] === 0xf9)
+    );
   }
   return true;
 }
@@ -143,25 +126,18 @@ export function validateUploadedFile(input: {
     throw new Error("单个文件暂时不能超过 100 MB");
   }
   const normalizedName = sanitizeAssetName(input.name);
-  const extension =
-    normalizedName.includes(".")
-      ? normalizedName.split(".").pop()?.toLowerCase() ?? ""
-      : "";
-  const inferredMime = mimeByExtension.get(extension);
-  const declaredMime = input.declaredMimeType
-    ?.split(";")[0]
-    ?.trim()
-    .toLowerCase();
-  const mimeType =
-    !declaredMime || declaredMime === "application/octet-stream"
-      ? inferredMime
-      : declaredMime;
-  if (!extension || !inferredMime || !mimeType || !allowedUploadTypes.has(mimeType)) {
-    throw new Error("不支持该文件类型；请上传常用文本、图片、音视频、Office、PDF 或 ZIP 文件");
+  const extension = fileExtension(normalizedName);
+  const resolved = canonicalUploadMimeType(
+    normalizedName,
+    input.declaredMimeType,
+  );
+  if (!extension || !resolved) {
+    const summary = SUPPORTED_FILE_GROUPS
+      .map((group) => `${group.label}（${group.extensions.join("、")}）`)
+      .join("；");
+    throw new Error(`不支持该文件类型；当前支持：${summary}`);
   }
-  if (!allowedUploadTypes.get(mimeType)?.includes(extension)) {
-    throw new Error("文件扩展名与声明的 MIME 类型不一致");
-  }
+  const mimeType = resolved.mimeType;
   if (!hasExpectedSignature(mimeType, new Uint8Array(input.bytes))) {
     throw new Error("文件内容与扩展名不一致，已拒绝上传");
   }

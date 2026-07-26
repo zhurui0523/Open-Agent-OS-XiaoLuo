@@ -35,6 +35,7 @@ import type {
   NodeKind,
   PortDataType,
 } from "../types";
+import { SUPPORTED_FILE_ACCEPT } from "../lib/file-formats";
 import { CanvasContextMenu } from "./canvas-context-menu";
 import {
   CanvasCollaborationPanel,
@@ -741,59 +742,75 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     event: React.ChangeEvent<HTMLInputElement>,
   ) {
     const input = event.currentTarget;
-    const file = input.files?.[0];
+    const files = Array.from(input.files ?? []);
     input.value = "";
-    if (!file) return;
-    let asset;
-    try {
-      asset = await os.uploadAsset(file, {
-        sourceType: "canvas-upload",
-        sourceRef: os.activeCanvasId,
-        tags: ["画布上传"],
-      });
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "文件上传失败");
-      return;
+    if (!files.length) return;
+    for (const [index, file] of files.entries()) {
+      let asset;
+      try {
+        asset = await os.uploadAsset(file, {
+          sourceType: "canvas-upload",
+          sourceRef: os.activeCanvasId,
+          tags: ["画布上传"],
+        });
+      } catch (error) {
+        window.alert(
+          `${file.name}：${error instanceof Error ? error.message : "文件上传失败"}`,
+        );
+        continue;
+      }
+      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+      const kind: NodeKind = asset.kind === "image" ||
+        asset.kind === "video" ||
+        asset.kind === "audio" ||
+        asset.kind === "text"
+        ? asset.kind
+        : "document";
+      let prompt = `从本地导入 ${file.name}，可继续补充处理要求。`;
+      if (
+        kind === "text" &&
+        file.size <= 2_000_000 &&
+        (file.type.startsWith("text/") ||
+          [
+            "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml",
+            "yml", "xml", "html", "htm", "css", "js", "mjs", "cjs", "ts",
+            "tsx", "jsx", "py", "java", "c", "cpp", "h", "hpp", "go", "rs",
+            "sql", "log", "ini", "toml",
+          ].includes(extension))
+      ) {
+        const preview = (await file.text()).trim().slice(0, 10_000);
+        if (preview) prompt = preview;
+      }
+      const sizeLabel =
+        file.size >= 1_048_576
+          ? `${(file.size / 1_048_576).toFixed(1)} MB`
+          : `${Math.max(1, Math.round(file.size / 1024))} KB`;
+      os.addNode(
+        kind,
+        {
+          x: uploadAnchorRef.current.x + index * 36,
+          y: uploadAnchorRef.current.y + index * 36,
+        },
+        {
+          title: file.name,
+          prompt,
+          result: `已进入 AI 文件系统 · ${sizeLabel}`,
+          parameters: {
+            source: "asset-kernel",
+            assetId: asset.id,
+            assetUri: asset.uri,
+            assetContentUrl: asset.contentUrl,
+            assetDownloadUrl: asset.downloadUrl,
+            fileName: asset.name,
+            mimeType: asset.mimeType,
+            size: asset.size,
+            sourceType: asset.sourceType,
+            sourceRef: asset.sourceRef,
+            sourceVersion: asset.currentVersion,
+          },
+        },
+      );
     }
-    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-    const kind: NodeKind = file.type.startsWith("image/")
-      ? "image"
-      : file.type.startsWith("video/")
-        ? "video"
-        : file.type.startsWith("audio/")
-          ? "audio"
-          : file.type.startsWith("text/") ||
-              ["md", "txt", "json"].includes(extension)
-            ? "text"
-            : "document";
-    let prompt = `从本地导入 ${file.name}，可继续补充处理要求。`;
-    if (
-      kind === "text" &&
-      file.size <= 2_000_000 &&
-      (file.type.startsWith("text/") ||
-        ["md", "txt", "json"].includes(extension))
-    ) {
-      const preview = (await file.text()).trim().slice(0, 360);
-      if (preview) prompt = preview;
-    }
-    const sizeLabel =
-      file.size >= 1_048_576
-        ? `${(file.size / 1_048_576).toFixed(1)} MB`
-        : `${Math.max(1, Math.round(file.size / 1024))} KB`;
-    os.addNode(kind, uploadAnchorRef.current, {
-      title: file.name,
-      prompt,
-      result: `已进入 AI 文件系统 · ${sizeLabel}`,
-      parameters: {
-        source: "asset-kernel",
-        assetId: asset.id,
-        assetUri: asset.uri,
-        assetContentUrl: asset.contentUrl,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        size: file.size,
-      },
-    });
   }
 
   const scale = os.zoom / 100;
@@ -1234,9 +1251,10 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             ref={uploadInputRef}
             className="canvas-file-input"
             type="file"
+            multiple
             tabIndex={-1}
             aria-hidden="true"
-            accept=".txt,.md,.json,.pdf,text/*,image/*,video/*"
+            accept={SUPPORTED_FILE_ACCEPT}
             onChange={handleCanvasUpload}
           />
 
