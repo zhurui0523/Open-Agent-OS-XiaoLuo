@@ -1,5 +1,6 @@
 import OSS from "ali-oss";
 import mysql from "mysql2/promise";
+import { mysqlSslOptions } from "./mysql-tls.mjs";
 
 process.loadEnvFile(".env.local");
 
@@ -47,13 +48,18 @@ try {
     database: process.env.DB_NAME,
     charset: "utf8mb4",
     connectTimeout: 10_000,
-    ssl:
-      process.env.DB_SSL_MODE === "disabled"
-        ? undefined
-        : { rejectUnauthorized: process.env.DB_SSL_MODE === "required" },
+    ssl: mysqlSslOptions(),
   });
   await connection.query("SELECT 1 AS ok");
   console.log("MySQL：连接成功，查询正常。");
+  const tlsSocket = connection.connection?.stream;
+  if (typeof tlsSocket?.getPeerCertificate === "function") {
+    const peer = tlsSocket.getPeerCertificate();
+    const cipher = tlsSocket.getCipher?.();
+    console.log(
+      `MySQL TLS：${tlsSocket.getProtocol?.() ?? "unknown"} / ${cipher?.name ?? "unknown"} / ${peer?.issuer?.CN ?? "unknown issuer"}`,
+    );
+  }
 } catch (error) {
   failed = true;
   console.error(`MySQL：连接失败（${safeError(error)}）。`);

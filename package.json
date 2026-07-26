@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "dev:local": "vinext dev --hostname 127.0.0.1 --port 3001",
+    "dev:local": "node scripts/start-local-next.mjs",
     "build": "vinext build",
     "canvas:benchmark": "node scripts/benchmark-canvas.mjs",
     "cloud:verify": "node scripts/verify-cloud-services.mjs",
@@ -23,6 +23,7 @@
     "db:migrate": "node --env-file=.env.local scripts/migrate-v2.mjs",
     "db:migrate:dry": "node --env-file=.env.local scripts/migrate-v2.mjs --dry-run",
     "db:verify": "node --env-file=.env.local scripts/migrate-v2.mjs --verify",
+    "db:configure-ca": "node scripts/configure-db-ca.mjs",
     "legacy:migrate:dry": "node --env-file=.env.local scripts/legacy-data-migration.mjs --dry-run",
     "legacy:migrate": "node --env-file=.env.local scripts/legacy-data-migration.mjs --apply",
     "legacy:verify": "node --env-file=.env.local scripts/legacy-data-migration.mjs --verify"

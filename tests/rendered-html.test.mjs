@@ -412,17 +412,24 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
 });
 
 test("offers a local development entry that uses remote MySQL and OSS", async () => {
-  const [packageJson, launcher, envExample, gitignore] = await Promise.all([
-    readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readFile(new URL("../start-local.cmd", import.meta.url), "utf8"),
-    readFile(new URL("../.env.example", import.meta.url), "utf8"),
-    readFile(new URL("../.gitignore", import.meta.url), "utf8"),
-  ]);
+  const [packageJson, launcher, nextLauncher, envExample, gitignore] =
+    await Promise.all([
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../start-local.cmd", import.meta.url), "utf8"),
+      readFile(
+        new URL("../scripts/start-local-next.mjs", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../.env.example", import.meta.url), "utf8"),
+      readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+    ]);
 
   assert.equal(
     JSON.parse(packageJson).scripts["dev:local"],
-    "vinext dev --hostname 127.0.0.1 --port 3001",
+    "node scripts/start-local-next.mjs",
   );
+  assert.match(nextLauncher, /node_modules\/next\/dist\/bin\/next/);
+  assert.match(nextLauncher, /127\.0\.0\.1/);
   assert.match(launcher, /http:\/\/localhost:3001\//);
   assert.match(launcher, /remote MySQL \+ Alibaba Cloud OSS/);
   assert.doesNotMatch(launcher, /DATABASE_DRIVER=d1/);

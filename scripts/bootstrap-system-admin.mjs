@@ -1,5 +1,6 @@
 import { createHmac, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import mysql from "mysql2/promise";
+import { mysqlSslOptions } from "./mysql-tls.mjs";
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -44,10 +45,7 @@ const connection = await mysql.createConnection({
   user: required("DB_USER"),
   password: required("DB_PASSWORD"),
   database: required("DB_NAME"),
-  ssl:
-    process.env.DB_SSL_MODE === "disabled"
-      ? undefined
-      : { rejectUnauthorized: process.env.DB_SSL_MODE === "required" },
+  ssl: mysqlSslOptions(),
 });
 
 try {

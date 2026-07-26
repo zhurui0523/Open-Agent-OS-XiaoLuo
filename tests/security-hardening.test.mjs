@@ -31,14 +31,24 @@ test("rate limits login by private IP and account identifier buckets", async () 
 });
 
 test("fails closed for production database TLS secrets and package signatures", async () => {
-  const [runtime, vault, packages, executors] = await Promise.all([
-    source("app/lib/server-runtime-config.ts"),
-    source("app/lib/secret-vault.ts"),
-    source("app/api/v2/packages/route.ts"),
-    source("app/lib/kernel-executors.ts"),
-  ]);
+  const [runtime, mysql, tls, migration, verifier, vault, packages, executors] =
+    await Promise.all([
+      source("app/lib/server-runtime-config.ts"),
+      source("app/lib/mysql.ts"),
+      source("scripts/mysql-tls.mjs"),
+      source("scripts/migrate-v2.mjs"),
+      source("scripts/verify-cloud-services.mjs"),
+      source("app/lib/secret-vault.ts"),
+      source("app/api/v2/packages/route.ts"),
+      source("app/lib/kernel-executors.ts"),
+    ]);
   assert.match(runtime, /生产环境必须配置 DB_SSL_MODE=required/);
   assert.match(runtime, /process\.env\.NODE_ENV === "production"/);
+  assert.match(runtime, /DB_SSL_CA_BASE64/);
+  assert.match(mysql, /mysql\.sslCa/);
+  assert.match(tls, /BEGIN CERTIFICATE/);
+  assert.match(migration, /mysqlSslOptions/);
+  assert.match(verifier, /mysqlSslOptions/);
   assert.match(vault, /生产环境必须配置独立的 SECRET_ENCRYPTION_KEY/);
   assert.match(packages, /packageSignaturesRequired\(\)/);
   assert.match(executors, /allowedTrustStates/);

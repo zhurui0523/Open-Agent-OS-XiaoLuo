@@ -26,7 +26,10 @@ function createMysqlPool() {
     ssl:
       mysql.sslMode === "disabled"
         ? undefined
-        : { rejectUnauthorized: mysql.sslMode === "required" },
+        : {
+            rejectUnauthorized: mysql.sslMode === "required",
+            ...(mysql.sslCa ? { ca: mysql.sslCa } : {}),
+          },
   });
 }
 

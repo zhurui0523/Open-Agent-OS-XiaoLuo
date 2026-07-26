@@ -5,6 +5,7 @@ export interface MysqlRuntimeConfig {
   password: string;
   database: string;
   sslMode: "disabled" | "preferred" | "required";
+  sslCa: string | null;
 }
 
 export interface OssRuntimeConfig {
@@ -62,6 +63,30 @@ function sslMode(value: string | undefined): MysqlRuntimeConfig["sslMode"] {
   return mode;
 }
 
+function mysqlSslCa(value: string | undefined) {
+  const encoded = value?.trim();
+  if (!encoded) return null;
+  if (!/^[A-Za-z0-9+/=]+$/.test(encoded)) {
+    throw new Error("DB_SSL_CA_BASE64 不是有效的 Base64");
+  }
+  try {
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
+    const pem = new TextDecoder().decode(bytes);
+    if (
+      !pem.includes("-----BEGIN CERTIFICATE-----") ||
+      !pem.includes("-----END CERTIFICATE-----")
+    ) {
+      throw new Error("missing PEM certificate markers");
+    }
+    return pem;
+  } catch {
+    throw new Error("DB_SSL_CA_BASE64 不是有效的 PEM 证书链");
+  }
+}
+
 export function packageSignaturesRequired() {
   return (
     process.env.NODE_ENV === "production" ||
@@ -85,6 +110,7 @@ export function serverRuntimeConfig() {
         password: required("DB_PASSWORD"),
         database: required("DB_NAME"),
         sslMode: sslMode(process.env.DB_SSL_MODE),
+        sslCa: mysqlSslCa(process.env.DB_SSL_CA_BASE64),
       } satisfies MysqlRuntimeConfig,
     },
     storage: {

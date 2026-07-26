@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import mysql from "mysql2/promise";
+import { mysqlSslOptions } from "./mysql-tls.mjs";
 
 const dryRun = process.argv.includes("--dry-run");
 const verifyOnly = process.argv.includes("--verify");
@@ -18,10 +19,7 @@ const connection = await mysql.createConnection({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   charset: "utf8mb4",
-  ssl:
-    process.env.DB_SSL_MODE === "disabled"
-      ? undefined
-      : { rejectUnauthorized: process.env.DB_SSL_MODE === "required" },
+  ssl: mysqlSslOptions(),
 });
 
 const migrations = [

@@ -53,7 +53,7 @@ const serverPid = serverAlreadyRunning
   ? "existing"
   : startProcess({
       args: [
-        "node_modules/vinext/dist/cli.js",
+        "node_modules/next/dist/bin/next",
         "dev",
         "--hostname",
         "127.0.0.1",

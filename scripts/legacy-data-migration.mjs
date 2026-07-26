@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 import mysql from "mysql2/promise";
 import OSS from "ali-oss";
+import { mysqlSslOptions } from "./mysql-tls.mjs";
 
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
@@ -57,13 +58,7 @@ function config(prefix, fallback = {}) {
     dateStrings: true,
     supportBigNumbers: true,
     bigNumberStrings: true,
-    ssl:
-      process.env[`${prefix}_SSL_MODE`] === "disabled"
-        ? undefined
-        : {
-            rejectUnauthorized:
-              process.env[`${prefix}_SSL_MODE`] === "required",
-          },
+    ssl: mysqlSslOptions(prefix),
   };
 }
 
