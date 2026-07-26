@@ -6,6 +6,10 @@ if (!token) {
 }
 
 let stopping = false;
+const minimumDelayMs = 2_000;
+const maximumDelayMs = 30_000;
+let nextDelayMs = minimumDelayMs;
+let lastFailure = "";
 
 async function tick() {
   try {
@@ -16,18 +20,26 @@ async function tick() {
     });
     if (!response.ok) {
       const message = await response.text();
-      console.error(
-        `[runtime-worker] tick failed: HTTP ${response.status} ${message.slice(0, 300)}`,
-      );
+      const failure = `HTTP ${response.status} ${message.slice(0, 300)}`;
+      if (failure !== lastFailure) {
+        console.error(`[runtime-worker] tick failed: ${failure}`);
+        lastFailure = failure;
+      }
+      nextDelayMs = Math.min(maximumDelayMs, nextDelayMs * 2);
+    } else {
+      nextDelayMs = minimumDelayMs;
+      lastFailure = "";
     }
   } catch (error) {
-    console.error(
-      `[runtime-worker] ${new Date().toISOString()} ${
-        error instanceof Error ? error.message : "tick failed"
-      }`,
-    );
+    const failure =
+      error instanceof Error ? error.message : "tick failed";
+    if (failure !== lastFailure) {
+      console.error(`[runtime-worker] ${new Date().toISOString()} ${failure}`);
+      lastFailure = failure;
+    }
+    nextDelayMs = Math.min(maximumDelayMs, nextDelayMs * 2);
   }
-  if (!stopping) setTimeout(tick, 2_000);
+  if (!stopping) setTimeout(tick, nextDelayMs);
 }
 
 process.on("SIGINT", () => {

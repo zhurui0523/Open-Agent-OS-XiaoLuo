@@ -688,8 +688,80 @@ export async function userByLoginIdentifier(identifier: string) {
   return user ?? null;
 }
 
+function dependencyFailure(error: unknown) {
+  const signals: Array<{ code: string; message: string }> = [];
+  let current = error;
+
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    if (current instanceof Error) {
+      const extended = current as Error & {
+        code?: unknown;
+        cause?: unknown;
+      };
+      signals.push({
+        code: typeof extended.code === "string" ? extended.code : "",
+        message: extended.message,
+      });
+      current = extended.cause;
+      continue;
+    }
+    if (typeof current === "object") {
+      const record = current as Record<string, unknown>;
+      signals.push({
+        code: typeof record.code === "string" ? record.code : "",
+        message: typeof record.message === "string" ? record.message : "",
+      });
+      current = record.cause;
+      continue;
+    }
+    break;
+  }
+
+  const combined = signals
+    .map(({ code, message }) => `${code} ${message}`)
+    .join(" ")
+    .toLowerCase();
+  if (
+    combined.includes("handshake_no_ssl_support") ||
+    combined.includes("does not support secure connection")
+  ) {
+    return {
+      code: "DATABASE_TLS_REQUIRED",
+      developmentMessage:
+        "MySQL 服务未启用 TLS，请先在 RDS 控制台开启 SSL/TLS 后重试。",
+    };
+  }
+  if (
+    combined.includes("proxy request failed") ||
+    combined.includes("cannot connect to the specified address") ||
+    combined.includes("econnrefused") ||
+    combined.includes("etimedout") ||
+    combined.includes("enotfound") ||
+    combined.includes("protocol_connection_lost")
+  ) {
+    return {
+      code: "DEPENDENCY_UNAVAILABLE",
+      developmentMessage: "依赖服务连接失败，请检查网络、MySQL 与 OSS 配置。",
+    };
+  }
+  return null;
+}
+
 export function jsonError(error: unknown, fallback: string) {
   if (error instanceof Response) return error;
+  const dependency = dependencyFailure(error);
+  if (dependency) {
+    return Response.json(
+      {
+        error:
+          process.env.NODE_ENV === "production"
+            ? "服务暂不可用，请稍后重试"
+            : dependency.developmentMessage,
+        code: dependency.code,
+      },
+      { status: 503 },
+    );
+  }
   const message =
     process.env.NODE_ENV === "production"
       ? fallback

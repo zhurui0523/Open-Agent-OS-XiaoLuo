@@ -44,6 +44,21 @@ test("fails closed for production database TLS secrets and package signatures", 
   assert.match(executors, /allowedTrustStates/);
 });
 
+test("reports unavailable dependencies safely and backs off an unhealthy worker", async () => {
+  const [auth, worker, verifier] = await Promise.all([
+    source("app/lib/auth.ts"),
+    source("scripts/runtime-worker.mjs"),
+    source("scripts/verify-cloud-services.mjs"),
+  ]);
+  assert.match(auth, /DATABASE_TLS_REQUIRED/);
+  assert.match(auth, /DEPENDENCY_UNAVAILABLE/);
+  assert.match(auth, /status:\s*503/);
+  assert.match(worker, /maximumDelayMs\s*=\s*30_000/);
+  assert.match(worker, /Math\.min\(maximumDelayMs,\s*nextDelayMs \* 2\)/);
+  assert.match(verifier, /MySQL：连接失败/);
+  assert.match(verifier, /阿里云 OSS：连接成功/);
+});
+
 test("blocks private endpoints and streams remote responses through byte limits", async () => {
   const [adapters, files, worker, asyncJobs] = await Promise.all([
     source("app/lib/model-adapters.ts"),
