@@ -139,9 +139,11 @@ test("ships scalable canvas, asset management, sharing, and async task controls"
   assert.match(canvas, /selectionBox/);
   assert.match(canvas, /os\.selectNodes/);
   assert.match(canvas, /SUPPORTED_FILE_ACCEPT/);
-  assert.match(drawer, /已归档/);
-  assert.match(drawer, /回收站/);
-  assert.match(drawer, /onDuplicate/);
+  assert.doesNotMatch(drawer, /已归档|回收站|当前项目|版本快照/);
+  assert.match(drawer, /修改画布名称/);
+  assert.match(drawer, /共享画布/);
+  assert.match(drawer, /删除画布/);
+  assert.match(drawer, /企业协作/);
   assert.match(controller, /async function duplicateCanvas/);
   assert.match(controller, /async function restoreCanvas/);
   assert.doesNotMatch(
@@ -152,12 +154,16 @@ test("ships scalable canvas, asset management, sharing, and async task controls"
   assert.match(edges, /visibleBounds/);
   assert.match(assets, /nextCursor/);
   assert.match(assets, /批量下载/);
-  assert.match(assets, /来源追溯/);
+  assert.doesNotMatch(assets, /来源|sourceFilter|sourceOptions|files\/lineage/);
   assert.match(assets, /添加到画布/);
   assert.match(controller, /function addAssetToCanvas/);
   assert.match(controller, /function graphForBranch/);
   assert.match(fileBulk, /action === "tags"/);
   assert.match(tasks, /window\.setInterval\(refresh, 4_000\)/);
+  assert.match(tasks, /task-center-backdrop/);
+  assert.match(tasks, /role="dialog"/);
+  assert.match(tasks, /aria-modal="true"/);
+  assert.match(tasks, /event\.key === "Escape"/);
   assert.match(tasks, /异步视频和工作流在关闭页面后继续运行/);
   assert.match(share, /tokenHash/);
   assert.match(migration, /source_port_id/);

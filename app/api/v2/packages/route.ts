@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import {
   packageCapabilities,
@@ -11,22 +11,31 @@ import {
   outboxEvents,
   trustedPublishers,
 } from "../../../../db/schema";
-import { requireUser } from "../../../lib/auth";
+import { requireUser, type AuthUser } from "../../../lib/auth";
 import {
   ManifestValidationError,
   parsePackagePayload,
+  type XiaoLuoPackageManifest,
 } from "../../../lib/package-contract";
 import { serializePackage } from "../../../lib/registry-serialization";
 import { mysqlNow } from "../../../lib/mysql";
 import { domainEventRows } from "../../../lib/domain-events";
 import { requireRequestedWorkspace } from "../../../lib/workspace-context";
+import { requireWorkspaceAccess } from "../../../lib/authorization";
 import {
   canonicalPackageManifest,
+  normalizeRuntimeEntryForTrustScan,
   packageManifestSha256,
   scanPackageManifest,
   verifyPackageSignature,
 } from "../../../lib/package-trust";
 import { packageSignaturesRequired } from "../../../lib/server-runtime-config";
+import { packageAccessScope } from "../../../lib/registry-access";
+import {
+  canRefreshGeneratedGithubManifest,
+  packageInstallSourceFromDetailJson,
+  packageInstallSourceFromScanJson,
+} from "../../../lib/package-version-policy";
 
 function errorResponse(error: unknown) {
   if (error instanceof Response) return error;
@@ -58,27 +67,121 @@ function audit(
   };
 }
 
-export async function POST(request: Request) {
+export async function installPackage(
+  request: Request,
+  options: {
+    allowUnsignedGithubImport?: boolean;
+    authenticatedUser?: AuthUser;
+    authorizedWorkspaceId?: string;
+  } = {},
+) {
   try {
-    const user = await requireUser(request);
+    // Imported packages can spend several minutes in the isolated build
+    // stage. Reusing the principal verified by the import route prevents a
+    // short-lived access token from expiring between build completion and the
+    // atomic database install transaction.
+    const user = options.authenticatedUser ?? (await requireUser(request));
     const payload = (await request.json()) as {
       workspaceId?: string;
       manifest?: unknown;
       signature?: string;
       publisherKeyId?: string;
+      source?: {
+        kind?: unknown;
+        artifactKey?: unknown;
+        archiveSha256?: unknown;
+        repository?: unknown;
+        commit?: unknown;
+        generatedManifest?: unknown;
+        executionReady?: unknown;
+      };
     };
-    const workspaceId = await requireRequestedWorkspace(
-      request,
-      user.id,
-      "manage",
-      payload,
-    );
     const manifest = parsePackagePayload(payload);
+    const workspaceId = options.authorizedWorkspaceId
+      ? options.authorizedWorkspaceId
+      : await requireRequestedWorkspace(
+          request,
+          user.id,
+          manifest.type === "skill" || manifest.type === "plugin"
+            ? "view"
+            : "manage",
+          payload,
+        );
+    if (
+      options.authorizedWorkspaceId &&
+      payload.workspaceId &&
+      payload.workspaceId !== options.authorizedWorkspaceId
+    ) {
+      return Response.json(
+        { error: "安装目标工作区与已授权工作区不一致" },
+        { status: 403 },
+      );
+    }
+    const requestedAccessScope = packageAccessScope(manifest);
+    if (manifest.type === "skill" || manifest.type === "plugin") {
+      if (
+        requestedAccessScope !== "personal" &&
+        requestedAccessScope !== "marketplace"
+      ) {
+        return Response.json(
+          {
+            error:
+              "安装 Skill 或插件时只能选择“私有”或“共享”可见范围",
+          },
+          { status: 400 },
+        );
+      }
+    }
     const manifestJson = canonicalPackageManifest(manifest);
     const integritySha256 = packageManifestSha256(manifestJson);
     const signature = payload.signature?.trim() || null;
+    const source =
+      payload.source &&
+      ["archive", "github"].includes(String(payload.source.kind))
+        ? {
+            kind: String(payload.source.kind) as "archive" | "github",
+            artifactKey:
+              typeof payload.source.artifactKey === "string"
+                ? payload.source.artifactKey.slice(0, 500)
+                : null,
+            archiveSha256:
+              typeof payload.source.archiveSha256 === "string"
+                ? payload.source.archiveSha256.slice(0, 64)
+                : null,
+            repository:
+              typeof payload.source.repository === "string"
+                ? payload.source.repository.slice(0, 300)
+                : null,
+            commit:
+              typeof payload.source.commit === "string"
+                ? payload.source.commit.slice(0, 64)
+                : null,
+            generatedManifest: payload.source.generatedManifest === true,
+            executionReady: payload.source.executionReady !== false,
+          }
+        : null;
     const db = await getDb();
-    const scan = scanPackageManifest(manifest);
+    const [existing] = await db
+      .select()
+      .from(packages)
+      .where(
+        and(
+          eq(packages.workspaceId, workspaceId),
+          eq(packages.packageKey, manifest.id),
+        ),
+      )
+      .limit(1);
+    const runtimeEntryForTrustScan = normalizeRuntimeEntryForTrustScan(
+      manifest.runtime.entry,
+      request.url,
+    );
+    const scan = scanPackageManifest({
+      ...manifest,
+      runtime: {
+        ...manifest.runtime,
+        entry: runtimeEntryForTrustScan,
+      },
+    });
     const publisherKeyId = payload.publisherKeyId?.trim() || null;
     const [publisherIdentity] = publisherKeyId
       ? await db
@@ -123,7 +226,8 @@ export async function POST(request: Request) {
     if (
       packageSignaturesRequired() &&
       !signatureVerified &&
-      !workspaceDeclarativeSkill
+      !workspaceDeclarativeSkill &&
+      !(options.allowUnsignedGithubImport && source?.kind === "github")
     ) {
       return Response.json(
         { error: "当前服务器要求由可信发布者签名的 Package" },
@@ -140,50 +244,99 @@ export async function POST(request: Request) {
         ),
       )
       .limit(1);
-    if (
-      existingReview &&
-      existingReview.manifestSha256 !== integritySha256
-    ) {
+    const previousSourceEvents = existing
+      ? await db
+          .select({ detailJson: registryEvents.detailJson })
+          .from(registryEvents)
+          .where(
+            and(
+              eq(registryEvents.workspaceId, workspaceId),
+              eq(registryEvents.entityId, existing.id),
+            ),
+          )
+          .orderBy(desc(registryEvents.createdAt))
+          .limit(20)
+      : [];
+    const existingInstallSource =
+      packageInstallSourceFromScanJson(existingReview?.scanJson) ??
+      previousSourceEvents
+        .map((event) => packageInstallSourceFromDetailJson(event.detailJson))
+        .find((candidate) => candidate !== null) ??
+      null;
+    const manifestChanged = Boolean(
+      existingReview && existingReview.manifestSha256 !== integritySha256,
+    );
+    const generatedGithubRefresh =
+      manifestChanged &&
+      canRefreshGeneratedGithubManifest({
+        existingSource: existingInstallSource,
+        incomingSource: source,
+      });
+    if (manifestChanged && !generatedGithubRefresh) {
       return Response.json(
         { error: "相同 Package 版本的 Manifest 已存在且摘要不同，请提升版本号" },
         { status: 409 },
       );
     }
+    const reviewScan = source ? { ...scan, installSource: source } : scan;
     const automaticReviewStatus =
       scan.risk === "high"
         ? "quarantined"
         : signatureVerified ||
-            (manifest.runtime.type === "declarative" && scan.risk === "low")
+            (manifest.runtime.type === "declarative" && scan.risk === "low") ||
+            manifest.runtime.type === "sandbox-ui"
           ? "approved"
           : "pending";
+    let previousCriticalIssues: string[] = [];
+    try {
+      const previousScan = JSON.parse(existingReview?.scanJson ?? "{}") as {
+        issues?: Array<{ code?: string; severity?: string }>;
+      };
+      previousCriticalIssues = (previousScan.issues ?? [])
+        .filter((issue) => issue.severity === "critical")
+        .map((issue) => issue.code ?? "");
+    } catch {
+      previousCriticalIssues = [];
+    }
+    const recoverableInternalRuntimeQuarantine =
+      existingReview?.status === "quarantined" &&
+      automaticReviewStatus === "approved" &&
+      previousCriticalIssues.length > 0 &&
+      previousCriticalIssues.every(
+        (code) => code === "undeclared-runtime-origin",
+      );
     const reviewStatus =
       existingReview &&
       ["approved", "rejected", "quarantined", "revoked"].includes(
         existingReview.status,
-      )
+      ) &&
+      !recoverableInternalRuntimeQuarantine
         ? existingReview.status
         : automaticReviewStatus;
     const reviewId =
       existingReview?.id ?? `package_review_${crypto.randomUUID()}`;
-    const effectiveSignatureVerified =
-      signatureVerified || existingReview?.signatureVerified === true;
+    const effectiveSignatureVerified = manifestChanged
+      ? signatureVerified
+      : signatureVerified || existingReview?.signatureVerified === true;
     const trustState =
       reviewStatus === "approved"
         ? effectiveSignatureVerified
           ? "trusted"
           : "reviewed"
         : reviewStatus;
-    const packageEnabled = reviewStatus === "approved";
-    const [existing] = await db
-      .select()
-      .from(packages)
-      .where(
-        and(
-          eq(packages.workspaceId, workspaceId),
-          eq(packages.packageKey, manifest.id),
-        ),
-      )
-      .limit(1);
+    const packageEnabled =
+      reviewStatus === "approved" && source?.executionReady !== false;
+    if (
+      existing &&
+      (manifest.type === "skill" || manifest.type === "plugin") &&
+      existing.createdBy !== user.id &&
+      user.platformRole !== "system_admin"
+    ) {
+      return Response.json(
+        { error: "不能修改其他用户创建的 Skill 或插件" },
+        { status: 403 },
+      );
+    }
     const packageId = existing?.id ?? `package_${crypto.randomUUID()}`;
     const existingCapabilityRows = existing
       ? await db
@@ -210,11 +363,22 @@ export async function POST(request: Request) {
       runtimeUrl: manifest.runtime.entry ?? null,
       manifestJson,
       permissionsJson: JSON.stringify(manifest.permissions ?? []),
-      lifecycleState: packageEnabled ? "active" : reviewStatus,
+      lifecycleState:
+        source?.executionReady === false
+          ? "source_pending_build"
+          : packageEnabled
+            ? "active"
+            : reviewStatus,
       healthStatus:
-        manifest.runtime.type === "declarative" ? "healthy" : "unchecked",
+        source?.executionReady === false
+          ? "build_required"
+          : manifest.runtime.type === "declarative"
+            ? "healthy"
+            : "unchecked",
       integritySha256,
-      signature: signature ?? existingReview?.signature ?? null,
+      signature: manifestChanged
+        ? signature
+        : signature ?? existingReview?.signature ?? null,
       publisherId:
         publisherIdentity?.publisherId ?? existingReview?.publisherId ?? null,
       reviewId,
@@ -248,7 +412,11 @@ export async function POST(request: Request) {
       entityType: "package",
       entityId: packageId,
       requestId: request.headers.get("x-request-id"),
-      detail: { packageKey: manifest.id, version: manifest.version },
+      detail: {
+        packageKey: manifest.id,
+        version: manifest.version,
+        ...(source ? { source } : {}),
+      },
     };
     const domainRows = domainEventRows(domainInput);
     await db.transaction(async (tx) => {
@@ -264,15 +432,20 @@ export async function POST(request: Request) {
               publisherIdentity?.keyId ??
               existingReview.publisherKeyId ??
               null,
-            signature: signature ?? existingReview.signature,
             signatureVerified:
               effectiveSignatureVerified,
             status: reviewStatus,
-            scanJson: JSON.stringify(scan),
+            manifestSha256: integritySha256,
+            signature: manifestChanged
+              ? signature
+              : signature ?? existingReview.signature,
+            scanJson: JSON.stringify(reviewScan),
             reason:
-              reviewStatus === "quarantined"
-                ? "自动扫描判定为高风险"
-                : existingReview.reason,
+              generatedGithubRefresh
+                ? "同一 GitHub Commit 的系统自动适配 Manifest 已安全更新"
+                : reviewStatus === "quarantined"
+                  ? "自动扫描判定为高风险"
+                  : existingReview.reason,
             updatedAt: now,
           })
           .where(eq(packageReviews.id, reviewId));
@@ -287,12 +460,14 @@ export async function POST(request: Request) {
           signature,
           signatureVerified: effectiveSignatureVerified,
           status: reviewStatus,
-          scanJson: JSON.stringify(scan),
+          scanJson: JSON.stringify(reviewScan),
           reason:
             reviewStatus === "approved"
               ? effectiveSignatureVerified
                 ? "可信发布者签名与安全扫描通过"
-                : "低风险声明式 Package 自动审核通过"
+                : manifest.runtime.type === "sandbox-ui"
+                  ? "受限沙盒插件安全扫描通过"
+                  : "低风险声明式 Package 自动审核通过"
               : reviewStatus === "quarantined"
                 ? "自动扫描判定为高风险"
                 : "等待系统管理员审核",
@@ -333,7 +508,19 @@ export async function POST(request: Request) {
           ),
         )
         .limit(1);
-      if (!version) {
+      if (version) {
+        await tx
+          .update(packageVersions)
+          .set({
+            manifestJson,
+            permissionsJson: JSON.stringify(manifest.permissions ?? []),
+            integritySha256,
+            signature,
+            installedBy: user.id,
+            installedAt: now,
+          })
+          .where(eq(packageVersions.id, version.id));
+      } else {
         await tx.insert(packageVersions).values({
           id: `package_version_${crypto.randomUUID()}`,
           packageId,
@@ -387,6 +574,7 @@ export async function POST(request: Request) {
             integritySha256,
             trustState,
             reviewStatus,
+            ...(source ? { source } : {}),
           },
         ),
       );
@@ -423,40 +611,154 @@ export async function POST(request: Request) {
   }
 }
 
+export async function POST(request: Request) {
+  return installPackage(request);
+}
+
 export async function PATCH(request: Request) {
   try {
     const user = await requireUser(request);
     const payload = (await request.json()) as {
       id?: string;
       enabled?: boolean;
+      accessScope?: "personal" | "marketplace";
       workspaceId?: string;
     };
-    const workspaceId = await requireRequestedWorkspace(
+    const requestedWorkspaceId = await requireRequestedWorkspace(
       request,
       user.id,
-      "manage",
+      "view",
       payload,
     );
-    if (!payload.id || typeof payload.enabled !== "boolean") {
-      return Response.json({ error: "id 和 enabled 必填" }, { status: 400 });
+    const updatesEnabled = typeof payload.enabled === "boolean";
+    const updatesAccessScope =
+      payload.accessScope === "personal" ||
+      payload.accessScope === "marketplace";
+    if (!payload.id || (!updatesEnabled && !updatesAccessScope)) {
+      return Response.json(
+        { error: "id 必填，并且至少提供 enabled 或 accessScope" },
+        { status: 400 },
+      );
+    }
+    if (payload.accessScope !== undefined && !updatesAccessScope) {
+      return Response.json(
+        { error: "accessScope 只支持 personal 或 marketplace" },
+        { status: 400 },
+      );
     }
     const packageId = payload.id;
-    const enabled = payload.enabled;
     const db = await getDb();
-    if (enabled) {
-      const [candidate] = await db
-        .select({ trustState: packages.trustState })
-        .from(packages)
-        .where(
-          and(
-            eq(packages.id, packageId),
-            eq(packages.workspaceId, workspaceId),
-          ),
-        )
-        .limit(1);
+    const [candidate] = await db
+      .select()
+      .from(packages)
+      .where(
+        and(
+          eq(packages.id, packageId),
+          eq(packages.workspaceId, requestedWorkspaceId),
+        ),
+      )
+      .limit(1);
+    if (!candidate) {
+      return Response.json({ error: "Package 不存在" }, { status: 404 });
+    }
+    if (
+      updatesAccessScope &&
+      !["skill", "plugin"].includes(candidate.packageType)
+    ) {
+      return Response.json(
+        { error: "只有 Skill 和插件可以修改私有/共享状态" },
+        { status: 400 },
+      );
+    }
+    const canManageOwnExtension =
+      ["skill", "plugin"].includes(candidate.packageType) &&
+      candidate.createdBy === user.id;
+    if (
+      updatesAccessScope &&
+      user.platformRole !== "system_admin" &&
+      !canManageOwnExtension
+    ) {
+      return Response.json(
+        { error: "只能修改自己创建或安装的扩展" },
+        { status: 403 },
+      );
+    }
+    if (user.platformRole !== "system_admin" && !canManageOwnExtension) {
+      await requireWorkspaceAccess(user.id, requestedWorkspaceId, "manage");
+    }
+    let autoApproveSandboxReviewId: string | null = null;
+    let createAutoApproveSandboxReview = false;
+    let autoApproveSandboxScanJson: string | null = null;
+    if (updatesEnabled && payload.enabled) {
+      if (!["trusted", "reviewed"].includes(candidate.trustState)) {
+        if (
+          candidate.packageType === "plugin" &&
+          candidate.runtimeType === "sandbox-ui" &&
+          candidate.healthStatus !== "build_required" &&
+          candidate.lifecycleState !== "source_pending_build"
+        ) {
+          const manifest = JSON.parse(
+            candidate.manifestJson,
+          ) as XiaoLuoPackageManifest;
+          const runtimeEntry = manifest.runtime.entry ?? "";
+          const runtimeEntryForTrustScan =
+            normalizeRuntimeEntryForTrustScan(runtimeEntry, request.url) ??
+            runtimeEntry;
+          const internalRuntimeEntry =
+            runtimeEntryForTrustScan !== runtimeEntry
+              ? runtimeEntryForTrustScan
+              : runtimeEntry.startsWith("/api/v2/packages/runtime/static/")
+                ? runtimeEntry
+                : null;
+          const scan = scanPackageManifest({
+            ...manifest,
+            runtime: {
+              ...manifest.runtime,
+              entry: runtimeEntryForTrustScan,
+            },
+          });
+          const [review] = await db
+            .select()
+            .from(packageReviews)
+            .where(
+              candidate.reviewId
+                ? eq(packageReviews.id, candidate.reviewId)
+                : and(
+                    eq(packageReviews.packageKey, candidate.packageKey),
+                    eq(packageReviews.version, candidate.version),
+                  ),
+            )
+            .limit(1);
+          let previousCriticalIssues: string[] = [];
+          try {
+            const previousScan = JSON.parse(review?.scanJson ?? "{}") as {
+              issues?: Array<{ code?: string; severity?: string }>;
+            };
+            previousCriticalIssues = (previousScan.issues ?? [])
+              .filter((issue) => issue.severity === "critical")
+              .map((issue) => issue.code ?? "");
+          } catch {
+            previousCriticalIssues = [];
+          }
+          const reviewCanBeRecovered =
+            !review ||
+            review.status === "pending" ||
+            (review.status === "quarantined" &&
+              Boolean(internalRuntimeEntry) &&
+              previousCriticalIssues.every(
+                (code) => code === "undeclared-runtime-origin",
+              ));
+          if (reviewCanBeRecovered && scan.risk !== "high") {
+            autoApproveSandboxReviewId =
+              review?.id ?? `package_review_${crypto.randomUUID()}`;
+            createAutoApproveSandboxReview = !review;
+            autoApproveSandboxScanJson = JSON.stringify(scan);
+          }
+        }
+      }
       if (
-        !candidate ||
-        !["trusted", "reviewed"].includes(candidate.trustState)
+        !["trusted", "reviewed"].includes(candidate.trustState) &&
+        !autoApproveSandboxReviewId
       ) {
         return Response.json(
           { error: "Package 尚未通过信任审核，不能启用" },
@@ -464,32 +766,150 @@ export async function PATCH(request: Request) {
         );
       }
     }
-    const eventType = enabled ? "package.enabled" : "package.disabled";
+    let nextManifestJson = candidate.manifestJson;
+    const previousAccessScope = packageAccessScope(
+      JSON.parse(candidate.manifestJson) as Record<string, unknown>,
+    );
+    if (updatesAccessScope) {
+      const manifest = JSON.parse(
+        candidate.manifestJson,
+      ) as Record<string, unknown>;
+      const currentAccess =
+        manifest.access &&
+        typeof manifest.access === "object" &&
+        !Array.isArray(manifest.access)
+          ? (manifest.access as Record<string, unknown>)
+          : {};
+      manifest.access = {
+        ...currentAccess,
+        scope: payload.accessScope,
+      };
+      nextManifestJson = JSON.stringify(manifest);
+    }
+    const eventType = updatesAccessScope
+      ? "package.visibility.updated"
+      : payload.enabled
+        ? "package.enabled"
+        : "package.disabled";
+    const detail = {
+      ...(updatesEnabled ? { enabled: payload.enabled } : {}),
+      ...(autoApproveSandboxReviewId ? { autoReviewed: true } : {}),
+      ...(updatesAccessScope
+        ? {
+            previousAccessScope,
+            accessScope: payload.accessScope,
+          }
+        : {}),
+    };
     const domainRows = domainEventRows({
-      workspaceId,
+      workspaceId: requestedWorkspaceId,
       actorUserId: user.id,
       eventType,
       entityType: "package",
       entityId: packageId,
       requestId: request.headers.get("x-request-id"),
-      detail: { enabled },
+      detail,
     });
     await db.transaction(async (tx) => {
-      await tx
-        .update(packages)
-        .set({
-          enabled,
-          lifecycleState: enabled ? "active" : "disabled",
-          updatedAt: sql`CURRENT_TIMESTAMP`,
-        })
-        .where(
-          and(
-            eq(packages.id, packageId),
-            eq(packages.workspaceId, workspaceId),
-          ),
-        );
+      if (autoApproveSandboxReviewId) {
+        const reviewedAt = mysqlNow();
+        const reviewValues = {
+          status: "approved" as const,
+          scanJson: autoApproveSandboxScanJson ?? "{}",
+          reason: "受限沙盒插件在添加到画布时自动审核通过",
+          reviewedBy: user.id,
+          reviewedAt,
+          updatedAt: reviewedAt,
+        };
+        if (createAutoApproveSandboxReview) {
+          await tx.insert(packageReviews).values({
+            id: autoApproveSandboxReviewId,
+            packageKey: candidate.packageKey,
+            version: candidate.version,
+            publisherId: candidate.publisherId,
+            publisherKeyId: null,
+            manifestSha256: candidate.integritySha256,
+            signature: candidate.signature,
+            signatureVerified: false,
+            status: "approved",
+            scanJson: autoApproveSandboxScanJson ?? "{}",
+            reason: reviewValues.reason,
+            submittedBy: candidate.createdBy,
+            reviewedBy: user.id,
+            reviewedAt,
+            createdAt: reviewedAt,
+            updatedAt: reviewedAt,
+          });
+        } else {
+          await tx
+            .update(packageReviews)
+            .set(reviewValues)
+            .where(eq(packageReviews.id, autoApproveSandboxReviewId));
+        }
+      }
+      if (updatesEnabled && updatesAccessScope) {
+        await tx
+          .update(packages)
+          .set({
+            enabled: payload.enabled,
+            lifecycleState: payload.enabled ? "active" : "disabled",
+            ...(autoApproveSandboxReviewId
+              ? {
+                  trustState: "reviewed",
+                  reviewId: autoApproveSandboxReviewId,
+                }
+              : {}),
+            manifestJson: nextManifestJson,
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          })
+          .where(
+            and(
+              eq(packages.id, packageId),
+              eq(packages.workspaceId, requestedWorkspaceId),
+            ),
+          );
+      } else if (updatesEnabled) {
+        await tx
+          .update(packages)
+          .set({
+            enabled: payload.enabled,
+            lifecycleState: payload.enabled ? "active" : "disabled",
+            ...(autoApproveSandboxReviewId
+              ? {
+                  trustState: "reviewed",
+                  reviewId: autoApproveSandboxReviewId,
+                }
+              : {}),
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          })
+          .where(
+            and(
+              eq(packages.id, packageId),
+              eq(packages.workspaceId, requestedWorkspaceId),
+            ),
+          );
+      } else {
+        await tx
+          .update(packages)
+          .set({
+            manifestJson: nextManifestJson,
+            updatedAt: sql`CURRENT_TIMESTAMP`,
+          })
+          .where(
+            and(
+              eq(packages.id, packageId),
+              eq(packages.workspaceId, requestedWorkspaceId),
+            ),
+          );
+      }
+      if (updatesEnabled) {
+        await tx
+          .update(packageCapabilities)
+          .set({ enabled: payload.enabled })
+          .where(eq(packageCapabilities.packageId, packageId));
+      }
       await tx.insert(registryEvents).values(
-        audit(workspaceId, user.id, eventType, packageId, {}),
+        audit(requestedWorkspaceId, user.id, eventType, packageId, detail),
       );
       await tx.insert(auditLogs).values(domainRows.audit);
       await tx.insert(outboxEvents).values(domainRows.outbox);
@@ -500,14 +920,19 @@ export async function PATCH(request: Request) {
       .where(
         and(
           eq(packages.id, packageId),
-          eq(packages.workspaceId, workspaceId),
+          eq(packages.workspaceId, requestedWorkspaceId),
         ),
       )
       .limit(1);
     if (!updated) {
       return Response.json({ error: "Package 不存在" }, { status: 404 });
     }
-    return Response.json({ package: serializePackage(updated) });
+    return Response.json({
+      package: serializePackage(updated, {
+        userId: user.id,
+        platformRole: user.platformRole,
+      }),
+    });
   } catch (error) {
     return errorResponse(error);
   }
@@ -516,10 +941,10 @@ export async function PATCH(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const user = await requireUser(request);
-    const workspaceId = await requireRequestedWorkspace(
+    const requestedWorkspaceId = await requireRequestedWorkspace(
       request,
       user.id,
-      "manage",
+      "view",
     );
     const id = new URL(request.url).searchParams.get("id")?.trim();
     if (!id) return Response.json({ error: "id 必填" }, { status: 400 });
@@ -527,18 +952,33 @@ export async function DELETE(request: Request) {
     const [existing] = await db
       .select()
       .from(packages)
-      .where(and(eq(packages.id, id), eq(packages.workspaceId, workspaceId)))
+      .where(
+        user.platformRole === "system_admin"
+          ? eq(packages.id, id)
+          : and(
+              eq(packages.id, id),
+              eq(packages.workspaceId, requestedWorkspaceId),
+            ),
+      )
       .limit(1);
     if (!existing) {
       return Response.json({ error: "Package 不存在" }, { status: 404 });
     }
+    const canDeleteOwnExtension =
+      (existing.packageType === "skill" ||
+        existing.packageType === "plugin") &&
+      existing.createdBy === user.id;
+    if (user.platformRole !== "system_admin" && !canDeleteOwnExtension) {
+      await requireWorkspaceAccess(user.id, requestedWorkspaceId, "manage");
+    }
+    const targetWorkspaceId = existing.workspaceId;
     const detail = {
       packageKey: existing.packageKey,
       version: existing.version,
       retainedHistory: true,
     };
     const domainRows = domainEventRows({
-      workspaceId,
+      workspaceId: targetWorkspaceId,
       actorUserId: user.id,
       eventType: "package.uninstalled",
       entityType: "package",
@@ -554,13 +994,18 @@ export async function DELETE(request: Request) {
           lifecycleState: "uninstalled",
           updatedAt: mysqlNow(),
         })
-        .where(and(eq(packages.id, id), eq(packages.workspaceId, workspaceId)));
+        .where(
+          and(
+            eq(packages.id, id),
+            eq(packages.workspaceId, targetWorkspaceId),
+          ),
+        );
       await tx
         .update(packageCapabilities)
         .set({ enabled: false })
         .where(eq(packageCapabilities.packageId, id));
       await tx.insert(registryEvents).values(
-        audit(workspaceId, user.id, "package.uninstalled", id, detail),
+        audit(targetWorkspaceId, user.id, "package.uninstalled", id, detail),
       );
       await tx.insert(auditLogs).values(domainRows.audit);
       await tx.insert(outboxEvents).values(domainRows.outbox);

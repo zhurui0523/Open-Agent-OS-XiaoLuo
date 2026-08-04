@@ -2,9 +2,7 @@
 
 import {
   Check,
-  ChevronsLeft,
   CircleAlert,
-  Map as MapIcon,
   Layers3,
   Maximize2,
   PanelLeftOpen,
@@ -31,8 +29,19 @@ import {
   type WorldBounds,
 } from "../lib/canvas-geometry";
 import { CanvasSpatialIndex } from "../lib/canvas-spatial-index";
+import {
+  EXECUTION_NODE_HEIGHT,
+  EXECUTION_NODE_WIDTH,
+  widthForNode,
+} from "../lib/node-layout";
+import { compatibleInputPorts } from "../lib/node-ports";
 import type {
+  CanvasAssetReference,
+  CanvasNode,
+  KernelNodeOutput,
+  ModelInputAssetKind,
   NodeKind,
+  NodeInputAssetReference,
   PortDataType,
   WorkflowMarketplaceItem,
   WorkflowVisibility,
@@ -45,18 +54,63 @@ import {
 } from "./canvas-collaboration";
 import { CanvasDrawer } from "./canvas-drawer";
 import { CanvasEdgeLayer } from "./canvas-edge-layer";
+import { CanvasGroupRegion } from "./canvas-group-region";
+import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
 import { IntentConsole } from "./intent-console";
 import { NodeCard } from "./node-card";
+import { PluginRuntimeDialog } from "./plugin-runtime-dialog";
 import { ZoomControls } from "./zoom-controls";
 
-const NODE_WIDTH = 264;
 const NODE_FIT_HEIGHT = 220;
 const MINIMAP_WIDTH = 200;
 const MINIMAP_HEIGHT = 124;
 const MINIMAP_PADDING = 8;
-const CONTEXT_MENU_WIDTH = 286;
-const CONTEXT_MENU_HEIGHT = 700;
+const CONTEXT_MENU_WIDTH = 244;
+const CONTEXT_MENU_HEIGHT = 500;
+const MATERIAL_NODE_COLUMN_GAP = 300;
+const MATERIAL_NODE_ROW_GAP = 300;
+const MATERIAL_NODES_PER_COLUMN = 3;
+
+function canvasAssetReference(node: CanvasNode): CanvasAssetReference | null {
+  if (!["image", "video", "audio", "document"].includes(node.kind)) {
+    return null;
+  }
+  const parameters = node.parameters ?? {};
+  const output =
+    parameters.kernelOutput && typeof parameters.kernelOutput === "object"
+      ? (parameters.kernelOutput as KernelNodeOutput)
+      : undefined;
+  const outputData =
+    output?.data && typeof output.data === "object"
+      ? (output.data as Record<string, unknown>)
+      : undefined;
+  const url =
+    typeof output?.assetUrl === "string" && output.assetUrl
+      ? output.assetUrl
+      : typeof parameters.assetContentUrl === "string" &&
+          parameters.assetContentUrl
+        ? parameters.assetContentUrl
+        : undefined;
+  if (!url) return null;
+  return {
+    sourceNodeId: node.id,
+    assetId:
+      typeof outputData?.assetId === "string"
+        ? outputData.assetId
+        : typeof parameters.assetId === "string"
+          ? parameters.assetId
+          : undefined,
+    title: node.title,
+    kind: node.kind as ModelInputAssetKind,
+    url,
+    mimeType:
+      typeof parameters.mimeType === "string"
+        ? parameters.mimeType
+        : undefined,
+    status: node.status,
+  };
+}
 
 interface ContextMenuState {
   x: number;
@@ -64,6 +118,10 @@ interface ContextMenuState {
   worldX: number;
   worldY: number;
   opensLeft: boolean;
+  nodeId: string | null;
+  groupId: string | null;
+  edgeId: string | null;
+  pendingConnection: ConnectionDraft | null;
 }
 
 interface ConnectionDraft {
@@ -96,6 +154,7 @@ export function CanvasView(props: CanvasViewProps) {
 }
 
 function CanvasWorkspace({ os }: CanvasViewProps) {
+  const dialog = useAppDialog();
   const {
     addNode,
     copySelected,
@@ -107,6 +166,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     undoCanvas,
   } = os;
   const {
+    canvasBackground,
     gesturePreset,
     invertZoom,
     keyboardShortcuts,
@@ -134,10 +194,23 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const [minimapOpen, setMinimapOpen] = useState(true);
   const [layersOpen, setLayersOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [distributionTarget, setDistributionTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const [pluginRuntime, setPluginRuntime] = useState<{
+    title: string;
+    url: string | null;
+  } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [connectionDraft, setConnectionDraft] =
     useState<ConnectionDraft | null>(null);
+  const [pendingAutoConnection, setPendingAutoConnection] = useState<{
+    sourceId: string;
+    sourcePortId: string;
+    targetId: string;
+  } | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectionBox, setSelectionBox] = useState<{
     startX: number;
@@ -145,7 +218,6 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     currentX: number;
     currentY: number;
   } | null>(null);
-  const initialFitDone = useRef(false);
   const panGesture = useRef<{
     pointerId: number;
     startX: number;
@@ -180,7 +252,9 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     return {
       minX: Math.min(...os.nodes.map((node) => node.x)),
       minY: Math.min(...os.nodes.map((node) => node.y)),
-      maxX: Math.max(...os.nodes.map((node) => node.x + NODE_WIDTH)),
+      maxX: Math.max(
+        ...os.nodes.map((node) => node.x + widthForNode(node)),
+      ),
       maxY: Math.max(
         ...os.nodes.map(
           (node) => node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT),
@@ -188,6 +262,48 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       ),
     };
   }, [nodeHeights, os.nodes]);
+
+  const groupBounds = useMemo<WorldBounds>(() => {
+    if (!os.groups.length) return nodeBounds;
+    return {
+      minX: Math.min(...os.groups.map((group) => group.x)),
+      minY: Math.min(...os.groups.map((group) => group.y)),
+      maxX: Math.max(
+        ...os.groups.map((group) => group.x + group.width),
+      ),
+      maxY: Math.max(
+        ...os.groups.map((group) => group.y + group.height),
+      ),
+    };
+  }, [nodeBounds, os.groups]);
+
+  const contentBounds = useMemo(
+    () => (os.groups.length ? unionBounds(nodeBounds, groupBounds) : nodeBounds),
+    [groupBounds, nodeBounds, os.groups.length],
+  );
+
+  const groupMemberIds = useMemo(
+    () =>
+      new Map(
+        os.groups.map((group) => [
+          group.id,
+          os.nodes
+            .filter((node) => {
+              const centerX = node.x + widthForNode(node) / 2;
+              const centerY =
+                node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT) / 2;
+              return (
+                centerX >= group.x &&
+                centerX <= group.x + group.width &&
+                centerY >= group.y &&
+                centerY <= group.y + group.height
+              );
+            })
+            .map((node) => node.id),
+        ]),
+      ),
+    [nodeHeights, os.groups, os.nodes],
+  );
 
   const handleNodeSizeChange = useCallback(
     (nodeId: string, height: number) => {
@@ -213,9 +329,9 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const fitView = useCallback(() => {
     if (stageSize.width <= 1 || stageSize.height <= 1) return;
     commitViewport(
-      fitWorldBounds(expandBounds(nodeBounds, 24), stageSize, 56),
+      fitWorldBounds(expandBounds(contentBounds, 24), stageSize, 56),
     );
-  }, [commitViewport, nodeBounds, stageSize]);
+  }, [commitViewport, contentBounds, stageSize]);
 
   const zoomAtCenter = useCallback(
     (nextZoom: number) => {
@@ -245,12 +361,35 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (!os.cloudError) return;
+    const timer = window.setTimeout(() => {
+      os.clearCloudError();
+    }, 5_000);
+    return () => window.clearTimeout(timer);
+  }, [os.cloudError, os.clearCloudError]);
+
   useEffect(
     () => () => {
       if (panFrame.current !== null) cancelAnimationFrame(panFrame.current);
     },
     [],
   );
+
+  useEffect(() => {
+    if (
+      !pendingAutoConnection ||
+      !os.nodes.some((node) => node.id === pendingAutoConnection.targetId)
+    ) {
+      return;
+    }
+    os.connectNodes(
+      pendingAutoConnection.sourceId,
+      pendingAutoConnection.targetId,
+      pendingAutoConnection.sourcePortId,
+    );
+    queueMicrotask(() => setPendingAutoConnection(null));
+  }, [os, pendingAutoConnection]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -311,20 +450,6 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   ]);
 
   useEffect(() => {
-    if (
-      initialFitDone.current ||
-      stageSize.width < 120 ||
-      stageSize.height < 120
-    ) {
-      return;
-    }
-    initialFitDone.current = true;
-    commitViewport(
-      fitWorldBounds(expandBounds(nodeBounds, 24), stageSize, 48),
-    );
-  }, [commitViewport, nodeBounds, stageSize]);
-
-  useEffect(() => {
     function editableTarget(target: EventTarget | null) {
       return (
         target instanceof HTMLElement &&
@@ -332,6 +457,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       );
     }
     function keyDown(event: KeyboardEvent) {
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if (editableTarget(event.target)) return;
       if (!keyboardShortcuts) return;
       if (
@@ -356,7 +482,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === "c"
       ) {
-        if (copySelected()) event.preventDefault();
+        if (copySelected({ edgeId: selectedEdgeId })) event.preventDefault();
         return;
       }
       if (
@@ -378,7 +504,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           deleteEdge(selectedEdgeId);
           setSelectedEdgeId(null);
         } else {
-          deleteSelected();
+          void deleteSelected();
         }
         return;
       }
@@ -416,8 +542,8 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           viewportRef.current,
         );
         addNode(kind, {
-          x: center.x - NODE_WIDTH / 2,
-          y: center.y - NODE_FIT_HEIGHT / 2,
+          x: center.x - EXECUTION_NODE_WIDTH / 2,
+          y: center.y - EXECUTION_NODE_HEIGHT / 2,
         });
       }
       if (event.key === "=" || event.key === "+") {
@@ -458,7 +584,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   function isCanvasOverlay(target: HTMLElement) {
     return Boolean(
       target.closest(
-        ".canvas-node, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
+        ".canvas-node, .canvas-group-header, .canvas-group-resize, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
       ),
     );
   }
@@ -512,12 +638,40 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       setContextMenu(null);
       return;
     }
+    const nodeId = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+    const groupId = target.closest<HTMLElement>("[data-group-id]")?.dataset.groupId;
+    const edgeId = target.closest<HTMLElement>("[data-edge-id]")?.dataset.edgeId;
+    if (nodeId && !os.selectedNodeIds.includes(nodeId)) {
+      os.setSelectedNodeId(nodeId);
+      setSelectedEdgeId(null);
+    } else if (edgeId) {
+      setSelectedEdgeId(edgeId);
+      os.setSelectedNodeId(null);
+    }
+    openContextMenuAt(
+      event.clientX,
+      event.clientY,
+      nodeId ?? null,
+      groupId ?? null,
+      edgeId ?? null,
+      null,
+    );
+  }
+
+  function openContextMenuAt(
+    clientX: number,
+    clientY: number,
+    nodeId: string | null,
+    groupId: string | null,
+    edgeId: string | null,
+    pendingConnection: ConnectionDraft | null,
+  ) {
     const stage = stageRef.current;
     if (!stage) return;
     const rect = stage.getBoundingClientRect();
     const screenPoint = {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
+      x: clientX - rect.left,
+      y: clientY - rect.top,
     };
     const worldPoint = screenToWorld(screenPoint, viewportRef.current);
     const maxX = Math.max(8, rect.width - CONTEXT_MENU_WIDTH - 8);
@@ -527,6 +681,10 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       y: Math.max(8, Math.min(screenPoint.y, maxY)),
       worldX: worldPoint.x,
       worldY: worldPoint.y,
+      nodeId,
+      groupId,
+      edgeId,
+      pendingConnection,
       opensLeft:
         screenPoint.x + CONTEXT_MENU_WIDTH * 2 + 20 > rect.width,
     });
@@ -606,9 +764,13 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
 
   function endStagePan(event: React.PointerEvent<HTMLDivElement>) {
     if (connectionDraft) {
-      const target = document
-        .elementFromPoint(event.clientX, event.clientY)
-        ?.closest<HTMLElement>(".port-input[data-node-id]");
+      const dropElement = document.elementFromPoint(
+        event.clientX,
+        event.clientY,
+      ) as HTMLElement | null;
+      const target = dropElement?.closest<HTMLElement>(
+        ".port-input[data-node-id]",
+      );
       const targetId = target?.dataset.nodeId;
       const targetPortId = target?.dataset.portId;
       const targetTypes = target?.dataset.portTypes?.split(",") ?? [];
@@ -623,6 +785,64 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           connectionDraft.sourcePortId,
           targetPortId,
         );
+      } else {
+        const directTargetNode = dropElement?.closest<HTMLElement>(
+          ".canvas-node[data-node-id]",
+        );
+        const geometricTargetNode = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            ".canvas-stage .canvas-node[data-node-id]",
+          ),
+        )
+          .reverse()
+          .find((element) => {
+            const bounds = element.getBoundingClientRect();
+            return (
+              event.clientX >= bounds.left &&
+              event.clientX <= bounds.right &&
+              event.clientY >= bounds.top &&
+              event.clientY <= bounds.bottom
+            );
+          });
+        // Media previews, iframes and placeholder surfaces can intercept the
+        // pointer target. Falling back to the card bounds keeps the whole
+        // visual card available as a connection drop target.
+        const targetNodeElement = directTargetNode ?? geometricTargetNode;
+        const targetNodeId = targetNodeElement?.dataset.nodeId;
+        const targetNode = targetNodeId
+          ? os.nodes.find((node) => node.id === targetNodeId)
+          : undefined;
+        const automaticPort =
+          targetNode && targetNode.id !== connectionDraft.sourceId
+            ? compatibleInputPorts(targetNode, connectionDraft.dataType)[0]
+            : undefined;
+        if (targetNode && automaticPort) {
+          os.connectNodes(
+            connectionDraft.sourceId,
+            targetNode.id,
+            connectionDraft.sourcePortId,
+            automaticPort.id,
+          );
+        } else {
+          const stage = stageRef.current;
+          const droppedOnEmptyCanvas =
+            Boolean(dropElement && stage?.contains(dropElement)) &&
+            !isCanvasOverlay(dropElement!) &&
+            !dropElement?.closest("[data-node-id], [data-edge-id]");
+          if (droppedOnEmptyCanvas) {
+            const current =
+              clientToWorld(event.clientX, event.clientY) ??
+              connectionDraft.current;
+            openContextMenuAt(
+              event.clientX,
+              event.clientY,
+              null,
+              null,
+              null,
+              { ...connectionDraft, current },
+            );
+          }
+        }
       }
       setConnectionDraft(null);
       return;
@@ -639,7 +859,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           .filter((node) => {
             const height = nodeHeights[node.id] ?? NODE_FIT_HEIGHT;
             return !(
-              node.x + NODE_WIDTH < start.x ||
+              node.x + widthForNode(node) < start.x ||
               node.x > end.x ||
               node.y + height < start.y ||
               node.y > end.y
@@ -690,11 +910,18 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     preset?: Parameters<typeof os.addNode>[2],
   ) {
     if (!contextMenu) return;
-    os.addNode(
+    const targetId = os.addNode(
       kind,
       { x: contextMenu.worldX, y: contextMenu.worldY },
       preset,
     );
+    if (targetId && contextMenu.pendingConnection) {
+      setPendingAutoConnection({
+        sourceId: contextMenu.pendingConnection.sourceId,
+        sourcePortId: contextMenu.pendingConnection.sourcePortId,
+        targetId,
+      });
+    }
   }
 
   function uploadAtContext() {
@@ -706,13 +933,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     uploadInputRef.current?.click();
   }
 
-  async function handleCanvasUpload(
-    event: React.ChangeEvent<HTMLInputElement>,
+  async function importFilesToCanvas(
+    files: File[],
+    anchor: { x: number; y: number },
+    options: {
+      connectToNodeId?: string;
+      direction?: "left" | "right";
+    } = {},
   ) {
-    const input = event.currentTarget;
-    const files = Array.from(input.files ?? []);
-    input.value = "";
-    if (!files.length) return;
+    if (!files.length) return [];
+    const createdNodeIds: string[] = [];
     for (const [index, file] of files.entries()) {
       let asset;
       try {
@@ -722,8 +952,12 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           tags: ["画布上传"],
         });
       } catch (error) {
-        window.alert(
+        await dialog.alert(
           `${file.name}：${error instanceof Error ? error.message : "文件上传失败"}`,
+          {
+            title: "文件上传失败",
+            tone: "danger",
+          },
         );
         continue;
       }
@@ -753,11 +987,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         file.size >= 1_048_576
           ? `${(file.size / 1_048_576).toFixed(1)} MB`
           : `${Math.max(1, Math.round(file.size / 1024))} KB`;
-      os.addNode(
+      const column = Math.floor(index / MATERIAL_NODES_PER_COLUMN);
+      const row = index % MATERIAL_NODES_PER_COLUMN;
+      const horizontalDirection = options.direction === "left" ? -1 : 1;
+      const nodeId = os.addNode(
         kind,
         {
-          x: uploadAnchorRef.current.x + index * 36,
-          y: uploadAnchorRef.current.y + index * 36,
+          x:
+            anchor.x +
+            horizontalDirection * column * MATERIAL_NODE_COLUMN_GAP,
+          y: anchor.y + row * MATERIAL_NODE_ROW_GAP,
         },
         {
           role: "material",
@@ -778,8 +1017,22 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             sourceVersion: asset.currentVersion,
           },
         },
+        options.connectToNodeId
+          ? { targetId: options.connectToNodeId }
+          : undefined,
       );
+      createdNodeIds.push(nodeId);
     }
+    return createdNodeIds;
+  }
+
+  async function handleCanvasUpload(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    await importFilesToCanvas(files, uploadAnchorRef.current);
   }
 
   const scale = os.zoom / 100;
@@ -800,9 +1053,37 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     () => new CanvasSpatialIndex(os.nodes, os.edges, nodeHeights),
     [nodeHeights, os.edges, os.nodes],
   );
+  const canvasAssets = useMemo(
+    () =>
+      os.nodes
+        .map(canvasAssetReference)
+        .filter((asset): asset is CanvasAssetReference => Boolean(asset)),
+    [os.nodes],
+  );
+  const inputAssetsByNode = useMemo(() => {
+    const result = new Map<string, NodeInputAssetReference[]>();
+
+    for (const edge of os.edges) {
+      const source = spatialIndex.nodeById.get(edge.source);
+      const asset = source ? canvasAssetReference(source) : null;
+      if (!asset) continue;
+      const assets = result.get(edge.target) ?? [];
+      assets.push({
+        ...asset,
+        edgeId: edge.id,
+      });
+      result.set(edge.target, assets);
+    }
+
+    return result;
+  }, [os.edges, spatialIndex]);
+  const displayedConnectionDraft =
+    connectionDraft ?? contextMenu?.pendingConnection ?? null;
   const visibleNodeIds = spatialIndex.queryNodeIds(renderBounds);
   os.selectedNodeIds.forEach((id) => visibleNodeIds.add(id));
-  if (connectionDraft?.sourceId) visibleNodeIds.add(connectionDraft.sourceId);
+  if (displayedConnectionDraft?.sourceId) {
+    visibleNodeIds.add(displayedConnectionDraft.sourceId);
+  }
   const visibleNodes = [...visibleNodeIds]
     .map((id) => spatialIndex.nodeById.get(id))
     .filter((node): node is NonNullable<typeof node> => Boolean(node));
@@ -812,7 +1093,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     .map((id) => spatialIndex.edgeById.get(id))
     .filter((edge): edge is NonNullable<typeof edge> => Boolean(edge));
   const minimapBounds = expandBounds(
-    unionBounds(nodeBounds, visibleBounds),
+    unionBounds(contentBounds, visibleBounds),
     80,
   );
   const minimapWorldWidth = Math.max(
@@ -859,7 +1140,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const stageClass = [
     "canvas-stage",
     isPanning ? "is-panning" : "",
-    connectionDraft ? "is-connecting" : "",
+    displayedConnectionDraft ? "is-connecting" : "",
     minimapOpen ? "" : "is-minimap-collapsed",
     os.activeTool === "hand" || spaceHeld ? "is-pan-mode" : "",
   ]
@@ -867,30 +1148,17 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     .join(" ");
 
   return (
-    <div className="canvas-view">
+    <div className={`canvas-view canvas-background-${canvasBackground}`}>
       <CanvasDrawer
         open={os.drawerOpen}
         activeCanvasId={os.activeCanvasId}
-        projectId={os.projectId}
         canvases={os.canvases}
-        workspaceName={os.workspaceName}
-        projectName={os.projectName}
-        projects={os.projects}
         onClose={() => os.setDrawerOpen(false)}
         onSelect={os.setActiveCanvasId}
         onCreate={() => void os.createCanvas()}
         onRename={os.renameCanvas}
-        onArchive={os.archiveCanvas}
+        onShare={(id, title) => setDistributionTarget({ id, title })}
         onDelete={os.deleteCanvas}
-        onDuplicate={os.duplicateCanvas}
-        onRestore={os.restoreCanvas}
-        onStar={os.toggleCanvasStar}
-        onCreateSnapshot={os.createCanvasSnapshot}
-        onRestoreSnapshot={os.restoreCanvasSnapshot}
-        onSwitchProject={os.switchProject}
-        onCreateProject={os.createProject}
-        onRenameProject={os.renameProject}
-        onArchiveProject={os.archiveProject}
       />
 
       <section
@@ -905,8 +1173,6 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 <PanelLeftOpen size={17} />
               </IconButton>
             )}
-            <span>{os.workspaceName || "云端工作空间"}</span>
-            <ChevronsLeft size={13} className="breadcrumb-chevron" />
             <strong>{activeCanvas.title}</strong>
             <span className={`save-indicator is-${os.cloudStatus}`}>
               <Check size={13} />{" "}
@@ -943,7 +1209,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               className="secondary-button compact"
               onClick={() => setShareOpen(true)}
             >
-              <Share2 size={15} /> 分享
+              <Share2 size={15} /> 发布 Workflow
             </button>
             <IconButton
               label="全屏画布"
@@ -975,7 +1241,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                     onClick={() => os.setSelectedNodeId(node.id)}
                   >
                     <span>{node.title}</span>
-                    <small>{node.kind} · L{node.layer ?? 0}{node.collapsed ? " · 已折叠" : ""}</small>
+                    <small>{node.kind} · L{node.layer ?? 0}</small>
                   </button>
                 ))}
             </div>
@@ -986,28 +1252,40 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           ref={stageRef}
           className={stageClass}
           onDragOver={(event) => {
-            if (event.dataTransfer.types.includes("application/x-xiaoluo-asset")) {
+            if (
+              event.dataTransfer.types.includes("Files") ||
+              event.dataTransfer.types.includes("application/x-xiaoluo-asset")
+            ) {
               event.preventDefault();
               event.dataTransfer.dropEffect = "copy";
             }
           }}
-          onDrop={(event) => {
+          onDrop={async (event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const position = screenToWorld(
+              {
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top,
+              },
+              viewportRef.current,
+            );
+            const files = Array.from(event.dataTransfer.files ?? []);
+            if (files.length) {
+              event.preventDefault();
+              await importFilesToCanvas(files, position);
+              return;
+            }
             const serialized = event.dataTransfer.getData("application/x-xiaoluo-asset");
             if (!serialized) return;
             event.preventDefault();
             try {
               const asset = JSON.parse(serialized) as import("../types").FileSystemAsset;
-              const rect = event.currentTarget.getBoundingClientRect();
-              const position = screenToWorld(
-                {
-                  x: event.clientX - rect.left,
-                  y: event.clientY - rect.top,
-                },
-                viewportRef.current,
-              );
               os.addAssetToCanvas(asset, position);
             } catch {
-              window.alert("无法读取拖入的资产");
+              await dialog.alert("无法读取拖入的资产，请检查文件后重试。", {
+                title: "资产读取失败",
+                tone: "danger",
+              });
             }
           }}
           onPointerDown={handleStagePointerDown}
@@ -1031,7 +1309,15 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           )}
           {os.cloudError && (
             <div className="canvas-cloud-error" role="alert">
-              {os.cloudError}
+              <span>{os.cloudError}</span>
+              <button
+                type="button"
+                aria-label="关闭提示"
+                title="关闭提示"
+                onClick={os.clearCloudError}
+              >
+                <X size={14} />
+              </button>
             </div>
           )}
           {collaboration.accessRevoked && (
@@ -1066,13 +1352,39 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                   <span>{item.displayName}</span>
                 </div>
               ))}
+            {os.groups.map((group) => (
+              <CanvasGroupRegion
+                key={group.id}
+                group={group}
+                memberNodeIds={groupMemberIds.get(group.id) ?? []}
+                zoom={os.zoom}
+                running={
+                  os.runState === "running" || os.runState === "waiting"
+                }
+                onChangeStart={os.beginGroupChange}
+                onMoveBy={(deltaX, deltaY, memberNodeIds) =>
+                  os.moveGroupBy(
+                    group.id,
+                    deltaX,
+                    deltaY,
+                    memberNodeIds,
+                  )
+                }
+                onResizeBy={(deltaWidth, deltaHeight) =>
+                  os.resizeGroupBy(group.id, deltaWidth, deltaHeight)
+                }
+                onRename={(title) => os.updateGroup(group.id, { title })}
+                onDelete={() => os.deleteGroup(group.id)}
+                onRun={() => void os.startGroupRun(group.id)}
+              />
+            ))}
             <CanvasEdgeLayer
               nodes={os.nodes}
               edges={visibleEdges}
               nodeHeights={nodeHeights}
               visibleBounds={visibleBounds}
               selectedEdgeId={selectedEdgeId}
-              draft={connectionDraft}
+              draft={displayedConnectionDraft}
               onSelect={(edgeId) => {
                 setSelectedEdgeId(edgeId);
                 os.setSelectedNodeId(null);
@@ -1088,13 +1400,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 key={node.id}
                 node={node}
                 workspaceId={os.workspaceId}
-                saveState={os.cloudStatus}
                 selected={node.id === os.selectedNodeId}
                 multiSelected={os.selectedNodeIds.includes(node.id)}
                 zoom={os.zoom}
                 panMode={os.activeTool === "hand" || spaceHeld}
                 capabilities={os.capabilities}
                 models={os.models}
+                canvasAssets={canvasAssets.filter(
+                  (asset) => asset.sourceNodeId !== node.id,
+                )}
+                inputAssets={inputAssetsByNode.get(node.id) ?? []}
                 onSelect={(additive) => {
                   setSelectedEdgeId(null);
                   os.selectNode(node.id, additive);
@@ -1106,13 +1421,55 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 onConnectionStart={(portId, dataType, clientX, clientY) =>
                   beginConnection(node.id, portId, dataType, clientX, clientY)
                 }
+                onAttachInputAsset={(sourceNodeId) => {
+                  os.connectNodes(sourceNodeId, node.id, undefined, "reference");
+                }}
+                onRemoveInputAsset={(edgeId) => os.deleteEdge(edgeId)}
+                onUploadInputAssets={async (files) => {
+                  await importFilesToCanvas(
+                    files,
+                    {
+                      x: node.x - MATERIAL_NODE_COLUMN_GAP,
+                      y: node.y,
+                    },
+                    {
+                      connectToNodeId: node.id,
+                      direction: "left",
+                    },
+                  );
+                }}
                 connectionDataType={
-                  connectionDraft?.sourceId === node.id
+                  displayedConnectionDraft?.sourceId === node.id
                     ? undefined
-                    : connectionDraft?.dataType
+                    : displayedConnectionDraft?.dataType
                 }
                 onRun={() => void os.startRun(node.id)}
                 onRerunBranch={() => void os.rerunBranch(node.id)}
+                onDelete={() => void os.deleteNode(node.id)}
+                onOpenPlugin={() => {
+                  const packageId =
+                    typeof node.parameters?.packageId === "string"
+                      ? node.parameters.packageId
+                      : "";
+                  const packageKey =
+                    typeof node.parameters?.packageKey === "string"
+                      ? node.parameters.packageKey
+                      : "";
+                  const installedPlugin = os.packages.find(
+                    (item) =>
+                      item.id === packageId ||
+                      (Boolean(packageKey) && item.packageKey === packageKey),
+                  );
+                  const savedRuntimeUrl =
+                    typeof node.parameters?.runtimeUrl === "string"
+                      ? node.parameters.runtimeUrl
+                      : null;
+
+                  setPluginRuntime({
+                    title: installedPlugin?.name ?? node.title,
+                    url: installedPlugin?.runtimeUrl ?? savedRuntimeUrl,
+                  });
+                }}
               />
             ))}
           </div>
@@ -1125,7 +1482,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             </code>
           </div>
 
-          {minimapOpen ? (
+          {minimapOpen && (
             <div
               className="minimap"
               aria-label="无限画布小地图，点击或拖动定位"
@@ -1176,13 +1533,25 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                   ),
                 }}
               />
+              {os.groups.map((group) => (
+                <span
+                  key={group.id}
+                  className={`minimap-group color-${group.color}`}
+                  style={{
+                    left: minimapX(group.x),
+                    top: minimapY(group.y),
+                    width: Math.max(8, group.width * minimapScale),
+                    height: Math.max(6, group.height * minimapScale),
+                  }}
+                />
+              ))}
               {os.nodes.map((node) => (
                 <i
                   key={node.id}
                   style={{
                     left: minimapX(node.x),
                     top: minimapY(node.y),
-                    width: Math.max(5, NODE_WIDTH * minimapScale),
+                    width: Math.max(5, widthForNode(node) * minimapScale),
                     height: Math.max(
                       4,
                       (nodeHeights[node.id] ?? 156) * minimapScale,
@@ -1192,16 +1561,6 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 />
               ))}
             </div>
-          ) : (
-            <button
-              type="button"
-              className="minimap-toggle"
-              aria-label="展开地图导航"
-              title="展开地图导航"
-              onClick={() => setMinimapOpen(true)}
-            >
-              <MapIcon size={23} />
-            </button>
           )}
 
           <div className="canvas-navigation-hint">
@@ -1210,6 +1569,8 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
 
           <ZoomControls
             zoom={os.zoom}
+            minimapOpen={minimapOpen}
+            onToggleMinimap={() => setMinimapOpen((current) => !current)}
             onFit={fitView}
             onReset={() => zoomAtCenter(100)}
             onZoomIn={() => zoomAtCenter(viewportRef.current.zoom + 10)}
@@ -1232,74 +1593,132 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               x={contextMenu.x}
               y={contextMenu.y}
               opensLeft={contextMenu.opensLeft}
-              capabilities={os.capabilities}
               packages={os.packages}
               canUndo={os.canUndo}
               canRedo={os.canRedo}
-              canCopy={Boolean(os.selectedNodeIds.length)}
+              canCopy={Boolean(
+                os.selectedNodeIds.length ||
+                  contextMenu.nodeId ||
+                  contextMenu.groupId ||
+                  contextMenu.edgeId,
+              )}
+              canPaste={os.canPaste}
+              canDelete={Boolean(
+                contextMenu.nodeId || contextMenu.groupId || contextMenu.edgeId,
+              )}
               multiSelectActive={os.activeTool === "multi-select"}
               arrangeMode={os.arrangeMode}
+              onAddGroup={() =>
+                os.addGroup({
+                  x: contextMenu.worldX,
+                  y: contextMenu.worldY,
+                })
+              }
               onAddNode={(kind) =>
                 addNodeAtContext(kind, {
-                  role: "material",
-                  prompt: "连接到插件运行器或 Skill 执行节点后作为输入素材。",
-                })
-              }
-              onAddCapability={(capability) =>
-                addNodeAtContext(capability.modality, {
                   role: "execution",
-                  title: capability.title,
-                  prompt: capability.description,
-                  capabilityId: capability.id,
+                  prompt: "选择已安装的 Skill 与模型，并描述这个节点需要完成的任务。",
                 })
               }
-              onAddPlugin={(plugin) =>
-                {
-                  const contribution = plugin.nodeContributions?.[0];
-                  addNodeAtContext(contribution?.modality ?? "text", {
-                    role: "plugin",
-                    title: plugin.name,
-                    prompt:
-                      contribution?.description ||
-                      plugin.description ||
-                      "接收一个或多个素材，使用隔离运行时处理后输出给下游 Skill。",
-                    capabilityId: contribution?.id ?? "core.plugin.runner",
-                    parameters: {
-                      nodeRole: "plugin",
-                      packageId: plugin.id,
-                      packageKey: plugin.packageKey,
-                      packageVersion: plugin.version,
-                      runtimeType: plugin.runtimeType,
-                      runtimeLanguage: plugin.runtimeLanguage,
-                      batchMode: "combine",
-                      ...(contribution
-                        ? {
-                            capabilitySnapshot: {
-                              id: contribution.id,
-                              capabilityKey: contribution.id,
-                              title: contribution.title,
-                              description: contribution.description,
-                              packageId: plugin.id,
-                              packageKey: plugin.packageKey,
-                              packageVersion: plugin.version,
-                              contributionType: "node",
-                              inputSchema: contribution.inputSchema,
-                              outputSchema: contribution.outputSchema,
-                              uiSchema: contribution.uiSchema,
-                              ports: contribution.ports,
-                              executionMode: "remote",
-                              modelRequirements: { required: false },
-                            },
-                          }
-                        : {}),
-                    },
-                  });
-                }
+              onAddPlaceholder={(kind) =>
+                addNodeAtContext(kind, {
+                  role: "result",
+                  title:
+                    kind === "image"
+                      ? "图片占位卡片"
+                      : kind === "video"
+                        ? "视频占位卡片"
+                        : kind === "audio"
+                          ? "音频占位卡片"
+                          : kind === "document"
+                            ? "文档占位卡片"
+                            : "文本占位卡片",
+                  prompt: "",
+                  parameters: {
+                    nodeRole: "result",
+                    resultSlot: true,
+                  },
+                })
               }
+              onAddPlugin={async (plugin) => {
+                if (!plugin.enabled) {
+                  try {
+                    await os.setPackageEnabled(plugin.id, true);
+                  } catch (error) {
+                    await dialog.alert(
+                      error instanceof Error
+                        ? error.message
+                        : "插件启用失败，请稍后重试。",
+                      {
+                        title: "无法添加插件",
+                        tone: "danger",
+                      },
+                    );
+                    return;
+                  }
+                }
+                const contribution = plugin.nodeContributions?.[0];
+                addNodeAtContext(contribution?.modality ?? "text", {
+                  role: "plugin",
+                  title: plugin.name,
+                  prompt:
+                    contribution?.description ||
+                    plugin.description ||
+                    "接收一个或多个素材，通过已安装插件处理后输出给下游节点。",
+                  capabilityId: contribution?.id ?? "core.plugin.runner",
+                  parameters: {
+                    nodeRole: "plugin",
+                    packageId: plugin.id,
+                    packageKey: plugin.packageKey,
+                    packageVersion: plugin.version,
+                    pluginName: plugin.name,
+                    runtimeType: plugin.runtimeType,
+                    runtimeLanguage: plugin.runtimeLanguage,
+                    runtimeUrl: plugin.runtimeUrl ?? null,
+                    batchMode: "combine",
+                    ...(contribution
+                      ? {
+                          capabilitySnapshot: {
+                            id: contribution.id,
+                            capabilityKey: contribution.id,
+                            title: contribution.title,
+                            description: contribution.description,
+                            packageId: plugin.id,
+                            packageKey: plugin.packageKey,
+                            packageVersion: plugin.version,
+                            contributionType: "node",
+                            inputSchema: contribution.inputSchema,
+                            outputSchema: contribution.outputSchema,
+                            uiSchema: contribution.uiSchema,
+                            ports: contribution.ports,
+                            executionMode: "remote",
+                            modelRequirements: { required: false },
+                          },
+                        }
+                      : {}),
+                  },
+                });
+              }}
               onUndo={os.undoCanvas}
               onRedo={os.redoCanvas}
               onCopy={() => {
-                os.copySelected();
+                os.copySelected({
+                  groupId: contextMenu.groupId,
+                  edgeId: contextMenu.edgeId,
+                });
+              }}
+              onDelete={async () => {
+                if (contextMenu.edgeId) {
+                  os.deleteEdge(contextMenu.edgeId);
+                  return;
+                }
+                if (contextMenu.groupId) {
+                  os.deleteGroup(contextMenu.groupId);
+                  return;
+                }
+                if (contextMenu.nodeId) {
+                  await os.deleteNode(contextMenu.nodeId);
+                }
               }}
               onPaste={() => {
                 os.pasteCopied();
@@ -1312,7 +1731,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 }
                 os.setActiveTool("multi-select");
               }}
-              onArrange={os.arrangeNodes}
+              onArrange={(mode) => os.arrangeNodes(mode, nodeHeights)}
               onUpload={uploadAtContext}
               onOpenExtensions={() => os.setView("capabilities")}
               onClose={() => setContextMenu(null)}
@@ -1345,8 +1764,11 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           isPlanning={os.isPlanning}
           runState={os.runState}
           capabilities={os.capabilities}
+          models={os.models}
+          canvasAssets={canvasAssets}
           onClose={() => os.setConsoleOpen(false)}
           onSubmit={os.submitIntent}
+          onGenerate={os.generateDirectly}
           onUploadAttachments={os.uploadIntentAttachments}
           onConfirmPlan={os.confirmPlan}
           onUpdatePlan={os.updatePlan}
@@ -1364,6 +1786,194 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           onClose={() => setShareOpen(false)}
         />
       )}
+      {distributionTarget && (
+        <CanvasDistributionDialog
+          canvasId={distributionTarget.id}
+          canvasTitle={distributionTarget.title}
+          onCompleted={async (sharedCanvasId) => {
+            await os.refreshCanvases();
+            if (sharedCanvasId) await os.setActiveCanvasId(sharedCanvasId);
+          }}
+          onClose={() => setDistributionTarget(null)}
+        />
+      )}
+      {pluginRuntime && (
+        <PluginRuntimeDialog
+          title={pluginRuntime.title}
+          url={pluginRuntime.url}
+          onClose={() => setPluginRuntime(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CanvasDistributionDialog({
+  canvasId,
+  canvasTitle,
+  onCompleted,
+  onClose,
+}: {
+  canvasId: string;
+  canvasTitle: string;
+  onCompleted: (sharedCanvasId?: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [audience, setAudience] = useState<
+    "public" | "organization" | "organization_live"
+  >("public");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [shared, setShared] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/v2/workflows/marketplace", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          canvasId,
+          title: canvasTitle,
+          description:
+            "由画布管理共享的独立画布副本。安装后可单独编辑、运行和删除。",
+          category: "共享画布",
+          tags: ["共享画布"],
+          visibility: audience === "public" ? "public" : "workspace",
+          audience,
+          canvasShare: true,
+          changelog: "更新共享画布快照",
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        workflow?: { id?: string };
+        collaboration?: { canvasId?: string };
+        error?: string;
+      };
+      const completed =
+        audience === "organization_live"
+          ? Boolean(payload.collaboration?.canvasId)
+          : Boolean(payload.workflow?.id);
+      if (!response.ok || !completed) {
+        throw new Error(payload.error ?? "共享画布失败");
+      }
+      await onCompleted(payload.collaboration?.canvasId);
+      setShared(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "共享画布失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="extension-modal-backdrop"
+      role="presentation"
+      onMouseDown={onClose}
+    >
+      <div
+        className="extension-modal canvas-share-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="canvas-distribution-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-heading">
+          <div>
+            <span className="eyebrow">CANVAS SHARING</span>
+            <h2 id="canvas-distribution-title">共享画布</h2>
+            <p>
+              公共及企业副本采用独立快照；企业实时协作会让成员共同编辑同一张画布。
+            </p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {!shared ? (
+          <>
+            <div className="workflow-publish-form">
+              <label className="span-two">
+                <span>共享范围</span>
+                <select
+                  value={audience}
+                  onChange={(event) =>
+                    setAudience(
+                      event.target.value as
+                        | "public"
+                        | "organization"
+                        | "organization_live",
+                    )
+                  }
+                >
+                  <option value="public">所有用户（独立副本）</option>
+                  <option value="organization">所在企业用户（独立副本）</option>
+                  <option value="organization_live">
+                    所在企业用户（实时协作）
+                  </option>
+                </select>
+              </label>
+              <div className="workflow-privacy-note span-two">
+                <Share2 size={16} />
+                <p>
+                  {audience === "organization_live"
+                    ? "仅同一企业的有效成员可进入；成员共同读取和保存同一份节点、连线与结果。成员只能编辑，不能重命名、再次共享或删除原画布。"
+                    : "API Key、密钥、模型连接 ID、账号信息和私有素材地址会在共享前移除。用户安装后会生成全新的画布、节点和连线 ID，双方后续修改互不影响。"}
+                </p>
+              </div>
+            </div>
+            {error && (
+              <div className="modal-error">
+                <CircleAlert size={14} /> {error}
+              </div>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onClose}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                onClick={() => void submit()}
+              >
+                {busy ? <Sparkles size={15} /> : <Share2 size={15} />}
+                共享画布
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="share-result">
+              <Check size={22} />
+              <div>
+                <b>画布已共享</b>
+                <p>
+                  {audience === "organization_live"
+                    ? "企业成员将在画布管理中看到“企业协作”画布，并实时编辑同一份内容。"
+                    : "目标用户可在能力商城的 Workflow 分类安装独立副本。"}
+                </p>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={onClose}
+              >
+                完成
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1540,7 +2150,7 @@ function CanvasShareDialog({
                 }
               >
                 <option value="public">公开能力商城</option>
-                <option value="workspace">当前工作空间</option>
+                <option value="workspace">所在企业</option>
                 <option value="link">仅持链接用户</option>
                 <option value="private">仅自己</option>
               </select>

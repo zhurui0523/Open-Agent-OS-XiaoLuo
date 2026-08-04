@@ -28,7 +28,7 @@ function dependencyDiagnostic(error: unknown) {
 export async function GET() {
   const checks = {
     mysql: false,
-    oss: false,
+    storage: false,
   };
 
   await Promise.all([
@@ -47,17 +47,17 @@ export async function GET() {
       try {
         const bucket = await getFileBucket();
         await bucket.health();
-        checks.oss = true;
+        checks.storage = true;
       } catch (error) {
         console.error(
-          `[readiness] OSS unavailable: ${dependencyDiagnostic(error)}`,
+          `[readiness] Storage unavailable: ${dependencyDiagnostic(error)}`,
         );
         // The response intentionally omits infrastructure details and credentials.
       }
     })(),
   ]);
 
-  const ok = checks.mysql && checks.oss;
+  const ok = checks.mysql && checks.storage;
   const services = runtimeServiceReadiness();
   return Response.json(
     { ok, checks, services, time: new Date().toISOString() },

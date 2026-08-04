@@ -2,11 +2,13 @@ import type { RowDataPacket } from "mysql2/promise";
 import { getFileBucket } from "../../../../lib/asset-kernel";
 import { jsonError, requireSystemAdmin } from "../../../../lib/auth";
 import { mysqlRows } from "../../../../lib/mysql";
-import { runtimeServiceReadiness } from "../../../../lib/server-runtime-config";
+import {
+  runtimeServiceReadiness,
+  serverRuntimeConfig,
+} from "../../../../lib/server-runtime-config";
 
 interface MetricsRow extends RowDataPacket {
   users: number;
-  workspaces: number;
   canvases: number;
   assets: number;
   assetBytes: number;
@@ -38,11 +40,10 @@ interface TrustMetricsRow extends RowDataPacket {
 export async function GET(request: Request) {
   try {
     await requireSystemAdmin(request);
-    const [metrics, events, heartbeats, trustMetrics, oss] = await Promise.all([
+    const [metrics, events, heartbeats, trustMetrics, storage] = await Promise.all([
       mysqlRows<MetricsRow>(
         `SELECT
            (SELECT COUNT(*) FROM xiaoluo_v2_users) AS users,
-           (SELECT COUNT(*) FROM xiaoluo_v2_workspaces WHERE status = 'active') AS workspaces,
            (SELECT COUNT(*) FROM xiaoluo_v2_canvases WHERE deleted_at IS NULL) AS canvases,
            (SELECT COUNT(*) FROM xiaoluo_v2_assets WHERE trashed_at IS NULL) AS assets,
            (SELECT COALESCE(SUM(size), 0) FROM xiaoluo_v2_assets WHERE trashed_at IS NULL) AS assetBytes,
@@ -75,13 +76,17 @@ export async function GET(request: Request) {
            (SELECT COUNT(*) FROM xiaoluo_v2_packages WHERE trust_state = 'trusted') AS trustedPackages`,
       ),
       getFileBucket()
-        .then((bucket) => bucket.healthcheck())
+        .then((bucket) => bucket.health())
         .then(() => true)
         .catch(() => false),
     ]);
     return Response.json({
       metrics: metrics[0],
-      dependencies: { mysql: true, oss },
+      dependencies: {
+        mysql: true,
+        storage,
+        storageDriver: serverRuntimeConfig().storage.driver,
+      },
       services: runtimeServiceReadiness(),
       trust: trustMetrics[0],
       heartbeats: heartbeats.map((heartbeat) => ({

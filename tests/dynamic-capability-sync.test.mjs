@@ -174,3 +174,34 @@ test("persists custom Skill and model schemas across registry and runtime", asyn
   assert.match(executors, /modelExecutionParameters/);
   assert.match(executors, /\.\.\.modelParameters/);
 });
+
+test("runs the selected model directly when Skill is set to none", async () => {
+  const {
+    hasSelectedSkillCapability,
+    validateRuntimeModel,
+  } = await import("../app/lib/runtime-capability.ts");
+  const runRoute = await source("app/api/v2/kernel/runs/route.ts");
+
+  assert.equal(hasSelectedSkillCapability("none"), false);
+  assert.equal(hasSelectedSkillCapability("  none  "), false);
+  assert.equal(hasSelectedSkillCapability(""), false);
+  assert.equal(hasSelectedSkillCapability("core.execution"), false);
+  assert.equal(hasSelectedSkillCapability("capability_installed"), true);
+  assert.equal(hasSelectedSkillCapability("missing:skill"), true);
+
+  assert.doesNotThrow(() =>
+    validateRuntimeModel(
+      undefined,
+      {
+        enabled: true,
+        modalitiesJson: JSON.stringify(["image"]),
+      },
+      "image",
+    ),
+  );
+  assert.match(runRoute, /\.filter\(hasSelectedSkillCapability\)/);
+  assert.match(
+    runRoute,
+    /if \(hasSelectedSkillCapability\(capabilityId\) && capabilityId\)/,
+  );
+});

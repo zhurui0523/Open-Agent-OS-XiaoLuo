@@ -11,6 +11,7 @@ import {
 import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 import { runtimeServiceReadiness } from "../../../../lib/server-runtime-config";
+import { probeIsolatedWorker } from "../../../../lib/isolated-worker";
 
 function joinUrl(base: string, path: string) {
   const normalized = `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
@@ -68,14 +69,25 @@ export async function POST(request: Request) {
     }
     if (row.runtimeType === "isolated-worker") {
       const readiness = runtimeServiceReadiness().isolatedWorker;
+      if (!readiness.configured) {
+        return Response.json(
+          {
+            ok: false,
+            message: "隔离 Worker 尚未配置。",
+          },
+          { status: 503 },
+        );
+      }
+      const health = await probeIsolatedWorker();
       return Response.json(
         {
-          ok: readiness.configured,
-          message: readiness.configured
-            ? `隔离 Worker 已绑定：${readiness.endpointOrigin}`
-            : "应用端隔离执行协议已就绪，等待绑定外部 Worker 集群。",
+          ok: health.ok,
+          message: health.ok
+            ? `隔离 Worker 健康：${health.endpointOrigin} · ${health.latencyMs} ms`
+            : "隔离 Worker 已配置，但健康检查未通过。",
+          health,
         },
-        { status: readiness.configured ? 200 : 503 },
+        { status: health.ok ? 200 : 503 },
       );
     }
 

@@ -2,6 +2,8 @@ import { and, eq, ne } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   modelConnections,
+  organizationMembers,
+  organizations,
   packageCapabilities,
   packages,
   workflowListings,
@@ -71,6 +73,25 @@ export async function POST(request: Request) {
     }
     const access = await requireProjectAccess(user.id, projectId, "edit");
     const db = await getDb();
+    const organizationScopes = await db
+      .select({ workspaceId: organizations.workspaceId })
+      .from(organizationMembers)
+      .innerJoin(
+        organizations,
+        eq(organizations.id, organizationMembers.organizationId),
+      )
+      .where(
+        and(
+          eq(organizationMembers.userId, user.id),
+          eq(organizationMembers.status, "active"),
+          eq(organizations.status, "active"),
+        ),
+      );
+    const organizationWorkspaceIds = new Set(
+      organizationScopes
+        .map((scope) => scope.workspaceId)
+        .filter((workspaceId): workspaceId is string => Boolean(workspaceId)),
+    );
     const [listing] = await db
       .select()
       .from(workflowListings)
@@ -85,6 +106,7 @@ export async function POST(request: Request) {
     const accessible =
       listing.visibility === "public" ||
       listing.ownerWorkspaceId === access.workspaceId ||
+      organizationWorkspaceIds.has(listing.ownerWorkspaceId) ||
       (listing.visibility === "link" &&
         Boolean(suppliedTokenHash) &&
         suppliedTokenHash === listing.shareTokenHash);
@@ -306,14 +328,15 @@ export async function POST(request: Request) {
     await mysqlTransaction(async (connection) => {
       await connection.execute(
         `INSERT INTO xiaoluo_v2_canvases
-          (id, project_id, title, arrange_mode, viewport_json, created_by)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+          (id, project_id, title, arrange_mode, viewport_json, groups_json, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           canvasId,
           projectId,
           `${listing.title} · v${version.version}`,
           graph.arrangeMode ?? "free",
-          JSON.stringify(graph.viewport ?? { x: 0, y: 0, zoom: 92 }),
+          JSON.stringify(graph.viewport ?? { x: 0, y: 0, zoom: 100 }),
+          JSON.stringify(graph.groups ?? []),
           user.id,
         ],
       );

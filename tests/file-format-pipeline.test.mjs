@@ -74,3 +74,39 @@ test("connects upload, safe reading, asset storage, and canvas rendering", async
   assert.match(canvasView, /assetDownloadUrl/);
   assert.match(nodeCard, /AssetContentPreview/);
 });
+
+test("streams file uploads outside the framework multipart action parser", async () => {
+  const { assetUploadRequestInit } =
+    await import("../app/lib/asset-upload.ts");
+  const request = assetUploadRequestInit(
+    new File([new Uint8Array([1, 2, 3])], "参考图.png", {
+      type: "image/png",
+    }),
+    { sourceType: "canvas-upload", tags: ["参考图"] },
+  );
+  const [uploadProtocol, filesRoute, assetKernel, intentOs, schemaField] =
+    await Promise.all([
+    source("app/lib/asset-upload.ts"),
+    source("app/api/v2/files/route.ts"),
+    source("app/lib/asset-kernel.ts"),
+    source("app/hooks/use-intent-os.ts"),
+    source("app/components/schema-field.tsx"),
+  ]);
+
+  assert.equal(request.method, "POST");
+  assert.equal(request.body.size, 3);
+  assert.equal(request.headers["content-type"], "image/png");
+  assert.equal(
+    decodeURIComponent(request.headers["x-xiaoluo-file-name"]),
+    "参考图.png",
+  );
+  assert.match(uploadProtocol, /ASSET_UPLOAD_FILE_NAME_HEADER/);
+  assert.match(uploadProtocol, /body: file/);
+  assert.match(filesRoute, /await request\.arrayBuffer\(\)/);
+  assert.match(filesRoute, /ASSET_UPLOAD_FILE_NAME_HEADER/);
+  assert.match(assetKernel, /MAX_FILE_BYTES = 100 \* 1024 \* 1024/);
+  assert.match(intentOs, /assetUploadRequestInit\(file, metadata\)/);
+  assert.match(schemaField, /assetUploadRequestInit\(file/);
+  assert.match(intentOs, /response\.status === 413/);
+  assert.match(intentOs, /单个文件最大支持 100 MB/);
+});

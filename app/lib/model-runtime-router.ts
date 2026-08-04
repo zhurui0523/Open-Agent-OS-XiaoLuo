@@ -12,6 +12,14 @@ import {
   type KernelNodeRequest,
 } from "./kernel-executors";
 import { mysqlExecute, mysqlNow } from "./mysql";
+import {
+  canAccessRegistryResource,
+  modelAccessScope,
+} from "./registry-access";
+import {
+  parseModelInputConstraints,
+  validateModelInputAssets,
+} from "./model-input-constraints";
 
 type ModelRow = typeof modelConnections.$inferSelect;
 
@@ -39,6 +47,20 @@ function parseModalities(row: ModelRow) {
 
 function isCompatible(row: ModelRow, kind: NodeKind) {
   return row.enabled && parseModalities(row).includes(kind);
+}
+
+function isAccessible(row: ModelRow, context: ModelRoutingContext) {
+  let uiSchema: Record<string, unknown> = {};
+  try {
+    uiSchema = JSON.parse(row.uiSchemaJson) as Record<string, unknown>;
+  } catch {
+    uiSchema = {};
+  }
+  return canAccessRegistryResource({
+    scope: modelAccessScope(uiSchema),
+    createdBy: row.createdBy,
+    userId: context.userId,
+  });
 }
 
 function orderedCandidates(
@@ -319,7 +341,11 @@ export async function invokeRoutedModel(
       asc(modelConnections.priority),
       desc(modelConnections.updatedAt),
     );
-  const candidates = orderedCandidates(all, requestedModelId, node.kind);
+  const candidates = orderedCandidates(
+    all.filter((row) => isAccessible(row, context)),
+    requestedModelId,
+    node.kind,
+  );
   if (!candidates.length) {
     throw new Error(`没有可用的${node.kind}模型连接`);
   }
@@ -327,23 +353,44 @@ export async function invokeRoutedModel(
   let totalAttempts = 0;
   let lastError: unknown = new Error("没有模型完成请求");
   let lastModel = candidates[0];
-  for (const [candidateIndex, model] of candidates.entries()) {
+  candidateLoop: for (const [candidateIndex, model] of candidates.entries()) {
     lastModel = model;
+    let attemptedCurrentCandidate = false;
+    const inputValidation = validateModelInputAssets(
+      parseModelInputConstraints(
+        model.inputConstraintsJson,
+        node.kind,
+        model.protocol,
+      ),
+      inputs,
+    );
+    if (!inputValidation.valid) {
+      lastError = new ModelExecutionError(
+        inputValidation.errors.join("；"),
+        { status: 400, code: "MODEL_INPUT_CONSTRAINT" },
+      );
+      continue;
+    }
     const maxAttempts = Math.max(1, Math.min(5, model.retryLimit));
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       const acquired = await acquireSlot(model.id);
       if (!acquired) {
-        lastError = new ModelExecutionError("模型正在限流或熔断中", {
-          status: 429,
-          code: "MODEL_UNAVAILABLE",
-        });
+        if (!attemptedCurrentCandidate) {
+          lastError = new ModelExecutionError("模型正在限流或熔断中", {
+            status: 429,
+            code: "MODEL_UNAVAILABLE",
+          });
+        }
         break;
       }
+      attemptedCurrentCandidate = true;
       const startedAt = Date.now();
       totalAttempts += 1;
       try {
-        const execution = await executeModel(model, node, inputs, signal);
+        const execution = await executeModel(model, node, inputs, signal, {
+          workspaceId: context.workspaceId,
+        });
         const latencyMs = Date.now() - startedAt;
         await markSuccess(model.id, latencyMs);
         const fallbackUsed = candidateIndex > 0;
@@ -377,8 +424,16 @@ export async function invokeRoutedModel(
         };
       } catch (error) {
         lastError = error;
-        await markFailure(model.id);
         const info = errorInfo(error);
+        const credentialFailure =
+          info.code === "MODEL_CREDENTIAL_MISSING" ||
+          info.code === "MODEL_CREDENTIAL_DECRYPT_FAILED";
+        if (!credentialFailure) {
+          await markFailure(model.id);
+        }
+        if (credentialFailure) {
+          break candidateLoop;
+        }
         if (!info.retryable || attempt >= maxAttempts) break;
         const exponential = Math.min(8_000, 500 * 2 ** (attempt - 1));
         const delay = Math.min(

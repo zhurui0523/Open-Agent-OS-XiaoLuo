@@ -36,6 +36,11 @@ const migrations = [
   "0010_equal_layla_miller",
   "0011_dynamic_skill_model_contract",
   "0012_workflow_marketplace_node_roles",
+  "0013_canvas_node_groups",
+  "0014_canvas_enterprise_live_shares",
+  "0015_flat_asset_storage",
+  "0016_model_input_constraints",
+  "0017_multi_user_secret_vault",
 ];
 
 async function tableExists(name) {
@@ -139,6 +144,13 @@ async function executeIdempotently(statement) {
     return "skipped";
   }
 
+  const dropIndex = statement.match(
+    /^ALTER TABLE `([^`]+)` DROP INDEX `([^`]+)`/i,
+  );
+  if (dropIndex && !(await indexExists(dropIndex[1], dropIndex[2]))) {
+    return "skipped";
+  }
+
   const addColumn = statement.match(
     /^ALTER TABLE `([^`]+)` ADD `([^`]+)`/i,
   );
@@ -189,13 +201,13 @@ async function verify() {
     "xiaoluo_v2_secret_refs",
     "xiaoluo_v2_canvas_snapshots",
     "xiaoluo_v2_package_versions",
-    "xiaoluo_v2_asset_collections",
     "xiaoluo_v2_user_preferences",
     "xiaoluo_v2_user_security_settings",
     "xiaoluo_v2_model_catalog_entries",
     "xiaoluo_v2_model_execution_audits",
     "xiaoluo_v2_model_usage_stats",
     "xiaoluo_v2_canvas_share_links",
+    "xiaoluo_v2_canvas_enterprise_shares",
     "xiaoluo_v2_rate_limit_buckets",
     "xiaoluo_v2_audit_logs",
     "xiaoluo_v2_outbox_events",
@@ -243,13 +255,15 @@ async function verify() {
          OR (TABLE_NAME = 'xiaoluo_v2_package_capabilities' AND COLUMN_NAME = 'execution_mode')
          OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'parameter_schema_json')
          OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'ui_schema_json')
+         OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'input_constraints_json')
          OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'capability_tags_json')
          OR (TABLE_NAME = 'xiaoluo_v2_canvas_nodes' AND COLUMN_NAME = 'node_role')
+         OR (TABLE_NAME = 'xiaoluo_v2_canvases' AND COLUMN_NAME = 'groups_json')
        )`,
   );
-  if (absent.length || columns.length !== 25) {
+  if (absent.length || columns.length !== 27) {
     throw new Error(
-      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/25`,
+      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/27`,
     );
   }
   const [nodeKindColumns] = await connection.execute(
@@ -268,7 +282,7 @@ async function verify() {
     JSON.stringify({
       ok: true,
       tables: expectedTables.length,
-      keyColumns: 25,
+      keyColumns: 27,
       canvasNodeKinds: 5,
     }),
   );
@@ -293,10 +307,6 @@ try {
          AND (
            (TABLE_NAME = 'xiaoluo_v2_users' AND COLUMN_NAME = 'id')
            OR (TABLE_NAME = 'xiaoluo_v2_workspaces' AND COLUMN_NAME = 'id')
-           OR (
-             TABLE_NAME = 'xiaoluo_v2_asset_folders'
-             AND COLUMN_NAME = 'workspace_id'
-           )
          )
        ORDER BY TABLE_NAME, COLUMN_NAME`,
     );

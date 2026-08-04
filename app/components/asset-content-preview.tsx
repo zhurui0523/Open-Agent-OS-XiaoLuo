@@ -178,19 +178,22 @@ function TextPreview({
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let active = true;
-    setFailed(false);
-    setText("正在读取内容…");
-    void (office ? readOfficePreview(url, name) : readTextPreview(url))
-      .then((content) => {
-        if (active) setText(content || "文件内容为空");
-      })
-      .catch((cause) => {
-        if (!active) return;
-        setFailed(true);
-        setText(cause instanceof Error ? cause.message : "暂时无法读取内容");
-      });
+    const timer = window.setTimeout(() => {
+      setFailed(false);
+      setText("正在读取内容…");
+      void (office ? readOfficePreview(url, name) : readTextPreview(url))
+        .then((content) => {
+          if (active) setText(content || "文件内容为空");
+        })
+        .catch((cause) => {
+          if (!active) return;
+          setFailed(true);
+          setText(cause instanceof Error ? cause.message : "暂时无法读取内容");
+        });
+    }, 0);
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
   }, [name, office, url]);
   return (
@@ -251,15 +254,29 @@ export function AssetContentPreview({
   const format = supportedFormatForName(name);
   if (kind === "image") {
     // The URL is an authenticated same-origin Asset Kernel route.
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={contentUrl} alt={name} loading="lazy" />;
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={contentUrl}
+        alt={name}
+        loading="lazy"
+        draggable={false}
+        onDragStart={(event) => event.preventDefault()}
+      />
+    );
   }
   if (compact) {
     return <FileFallback kind={kind} name={name} />;
   }
   if (kind === "video") {
     return (
-      <video src={contentUrl} controls preload="metadata">
+      <video
+        src={contentUrl}
+        controls
+        preload="metadata"
+        draggable={false}
+        onDragStart={(event) => event.preventDefault()}
+      >
         当前浏览器不支持播放该视频格式。
       </video>
     );

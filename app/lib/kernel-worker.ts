@@ -38,6 +38,11 @@ import {
   fetchExternalEndpoint,
   readResponseBytesLimited,
 } from "./model-adapters";
+import { skillInstructionsFromSchema } from "./skill-markdown";
+import {
+  parseModelInputConstraints,
+  validateModelInputAssets,
+} from "./model-input-constraints";
 
 type RunRow = typeof kernelRuns.$inferSelect;
 
@@ -166,6 +171,15 @@ async function executeQueuedTask(
         ),
       )
       .limit(1);
+    if (capability?.capability.inputSchemaJson) {
+      try {
+        request.instructions = skillInstructionsFromSchema(
+          JSON.parse(capability.capability.inputSchemaJson),
+        );
+      } catch {
+        request.instructions = "";
+      }
+    }
     const pluginPackageId =
       role === "plugin" && typeof node.parameters?.packageId === "string"
         ? node.parameters.packageId
@@ -199,6 +213,19 @@ async function executeQueuedTask(
             .limit(1)
         : [];
     const pkg = role === "plugin" ? pluginPackage : capability?.pkg;
+    if (role === "execution" && model?.enabled) {
+      const inputValidation = validateModelInputAssets(
+        parseModelInputConstraints(
+          model.inputConstraintsJson,
+          node.kind,
+          model.protocol,
+        ),
+        inputs,
+      );
+      if (!inputValidation.valid) {
+        throw new Error(inputValidation.errors.join("；"));
+      }
+    }
     const generationJobId =
       role === "execution" && model?.enabled && node.kind !== "text"
         ? `generation_${crypto.randomUUID()}`
@@ -269,14 +296,11 @@ async function executeQueuedTask(
         execution = await executePlugin(inputs);
       }
     } else {
-      if (!capability?.capability) {
-        throw new Error("执行节点必须选择已安装且启用的 Skill");
-      }
-      validateRuntimeModel(capability.capability, model, node.kind);
+      validateRuntimeModel(capability?.capability, model, node.kind);
       if (
-      capability?.capability.executionMode === "remote" &&
-      pkg?.enabled &&
-      pkg.runtimeType === "remote-api"
+        capability?.capability.executionMode === "remote" &&
+        pkg?.enabled &&
+        pkg.runtimeType === "remote-api"
       ) {
         execution = await executeRemotePackage(pkg, request, inputs);
       } else if (model?.enabled) {
@@ -292,7 +316,7 @@ async function executeQueuedTask(
           },
         );
       } else {
-        throw new Error("当前 Skill 需要配置兼容模型后才能执行");
+        throw new Error("节点需要选择已启用且兼容的模型后才能执行");
       }
     }
     if (
@@ -673,6 +697,21 @@ export async function dispatchKernelRun(runId: string, userId: string) {
   }
 
   const completedAt = mysqlNow();
+  if (failure) {
+    await db
+      .update(kernelTasks)
+      .set({
+        status: "skipped",
+        error: `因上游节点失败未执行：${failure.message}`,
+        completedAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        updatedAt: completedAt,
+      })
+      .where(
+        and(eq(kernelTasks.runId, runId), eq(kernelTasks.status, "queued")),
+      );
+  }
   await db
     .update(kernelRuns)
     .set({

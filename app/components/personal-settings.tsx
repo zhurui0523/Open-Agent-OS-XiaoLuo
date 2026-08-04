@@ -1,9 +1,11 @@
 "use client";
 
 import {
-  Building2,
+  ChartNoAxesColumn,
   Check,
-  ChevronRight,
+  FileText,
+  HardDrive,
+  Image as ImageIcon,
   KeyRound,
   LoaderCircle,
   LockKeyhole,
@@ -12,16 +14,10 @@ import {
   Save,
   ShieldCheck,
   UserRound,
+  Video,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { AccountUser } from "../types";
-
-type PersonalSection =
-  | "profile"
-  | "phone"
-  | "password"
-  | "security"
-  | "sessions";
 
 interface SecuritySettings {
   allowMultipleSessions: boolean;
@@ -36,6 +32,41 @@ interface DeviceSession {
   lastSeenAt: string;
   expiresAt: string;
   current: boolean;
+}
+
+interface PersonalUsage {
+  usage: {
+    text: number;
+    image: number;
+    video: number;
+  };
+  storage: {
+    usedBytes: number;
+    quotaBytes: number;
+    remainingBytes: number;
+    usedPercent: number;
+  };
+}
+
+const emptyUsage: PersonalUsage = {
+  usage: { text: 0, image: 0, video: 0 },
+  storage: {
+    usedBytes: 0,
+    quotaBytes: 0,
+    remainingBytes: 0,
+    usedPercent: 0,
+  },
+};
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(value) / Math.log(1024)),
+  );
+  const amount = value / 1024 ** exponent;
+  return `${amount >= 10 || exponent === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[exponent]}`;
 }
 
 async function requestJson<T>(url: string, init?: RequestInit) {
@@ -68,15 +99,12 @@ function formatDate(value: string) {
 interface PersonalSettingsProps {
   user: AccountUser;
   onUserUpdate: (user: AccountUser) => void;
-  onOpenAccount: () => void;
 }
 
 export function PersonalSettings({
   user,
   onUserUpdate,
-  onOpenAccount,
 }: PersonalSettingsProps) {
-  const [section, setSection] = useState<PersonalSection>("profile");
   const [displayName, setDisplayName] = useState(user.displayName);
   const [phone, setPhone] = useState("");
   const [phoneCode, setPhoneCode] = useState("");
@@ -90,6 +118,7 @@ export function PersonalSettings({
     sessionTtlDays: 30,
   });
   const [sessions, setSessions] = useState<DeviceSession[]>([]);
+  const [usage, setUsage] = useState<PersonalUsage>(emptyUsage);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -108,14 +137,19 @@ export function PersonalSettings({
     setSessions(payload.sessions);
   }, []);
 
+  const loadUsage = useCallback(async () => {
+    const payload = await requestJson<PersonalUsage>("/api/v2/account/usage");
+    setUsage(payload);
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      void Promise.all([loadSecurity(), loadSessions()]).catch((caught) =>
+      void Promise.all([loadSecurity(), loadSessions(), loadUsage()]).catch((caught) =>
         setError(caught instanceof Error ? caught.message : "账户安全信息加载失败"),
       );
     }, 0);
     return () => clearTimeout(timer);
-  }, [loadSecurity, loadSessions]);
+  }, [loadSecurity, loadSessions, loadUsage]);
 
   async function perform(operation: () => Promise<void>) {
     setPending(true);
@@ -253,18 +287,6 @@ export function PersonalSettings({
     });
   }
 
-  const sections: Array<{
-    id: PersonalSection;
-    label: string;
-    icon: typeof UserRound;
-  }> = [
-    { id: "profile", label: "编辑资料", icon: UserRound },
-    { id: "phone", label: "改绑手机", icon: Phone },
-    { id: "password", label: "修改密码", icon: LockKeyhole },
-    { id: "security", label: "安全设置", icon: ShieldCheck },
-    { id: "sessions", label: "登录设备", icon: MonitorSmartphone },
-  ];
-
   return (
     <div className="personal-settings">
       <section className="personal-account-summary">
@@ -279,38 +301,9 @@ export function PersonalSettings({
             {user.platformRole === "system_admin" ? "系统管理员" : "普通用户"}
           </small>
         </div>
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={onOpenAccount}
-        >
-          <Building2 size={15} /> 账号与企业
-        </button>
       </section>
 
       <div className="personal-settings-layout">
-        <nav aria-label="个人中心分类">
-          {sections.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                type="button"
-                key={item.id}
-                className={section === item.id ? "active" : ""}
-                onClick={() => {
-                  setSection(item.id);
-                  setError("");
-                  setMessage("");
-                }}
-              >
-                <Icon size={16} />
-                <span>{item.label}</span>
-                <ChevronRight size={14} />
-              </button>
-            );
-          })}
-        </nav>
-
         <div className="personal-settings-panel">
           {error && <div className="settings-alert is-error">{error}</div>}
           {message && (
@@ -319,7 +312,69 @@ export function PersonalSettings({
             </div>
           )}
 
-          {section === "profile" && (
+            <section className="personal-usage-section">
+              <header>
+                <ChartNoAxesColumn size={20} />
+                <div>
+                  <h3>用量与存储</h3>
+                  <p>仅统计文本、图片、视频调用次数，不计算 Token 或费用。</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button compact"
+                  onClick={() =>
+                    void loadUsage().catch((caught) =>
+                      setError(
+                        caught instanceof Error
+                          ? caught.message
+                          : "刷新个人用量失败",
+                      ),
+                    )
+                  }
+                >
+                  刷新
+                </button>
+              </header>
+              <div className="personal-usage-grid">
+                <article>
+                  <span><FileText size={18} /></span>
+                  <div><small>文本次数</small><strong>{usage.usage.text}</strong></div>
+                </article>
+                <article>
+                  <span><ImageIcon size={18} /></span>
+                  <div><small>图片次数</small><strong>{usage.usage.image}</strong></div>
+                </article>
+                <article>
+                  <span><Video size={18} /></span>
+                  <div><small>视频次数</small><strong>{usage.usage.video}</strong></div>
+                </article>
+              </div>
+              <article className="personal-storage-card">
+                <header>
+                  <span><HardDrive size={19} /></span>
+                  <div>
+                    <strong>个人存储空间</strong>
+                    <small>
+                      已使用 {formatBytes(usage.storage.usedBytes)} /{" "}
+                      {formatBytes(usage.storage.quotaBytes)}
+                    </small>
+                  </div>
+                  <b>{usage.storage.usedPercent.toFixed(1)}%</b>
+                </header>
+                <div className="personal-storage-track" aria-label="存储使用率">
+                  <i
+                    style={{
+                      width: `${Math.max(0, Math.min(100, usage.storage.usedPercent))}%`,
+                    }}
+                  />
+                </div>
+                <footer>
+                  <span>可用 {formatBytes(usage.storage.remainingBytes)}</span>
+                  <span>已用 {formatBytes(usage.storage.usedBytes)}</span>
+                </footer>
+              </article>
+            </section>
+
             <form className="personal-form" onSubmit={saveProfile}>
               <header>
                 <UserRound size={20} />
@@ -358,9 +413,7 @@ export function PersonalSettings({
                 </button>
               </footer>
             </form>
-          )}
 
-          {section === "phone" && (
             <form className="personal-form" onSubmit={changePhone}>
               <header>
                 <Phone size={20} />
@@ -422,9 +475,7 @@ export function PersonalSettings({
                 </button>
               </footer>
             </form>
-          )}
 
-          {section === "password" && (
             <form className="personal-form" onSubmit={changePassword}>
               <header>
                 <KeyRound size={20} />
@@ -473,9 +524,7 @@ export function PersonalSettings({
                 </button>
               </footer>
             </form>
-          )}
 
-          {section === "security" && (
             <section className="personal-form">
               <header>
                 <ShieldCheck size={20} />
@@ -527,9 +576,7 @@ export function PersonalSettings({
                 </button>
               </footer>
             </section>
-          )}
 
-          {section === "sessions" && (
             <section className="personal-session-section">
               <header>
                 <div>
@@ -580,7 +627,6 @@ export function PersonalSettings({
                 )}
               </div>
             </section>
-          )}
         </div>
       </div>
 

@@ -27,6 +27,7 @@ import {
 } from "react";
 import type { AccountUser } from "../types";
 import { AdminOperations } from "./admin-operations";
+import { useAppDialog } from "./app-dialog";
 
 type AdminTab = "overview" | "users" | "enterprises";
 
@@ -86,6 +87,7 @@ function formatBytes(value: number) {
 }
 
 export function AdminCenter({ user, onClose }: AdminCenterProps) {
+  const dialog = useAppDialog();
   const [tab, setTab] = useState<AdminTab>("overview");
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [applications, setApplications] = useState<EnterpriseApplication[]>([]);
@@ -208,9 +210,14 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
     });
   }
 
-  function deleteUser(target: ManagedUser) {
-    const accepted = window.confirm(
-      `确定删除用户 @${target.username} 吗？\n\n账号将失去登录权限，邮箱、手机号等身份信息会匿名化；历史资产与审计记录会保留。此操作不可撤销。`,
+  async function deleteUser(target: ManagedUser) {
+    const accepted = await dialog.confirm(
+      `账号将失去登录权限，邮箱、手机号等身份信息会匿名化；历史资产与审计记录会保留。此操作不可撤销。`,
+      {
+        title: `删除用户 @${target.username}`,
+        confirmText: "删除用户",
+        tone: "danger",
+      },
     );
     if (!accepted) return;
     void perform(async () => {
@@ -337,7 +344,7 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                   <div>
                     <h3>用户管理</h3>
                     <p>
-                      查看用户使用情况和名下工作空间的 OSS 存储量，并管理账号安全。
+                      查看用户使用情况、画布文件存储量，并管理账号安全。
                     </p>
                   </div>
                   <button
@@ -397,7 +404,7 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                         <HardDrive size={15} />
                         <span>
                           <b>{formatBytes(managedUser.storageBytes)}</b>
-                          <small>名下工作空间</small>
+                          <small>文件与画布资产</small>
                         </span>
                       </div>
                       <div>
@@ -439,7 +446,7 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                             <button
                               type="button"
                               className="is-danger"
-                              onClick={() => deleteUser(managedUser)}
+                              onClick={() => void deleteUser(managedUser)}
                               disabled={pending}
                             >
                               <Trash2 size={14} /> 删除用户

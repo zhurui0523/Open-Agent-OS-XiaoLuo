@@ -14,6 +14,7 @@ import {
   executeRemotePackage,
   type KernelNodeRequest,
 } from "../../../../lib/kernel-executors";
+import { skillInstructionsFromSchema } from "../../../../lib/skill-markdown";
 import { invokeRoutedModel } from "../../../../lib/model-runtime-router";
 import { validateRuntimeModel } from "../../../../lib/runtime-capability";
 import type {
@@ -144,6 +145,15 @@ export async function POST(request: Request) {
           ),
         )
         .limit(1);
+      if (capability?.capability.inputSchemaJson) {
+        try {
+          node.instructions = skillInstructionsFromSchema(
+            JSON.parse(capability.capability.inputSchemaJson),
+          );
+        } catch {
+          node.instructions = "";
+        }
+      }
       const [pkg] = capability
         ? await db
             .select()

@@ -13,6 +13,18 @@ import { requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 import { resolveSecret } from "../../../../lib/secret-vault";
 import { enforceRateLimit } from "../../../../lib/rate-limit";
+import {
+  canManageRegistryResource,
+  modelAccessScope,
+} from "../../../../lib/registry-access";
+
+function parsedUiSchema(uiSchemaJson: string) {
+  try {
+    return JSON.parse(uiSchemaJson) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -48,6 +60,21 @@ export async function POST(request: Request) {
       )
       .limit(1);
     if (!row) return Response.json({ error: "模型连接不存在" }, { status: 404 });
+
+    if (
+      !canManageRegistryResource({
+        scope: modelAccessScope(parsedUiSchema(row.uiSchemaJson)),
+        createdBy: row.createdBy,
+        userId: user.id,
+        platformRole: user.platformRole,
+        canManageWorkspace: true,
+      })
+    ) {
+      return Response.json(
+        { error: "无权测试其他用户的个人模型连接" },
+        { status: 403 },
+      );
+    }
 
     let modalities: NodeKind[] = [];
     try {

@@ -1,4 +1,8 @@
 import type { ModelProtocol, NodeKind } from "../types";
+import {
+  modelEndpointKind,
+  resolveModelApiEndpoint,
+} from "./model-endpoints.ts";
 
 export interface ModelAdapterConfig {
   protocol: ModelProtocol;
@@ -22,10 +26,6 @@ export interface AdapterModelDescriptor {
   displayName: string;
   modalities: NodeKind[];
   metadata: Record<string, unknown>;
-}
-
-function trimSlash(value: string) {
-  return value.replace(/\/+$/, "");
 }
 
 function ipv4Parts(host: string) {
@@ -137,11 +137,31 @@ export async function fetchExternalEndpoint(
   const signal = init.signal
     ? AbortSignal.any([init.signal, timeoutSignal])
     : timeoutSignal;
-  return fetch(url, {
-    ...init,
-    redirect: "error",
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      // Cloudflare Workers supports "follow" and "manual", but rejects
+      // "error" before sending the request. Manual mode keeps the original
+      // no-redirect security policy enforceable across Node and workerd.
+      redirect: "manual",
+      signal,
+    });
+  } catch (error) {
+    const aborted = signal.aborted;
+    const message = aborted
+      ? `远程模型服务请求已取消或超时（${url.host}）`
+      : `无法连接远程模型服务（${url.host}），请检查接口地址、服务器网络或服务状态`;
+    throw new Error(message, { cause: error });
+  }
+  if (
+    response.type === "opaqueredirect" ||
+    (response.status >= 300 && response.status < 400)
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`远程端点不允许重定向（HTTP ${response.status || "3xx"}）`);
+  }
+  return response;
 }
 
 export async function readResponseBytesLimited(
@@ -190,13 +210,11 @@ export async function readResponseJsonLimited(
   return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 
-function requestFor(config: ModelAdapterConfig) {
-  const baseUrl = trimSlash(validateExternalEndpoint(config.baseUrl).toString());
+export function modelAdapterProbeRequest(config: ModelAdapterConfig) {
+  const baseUrl = validateExternalEndpoint(config.baseUrl).toString();
   const headers = new Headers({ accept: "application/json" });
   if (config.credential) {
-    if (config.protocol === "gemini") {
-      headers.set("x-goog-api-key", config.credential);
-    } else if (config.protocol === "anthropic-compatible") {
+    if (config.protocol === "anthropic-compatible") {
       headers.set("x-api-key", config.credential);
       headers.set("anthropic-version", "2023-06-01");
     } else {
@@ -210,7 +228,103 @@ function requestFor(config: ModelAdapterConfig) {
   ) {
     return new Request(baseUrl, { method: "HEAD", headers });
   }
-  return new Request(`${baseUrl}/models`, { method: "GET", headers });
+  if (
+    config.protocol === "runninghub-sparkvideo-mini" ||
+    config.protocol === "runninghub-sparkvideo-mini-multimodal" ||
+    config.protocol === "runninghub-sparkvideo" ||
+    config.protocol === "runninghub-sparkvideo-multimodal" ||
+    config.protocol === "runninghub-minimax-h3"
+  ) {
+    headers.set("content-type", "application/json");
+    return new Request("https://www.runninghub.cn/openapi/v2/query", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ taskId: "0" }),
+    });
+  }
+  if (config.protocol === "anthropic-compatible") {
+    headers.set("content-type", "application/json");
+    return new Request(resolveModelApiEndpoint(baseUrl), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.modelName,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "Hi" }],
+      }),
+    });
+  }
+  if (config.protocol === "openai-responses") {
+    headers.set("content-type", "application/json");
+    return new Request(resolveModelApiEndpoint(baseUrl), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.modelName,
+        input: "Hi",
+        max_output_tokens: 1,
+      }),
+    });
+  }
+  if (config.protocol === "dall-e-3") {
+    headers.set("content-type", "application/json");
+    const endpoint = resolveModelApiEndpoint(baseUrl);
+    const body =
+      modelEndpointKind(endpoint) === "chat-completions"
+        ? {
+            model: config.modelName || "dall-e-3",
+            messages: [
+              {
+                role: "user",
+                content: "A simple white circle on a black background",
+              },
+            ],
+          }
+        : {
+            model: config.modelName || "dall-e-3",
+            prompt: "A simple white circle on a black background",
+            n: 1,
+            size: "1024x1024",
+          };
+    return new Request(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
+  if (config.protocol === "gemini" && config.modalities.includes("image")) {
+    headers.set("content-type", "application/json");
+    return new Request(resolveModelApiEndpoint(baseUrl), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        contents: [
+          { role: "user", parts: [{ text: "Draw a simple white circle" }] },
+        ],
+        generationConfig: {
+          responseModalities: ["TEXT", "IMAGE"],
+          imageConfig: { aspectRatio: "1:1", imageSize: "1K" },
+        },
+      }),
+    });
+  }
+  const endpoint = resolveModelApiEndpoint(baseUrl);
+  if (modelEndpointKind(endpoint) === "chat-completions") {
+    headers.set("content-type", "application/json");
+    return new Request(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.modelName,
+        messages: [{ role: "user", content: "Hi" }],
+        max_tokens: 1,
+      }),
+    });
+  }
+  return new Request(endpoint, {
+    method: "GET",
+    headers,
+  });
 }
 
 function inferredModalities(
@@ -302,10 +416,18 @@ export async function probeModelAdapter(
   const timeout = setTimeout(() => controller.abort(), 8000);
   const startedAt = Date.now();
   try {
-    const request = requestFor(config);
+    const request = modelAdapterProbeRequest(config);
     const response = await fetchExternalEndpoint(
       request.url,
-      { headers: request.headers, signal: controller.signal },
+      {
+        method: request.method,
+        headers: request.headers,
+        body:
+          request.method === "GET" || request.method === "HEAD"
+            ? undefined
+            : await request.arrayBuffer(),
+        signal: controller.signal,
+      },
       8_000,
     );
     const latencyMs = Date.now() - startedAt;
@@ -314,7 +436,14 @@ export async function probeModelAdapter(
       let catalog: AdapterModelDescriptor[] | undefined;
       if (
         config.protocol !== "generic-rest" &&
-        config.protocol !== "async-video"
+        config.protocol !== "async-video" &&
+        config.protocol !== "dall-e-3" &&
+        config.protocol !== "runninghub-sparkvideo-mini" &&
+        config.protocol !== "runninghub-sparkvideo-mini-multimodal" &&
+        config.protocol !== "runninghub-sparkvideo" &&
+        config.protocol !== "runninghub-sparkvideo-multimodal" &&
+        config.protocol !== "runninghub-minimax-h3" &&
+        !(config.protocol === "gemini" && config.modalities.includes("image"))
       ) {
         const payload = await readResponseJsonLimited(response).catch(() => null);
         catalog = catalogFromPayload(payload, config);
@@ -329,6 +458,24 @@ export async function probeModelAdapter(
         catalog,
       };
     }
+    const failurePayload = await readResponseJsonLimited(response, 64 * 1024).catch(
+      () => null,
+    );
+    const failureRecord =
+      failurePayload && typeof failurePayload === "object"
+        ? (failurePayload as Record<string, unknown>)
+        : {};
+    const nestedError =
+      failureRecord.error && typeof failureRecord.error === "object"
+        ? (failureRecord.error as Record<string, unknown>)
+        : {};
+    const failureDetail = [
+      nestedError.message,
+      nestedError.detail,
+      failureRecord.detail,
+      failureRecord.message,
+      typeof failureRecord.error === "string" ? failureRecord.error : undefined,
+    ].find((value): value is string => typeof value === "string" && Boolean(value));
     return {
       ok: false,
       state: "attention",
@@ -336,7 +483,9 @@ export async function probeModelAdapter(
       message:
         response.status === 401 || response.status === 403
           ? "端点可达，但凭据引用尚未配置或无权访问"
-          : `端点返回 HTTP ${response.status}`,
+          : `端点返回 HTTP ${response.status}${
+              failureDetail ? `：${failureDetail.slice(0, 240)}` : ""
+            }`,
     };
   } catch (error) {
     return {

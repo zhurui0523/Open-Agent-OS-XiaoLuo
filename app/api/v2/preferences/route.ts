@@ -6,6 +6,7 @@ import { jsonError, requireUser } from "../../../lib/auth";
 import { mysqlNow } from "../../../lib/mysql";
 
 const defaults: UserPreferences = {
+  canvasBackground: "day",
   gesturePreset: "figma",
   invertZoom: false,
   zoomSensitivity: "normal",
@@ -20,6 +21,7 @@ function parsePreferences(value: string | null | undefined): UserPreferences {
     input = {};
   }
   return {
+    canvasBackground: input.canvasBackground === "night" ? "night" : "day",
     gesturePreset:
       input.gesturePreset === "trackpad" ||
       input.gesturePreset === "zoom-wheel"

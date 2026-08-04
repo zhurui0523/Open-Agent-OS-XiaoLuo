@@ -8,13 +8,12 @@ import {
   portsForNode,
   resolveEdgePorts,
 } from "../lib/node-ports";
+import { widthForNode } from "../lib/node-layout";
 import type {
   CanvasEdge,
   CanvasNode,
   PortDataType,
 } from "../types";
-
-const NODE_WIDTH = 264;
 
 interface ConnectionDraft {
   sourceId: string;
@@ -54,7 +53,7 @@ function portPoint(
   );
   return indexedPortPoint(
     node,
-    { width: NODE_WIDTH, height },
+    { width: widthForNode(node), height },
     direction,
     index,
     ports.length,
@@ -120,7 +119,13 @@ export function CanvasEdgeLayer({
     maxX: visibleBounds.maxX + 360,
     maxY: visibleBounds.maxY + 360,
   };
-  const stop = (event: PointerEvent<SVGGElement>) => event.stopPropagation();
+  const stop = (event: PointerEvent<SVGGElement>) => {
+    // SVG groups receive a browser focus rectangle around their full bounds
+    // when selected with the pointer. Keep keyboard focus available, but do
+    // not focus the edge for ordinary mouse/touch selection.
+    event.preventDefault();
+    event.stopPropagation();
+  };
   const keyboardSelect = (
     event: KeyboardEvent<SVGGElement>,
     edgeId: string,
@@ -132,19 +137,6 @@ export function CanvasEdgeLayer({
 
   return (
     <svg className="canvas-edge-layer" aria-label="节点连线">
-      <defs>
-        <marker
-          id="edge-arrow"
-          markerWidth="8"
-          markerHeight="8"
-          refX="7"
-          refY="4"
-          orient="auto"
-          markerUnits="strokeWidth"
-        >
-          <path d="M 0 0 L 8 4 L 0 8 z" />
-        </marker>
-      </defs>
       {edges.map((edge) => {
         const source = nodeMap.get(edge.source);
         const target = nodeMap.get(edge.target);
@@ -173,6 +165,7 @@ export function CanvasEdgeLayer({
         return (
           <g
             key={edge.id}
+            data-edge-id={edge.id}
             className={`canvas-edge ${running ? "is-flowing" : ""} ${selected ? "is-selected" : ""}`}
             role="button"
             tabIndex={0}
@@ -182,6 +175,7 @@ export function CanvasEdgeLayer({
             onPointerDown={stop}
             onClick={(event) => {
               event.stopPropagation();
+              event.currentTarget.blur();
               onSelect(edge.id);
             }}
             onKeyDown={(event) => keyboardSelect(event, edge.id)}
@@ -190,7 +184,6 @@ export function CanvasEdgeLayer({
             <path
               className="canvas-edge-path"
               d={path}
-              markerEnd="url(#edge-arrow)"
             />
             {selected && (
               <g
@@ -225,7 +218,6 @@ export function CanvasEdgeLayer({
               className="canvas-edge-draft"
               d={curve(start, draft.current)}
               style={{ color: portColor(draft.dataType) }}
-              markerEnd="url(#edge-arrow)"
             />
           );
         })()}

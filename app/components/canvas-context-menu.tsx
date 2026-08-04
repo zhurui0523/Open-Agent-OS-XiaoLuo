@@ -3,6 +3,7 @@
 import {
   Check,
   AudioLines,
+  BoxSelect,
   ChevronRight,
   Copy,
   Clock3,
@@ -14,6 +15,7 @@ import {
   MousePointer2,
   Puzzle,
   Redo2,
+  Trash2,
   Shapes,
   Undo2,
   Upload,
@@ -22,32 +24,35 @@ import {
   ClipboardPaste,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { packageInstallStatus } from "../lib/package-install-status";
 import type {
-  Capability,
   InstalledPackage,
   NodeKind,
 } from "../types";
 
 type ArrangeMode = "free" | "time" | "type";
-type SubmenuName = "professional" | "plugin" | "arrange";
+type SubmenuName = "node" | "placeholder" | "plugin" | "arrange";
 
 interface CanvasContextMenuProps {
   x: number;
   y: number;
   opensLeft: boolean;
-  capabilities: Capability[];
   packages: InstalledPackage[];
   canUndo: boolean;
   canRedo: boolean;
   canCopy: boolean;
+  canPaste: boolean;
+  canDelete: boolean;
   multiSelectActive: boolean;
   arrangeMode: ArrangeMode;
   onAddNode: (kind: NodeKind) => void;
-  onAddCapability: (capability: Capability) => void;
-  onAddPlugin: (plugin: InstalledPackage) => void;
+  onAddPlaceholder: (kind: NodeKind) => void;
+  onAddPlugin: (plugin: InstalledPackage) => void | Promise<void>;
+  onAddGroup: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onCopy: () => void;
+  onDelete: () => void | Promise<void>;
   onPaste: () => void;
   onToggleMultiSelect: () => void;
   onArrange: (mode: ArrangeMode) => void;
@@ -60,19 +65,22 @@ export function CanvasContextMenu({
   x,
   y,
   opensLeft,
-  capabilities,
   packages,
   canUndo,
   canRedo,
   canCopy,
+  canPaste,
+  canDelete,
   multiSelectActive,
   arrangeMode,
   onAddNode,
-  onAddCapability,
+  onAddPlaceholder,
   onAddPlugin,
+  onAddGroup,
   onUndo,
   onRedo,
   onCopy,
+  onDelete,
   onPaste,
   onToggleMultiSelect,
   onArrange,
@@ -83,20 +91,15 @@ export function CanvasContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const [activeSubmenu, setActiveSubmenu] =
     useState<SubmenuName | null>(null);
-  const professionalCapabilities = useMemo(
-    () =>
-      capabilities.filter(
-        (capability) =>
-          capability.enabled &&
-          capability.category === "SKILL",
-      ),
-    [capabilities],
-  );
   const pluginPackages = useMemo(
     () =>
-      packages.filter(
-        (item) => item.enabled && item.packageType === "plugin",
-      ),
+      packages
+        .filter(
+          (item) =>
+            item.packageType === "plugin" &&
+            item.lifecycleState !== "uninstalled",
+        )
+        .sort((first, second) => first.name.localeCompare(second.name, "zh-CN")),
     [packages],
   );
 
@@ -116,9 +119,29 @@ export function CanvasContextMenu({
     };
   }, [onClose]);
 
-  function run(action: () => void) {
-    action();
+  function run(action: () => void | Promise<void>) {
+    void action();
     onClose();
+  }
+
+  function pluginUnavailableReason(plugin: InstalledPackage) {
+    const installStatus = packageInstallStatus(plugin);
+    if (!installStatus.available) {
+      return `${installStatus.label} · ${installStatus.detail}`;
+    }
+    const rejectedOrRevoked =
+      ["rejected", "revoked"].includes(plugin.trustState ?? "") ||
+      ["rejected", "revoked"].includes(plugin.lifecycleState ?? "");
+    const quarantined =
+      plugin.trustState === "quarantined" ||
+      plugin.lifecycleState === "quarantined";
+    if (
+      rejectedOrRevoked ||
+      (quarantined && plugin.runtimeType !== "sandbox-ui")
+    ) {
+      return "安全审核未通过，无法添加";
+    }
+    return null;
   }
 
   function submenuClass(name: SubmenuName) {
@@ -146,83 +169,51 @@ export function CanvasContextMenu({
         type="button"
         className="canvas-context-item"
         role="menuitem"
-        onClick={() => run(() => onAddNode("text"))}
-      >
-        <FileText size={19} />
-        <span>文本素材卡片</span>
-      </button>
-      <button
-        type="button"
-        className="canvas-context-item"
-        role="menuitem"
-        disabled={!canRedo}
-        onClick={() => run(onRedo)}
-      >
-        <Redo2 size={19} />
-        <span>重做</span>
-        <kbd>Ctrl+Y</kbd>
-      </button>
-      <button
-        type="button"
-        className="canvas-context-item"
-        role="menuitem"
         disabled={!canCopy}
         onClick={() => run(onCopy)}
       >
         <Copy size={19} />
-        <span>复制节点</span>
+        <span>复制</span>
         <kbd>Ctrl+C</kbd>
       </button>
       <button
         type="button"
         className="canvas-context-item"
         role="menuitem"
+        disabled={!canPaste}
         onClick={() => run(onPaste)}
       >
         <ClipboardPaste size={19} />
-        <span>粘贴节点</span>
+        <span>粘贴</span>
         <kbd>Ctrl+V</kbd>
       </button>
+      {canDelete && (
+        <button
+          type="button"
+          className="canvas-context-item is-danger"
+          role="menuitem"
+          onClick={() => run(onDelete)}
+        >
+          <Trash2 size={19} />
+          <span>删除</span>
+          <kbd>Delete</kbd>
+        </button>
+      )}
+      <span className="canvas-context-separator" role="separator" />
+
       <button
         type="button"
         className="canvas-context-item"
         role="menuitem"
-        onClick={() => run(() => onAddNode("image"))}
+        onClick={() => run(onAddGroup)}
       >
-        <ImageIcon size={19} />
-        <span>图片素材卡片</span>
-      </button>
-      <button
-        type="button"
-        className="canvas-context-item"
-        role="menuitem"
-        onClick={() => run(() => onAddNode("video"))}
-      >
-        <Video size={19} />
-        <span>视频素材卡片</span>
-      </button>
-      <button
-        type="button"
-        className="canvas-context-item"
-        role="menuitem"
-        onClick={() => run(() => onAddNode("audio"))}
-      >
-        <AudioLines size={19} />
-        <span>音频素材卡片</span>
-      </button>
-      <button
-        type="button"
-        className="canvas-context-item"
-        role="menuitem"
-        onClick={() => run(() => onAddNode("document"))}
-      >
-        <FileOutput size={19} />
-        <span>文档素材卡片</span>
+        <BoxSelect size={19} />
+        <span>新建节点群区域</span>
       </button>
 
       <div
         className="canvas-context-submenu-wrap"
-        onPointerEnter={() => setActiveSubmenu("professional")}
+        onPointerEnter={() => setActiveSubmenu("node")}
         onPointerLeave={() => setActiveSubmenu(null)}
       >
         <button
@@ -230,52 +221,91 @@ export function CanvasContextMenu({
           className="canvas-context-item"
           role="menuitem"
           aria-haspopup="menu"
-          aria-expanded={activeSubmenu === "professional"}
+          aria-expanded={activeSubmenu === "node"}
           onClick={() =>
             setActiveSubmenu((current) =>
-              current === "professional" ? null : "professional",
+              current === "node" ? null : "node",
             )
           }
         >
           <Workflow size={19} />
-          <span>新建 Skill 执行节点</span>
+          <span>新建节点</span>
           <ChevronRight size={17} />
         </button>
         <div
-          className={submenuClass("professional")}
+          className={submenuClass("node")}
           role="menu"
-          aria-label="Skill 执行节点"
+          aria-label="新建节点"
         >
-          {professionalCapabilities.length ? (
-            professionalCapabilities.map((capability) => (
-              <button
-                key={capability.id}
-                type="button"
-                className="canvas-context-item"
-                role="menuitem"
-                onClick={() => run(() => onAddCapability(capability))}
-              >
-                <Workflow size={17} />
-                <span>
-                  {capability.title}
-                  <small>{capability.modality}</small>
-                </span>
-              </button>
-            ))
-          ) : (
+          <span className="canvas-context-submenu-label">基础节点</span>
+          {([
+            ["text", "文本节点", FileText],
+            ["image", "图片节点", ImageIcon],
+            ["video", "视频节点", Video],
+            ["audio", "音频节点", AudioLines],
+            ["document", "文档节点", FileOutput],
+          ] as const).map(([kind, label, Icon]) => (
             <button
+              key={kind}
               type="button"
               className="canvas-context-item"
               role="menuitem"
-              onClick={() => run(onOpenExtensions)}
+              onClick={() => run(() => onAddNode(kind))}
             >
-              <Puzzle size={17} />
+              <Icon size={17} />
               <span>
-                创建或安装 Skill
-                <small>前往能力中心</small>
+                {label}
+                    <small>仅创建执行节点</small>
               </span>
             </button>
-          )}
+          ))}
+        </div>
+      </div>
+
+      <div
+        className="canvas-context-submenu-wrap"
+        onPointerEnter={() => setActiveSubmenu("placeholder")}
+        onPointerLeave={() => setActiveSubmenu(null)}
+      >
+        <button
+          type="button"
+          className="canvas-context-item"
+          role="menuitem"
+          aria-haspopup="menu"
+          aria-expanded={activeSubmenu === "placeholder"}
+          onClick={() =>
+            setActiveSubmenu((current) =>
+              current === "placeholder" ? null : "placeholder",
+            )
+          }
+        >
+          <FileOutput size={19} />
+          <span>新建占位卡片</span>
+          <ChevronRight size={17} />
+        </button>
+        <div
+          className={submenuClass("placeholder")}
+          role="menu"
+          aria-label="新建占位卡片"
+        >
+          {([
+            ["text", "文本占位卡片", FileText],
+            ["image", "图片占位卡片", ImageIcon],
+            ["video", "视频占位卡片", Video],
+            ["audio", "音频占位卡片", AudioLines],
+            ["document", "文档占位卡片", FileOutput],
+          ] as const).map(([kind, label, Icon]) => (
+            <button
+              key={kind}
+              type="button"
+              className="canvas-context-item"
+              role="menuitem"
+              onClick={() => run(() => onAddPlaceholder(kind))}
+            >
+              <Icon size={17} />
+              <span>{label}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -297,30 +327,42 @@ export function CanvasContextMenu({
           }
         >
           <Puzzle size={19} />
-          <span>添加插件运行器</span>
+          <span>添加插件</span>
           <ChevronRight size={17} />
         </button>
         <div
           className={submenuClass("plugin")}
           role="menu"
-          aria-label="插件运行器"
+          aria-label="已安装插件"
         >
           {pluginPackages.length ? (
-            pluginPackages.map((plugin) => (
-              <button
-                key={plugin.id}
-                type="button"
-                className="canvas-context-item"
-                role="menuitem"
-                onClick={() => run(() => onAddPlugin(plugin))}
-              >
-                <Puzzle size={17} />
-                <span>
-                  {plugin.name}
-                  <small>{plugin.runtimeType}</small>
-                </span>
-              </button>
-            ))
+            pluginPackages.map((plugin) => {
+              const unavailableReason = pluginUnavailableReason(plugin);
+              return (
+                <button
+                  key={plugin.id}
+                  type="button"
+                  className="canvas-context-item"
+                  role="menuitem"
+                  disabled={Boolean(unavailableReason)}
+                  onClick={() => run(() => onAddPlugin(plugin))}
+                >
+                  <Puzzle size={17} />
+                  <span>
+                    {plugin.name}
+                    <small>
+                      {unavailableReason ??
+                        (plugin.enabled
+                          ? `已安装 · ${plugin.runtimeType}`
+                          : plugin.trustState === "quarantined" ||
+                              plugin.lifecycleState === "quarantined"
+                            ? "点击后安全复核并添加"
+                            : "点击后自动启用并添加")}
+                    </small>
+                  </span>
+                </button>
+              );
+            })
           ) : (
             <button
               type="button"
@@ -330,7 +372,7 @@ export function CanvasContextMenu({
             >
               <Puzzle size={17} />
               <span>
-                安装 AI 插件
+                安装插件
                 <small>前往能力中心</small>
               </span>
             </button>
@@ -350,6 +392,17 @@ export function CanvasContextMenu({
         <Undo2 size={19} />
         <span>撤销</span>
         <kbd>Ctrl+Z</kbd>
+      </button>
+      <button
+        type="button"
+        className="canvas-context-item"
+        role="menuitem"
+        disabled={!canRedo}
+        onClick={() => run(onRedo)}
+      >
+        <Redo2 size={19} />
+        <span>重做</span>
+        <kbd>Ctrl+Y</kbd>
       </button>
       <button
         type="button"

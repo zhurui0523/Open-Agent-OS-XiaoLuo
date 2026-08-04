@@ -9,7 +9,7 @@ import {
   readCanvasGraph,
   replaceCanvasGraph,
 } from "../../../../lib/workspace-store";
-import type { CanvasEdge, CanvasNode } from "../../../../types";
+import type { CanvasEdge, CanvasGroup, CanvasNode } from "../../../../types";
 
 export async function GET(request: Request) {
   try {
@@ -111,6 +111,7 @@ export async function PATCH(request: Request) {
       >;
       arrangeMode: "free" | "time" | "type";
       viewport: { x: number; y: number; zoom: number };
+      groups?: CanvasGroup[];
     };
     const nodeMap = new Map(graph.nodes.map((node) => [node.id, node]));
     const normalizedEdges = graph.edges.flatMap((edge) => {
@@ -127,6 +128,7 @@ export async function PATCH(request: Request) {
       edges: normalizedEdges,
       arrangeMode: graph.arrangeMode,
       viewport: graph.viewport,
+      groups: graph.groups ?? [],
     });
     if (revision === null) {
       return Response.json(

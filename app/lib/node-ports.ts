@@ -6,6 +6,13 @@ import type {
 } from "../types";
 import { roleForNode } from "./node-role.ts";
 
+const REFERENCE_ASSET_TYPES: PortDataType[] = [
+  "image",
+  "video",
+  "audio",
+  "document",
+];
+
 export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
   text: [
     {
@@ -13,6 +20,12 @@ export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
       label: "上下文",
       direction: "input",
       dataTypes: ["text", "document", "json"],
+    },
+    {
+      id: "reference",
+      label: "参考素材",
+      direction: "input",
+      dataTypes: [...REFERENCE_ASSET_TYPES],
     },
     {
       id: "text",
@@ -30,9 +43,9 @@ export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
     },
     {
       id: "reference",
-      label: "参考图",
+      label: "参考素材",
       direction: "input",
-      dataTypes: ["image"],
+      dataTypes: [...REFERENCE_ASSET_TYPES],
     },
     {
       id: "image",
@@ -50,9 +63,9 @@ export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
     },
     {
       id: "reference",
-      label: "参考媒体",
+      label: "参考素材",
       direction: "input",
-      dataTypes: ["image", "video"],
+      dataTypes: [...REFERENCE_ASSET_TYPES],
     },
     {
       id: "video",
@@ -70,9 +83,9 @@ export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
     },
     {
       id: "reference",
-      label: "参考音频",
+      label: "参考素材",
       direction: "input",
-      dataTypes: ["audio"],
+      dataTypes: [...REFERENCE_ASSET_TYPES],
     },
     {
       id: "audio",
@@ -158,6 +171,13 @@ function rolePorts(
         cardinality: "one",
         maxConnections: 1,
       },
+      {
+        id: "result_output",
+        label: "结果输出",
+        direction: "output",
+        dataTypes: [node.kind],
+        cardinality: "many",
+      },
     ];
   }
   return null;
@@ -183,6 +203,33 @@ function snapshotPorts(node: PortAwareNode) {
   });
 }
 
+function withReferenceAssetPort(node: PortAwareNode, ports: NodePort[]) {
+  if (
+    roleForNode(node) !== "execution" ||
+    node.kind === "document" ||
+    ports.some(
+      (port) => port.direction === "input" && port.id === "reference",
+    )
+  ) {
+    return ports;
+  }
+
+  const referencePort: NodePort = {
+    id: "reference",
+    label: "参考素材",
+    direction: "input",
+    dataTypes: [...REFERENCE_ASSET_TYPES],
+    cardinality: "many",
+  };
+  const firstOutput = ports.findIndex((port) => port.direction === "output");
+  if (firstOutput < 0) return [...ports, referencePort];
+  return [
+    ...ports.slice(0, firstOutput),
+    referencePort,
+    ...ports.slice(firstOutput),
+  ];
+}
+
 export function portsForNode(
   node: PortAwareNode,
   direction?: NodePort["direction"],
@@ -201,9 +248,10 @@ export function portsForNode(
             ? { ...port, cardinality: port.cardinality ?? "many" }
             : port,
         ));
+  const withReferences = withReferenceAssetPort(node, resolved);
   return direction
-    ? resolved.filter((port) => port.direction === direction)
-    : resolved;
+    ? withReferences.filter((port) => port.direction === direction)
+    : withReferences;
 }
 
 export function portForNode(
@@ -276,6 +324,62 @@ export function normalizeEdgePorts(
     targetPort: targetPort?.id ?? portsForNode(target, "input")[0]?.id ?? "input",
     dataType,
   };
+}
+
+/**
+ * Removes legacy or otherwise invalid edges before a canvas is rendered or
+ * persisted. Result nodes are valid intermediate workflow steps again, while
+ * stale edges that reference unknown ports still need to be discarded.
+ */
+export function sanitizeCanvasEdges(
+  nodes: Array<PortAwareNode & { id: string }>,
+  edges: CanvasEdge[],
+) {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const sanitized: CanvasEdge[] = [];
+
+  for (const edge of edges) {
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    if (!source || !target) continue;
+
+    // An explicit but unknown port is a stale edge. Do not silently redirect
+    // it to another port because that could change the workflow's meaning.
+    const sourcePort = edge.sourcePort
+      ? portForNode(source, edge.sourcePort, "output")
+      : defaultOutputPort(source);
+    if (!sourcePort) continue;
+
+    const targetPort = edge.targetPort
+      ? portForNode(target, edge.targetPort, "input")
+      : compatibleInputPorts(
+          target,
+          edge.dataType ?? sourcePort.dataTypes[0],
+        )[0];
+    if (!targetPort) continue;
+
+    const dataType =
+      edge.dataType &&
+      sourcePort.dataTypes.includes(edge.dataType) &&
+      targetPort.dataTypes.includes(edge.dataType)
+        ? edge.dataType
+        : sourcePort.dataTypes.find((type) =>
+            targetPort.dataTypes.includes(type),
+          );
+    if (!dataType) continue;
+
+    const candidate: CanvasEdge = {
+      ...edge,
+      sourcePort: sourcePort.id,
+      targetPort: targetPort.id,
+      dataType,
+    };
+    if (validateEdgePorts(candidate, source, target)) continue;
+    if (validatePortCardinality(candidate, sanitized, target)) continue;
+    sanitized.push(candidate);
+  }
+
+  return sanitized;
 }
 
 export function validateEdgePorts(

@@ -15,12 +15,32 @@ function parseJson<T>(value: string, fallback: T) {
   }
 }
 
+export function hasSelectedSkillCapability(
+  capabilityId: string | null | undefined,
+) {
+  const normalized = capabilityId?.trim() ?? "";
+  return Boolean(
+    normalized &&
+      normalized !== "none" &&
+      !normalized.startsWith("core."),
+  );
+}
+
 export function validateRuntimeModel(
   capability: CapabilityRow | undefined,
   model: ModelRow | undefined,
   kind: NodeKind,
 ) {
-  if (!capability) return;
+  if (!capability) {
+    if (!model?.enabled) {
+      throw new Error("节点未选择可用模型");
+    }
+    const modalities = parseJson<NodeKind[]>(model.modalitiesJson, []);
+    if (!modalities.includes(kind)) {
+      throw new Error(`所选模型不支持 ${kind} 节点`);
+    }
+    return;
+  }
   if (capability.executionMode === "remote") return;
   const requirements = parseJson<
     NonNullable<Capability["modelRequirements"]>

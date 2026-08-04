@@ -83,7 +83,26 @@ test("ships an empty extension engine that lets users create their own Skills", 
   assert.match(data, /core\.capability\.audio/);
   assert.match(data, /core\.capability\.document/);
   assert.doesNotMatch(data, /core\.skill\.|analyze-script|create-script|video-dissect/);
-  assert.match(capabilityView, /Skill 契约与节点保持同步/);
+  assert.doesNotMatch(
+    capabilityView,
+    /统一能力投影|Live Projection|能力投影|Package 管理/,
+  );
+  assert.doesNotMatch(
+    capabilityView,
+    /registry-stats|marketplace-heading|Skill 是执行能力，插件是独立运行器/,
+  );
+  assert.match(capabilityView, /修改 Skill/);
+  assert.match(capabilityView, /可用插件/);
+  assert.match(capabilityView, /私有插件/);
+  assert.match(capabilityView, /共享插件/);
+  assert.match(
+    capabilityView,
+    /source === "private" && privatePackageItems\.length/,
+  );
+  assert.doesNotMatch(
+    capabilityView,
+    /value === "plugin" && source === "private"/,
+  );
   assert.match(capabilityView, /系统不会预装开发文档中的具体 Skill/);
   assert.match(capabilityView, /创建 Skill/);
   assert.match(capabilityView, /SchemaOptionBuilder/);
@@ -183,13 +202,14 @@ test("validates Package Contract namespaces, permissions, and runtime isolation"
 
 test("uses an unbounded world-coordinate canvas with pointer-centered zoom", async () => {
   const geometry = await import("../app/lib/canvas-geometry.ts");
-  const [appShell, canvasView, edgeLayer, canvasToolbar, contextMenu, nodeCard, controller, styles] =
+  const [appShell, canvasView, edgeLayer, canvasToolbar, contextMenu, groupRegion, nodeCard, controller, styles] =
     await Promise.all([
     readFile(new URL("../app/components/app-shell.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-edge-layer.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-toolbar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/canvas-context-menu.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/canvas-group-region.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/node-card.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -233,14 +253,39 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(canvasView, /visibleWorldBounds/);
   assert.match(canvasView, /onContextMenu=\{handleStageContextMenu\}/);
   assert.match(canvasView, /screenToWorld\(screenPoint/);
-  assert.match(contextMenu, /文本素材卡片/);
-  assert.match(contextMenu, /图片素材卡片/);
-  assert.match(contextMenu, /视频素材卡片/);
-  assert.match(contextMenu, /新建 Skill 执行节点/);
-  assert.match(contextMenu, /添加插件运行器/);
+  assert.doesNotMatch(contextMenu, /素材卡片|添加插件运行器/);
+  assert.match(contextMenu, /新建节点/);
+  assert.match(contextMenu, /文本节点/);
+  assert.match(contextMenu, /图片节点/);
+  assert.match(contextMenu, /视频节点/);
+  assert.match(contextMenu, /音频节点/);
+  assert.match(contextMenu, /文档节点/);
+  assert.doesNotMatch(contextMenu, /已安装 Skill/);
+  assert.match(contextMenu, /添加插件/);
+  assert.match(contextMenu, /item\.packageType === "plugin"/);
+  assert.match(contextMenu, /<span>撤销<\/span>[\s\S]*<span>重做<\/span>/);
+  assert.doesNotMatch(contextMenu, /复制节点|粘贴节点/);
+  assert.match(contextMenu, /<span>复制<\/span>/);
+  assert.match(contextMenu, /<span>粘贴<\/span>/);
+  assert.match(canvasView, /function importFilesToCanvas/);
+  assert.match(canvasView, /event\.dataTransfer\.types\.includes\("Files"\)/);
+  assert.match(canvasView, /await os\.uploadAsset/);
   assert.match(contextMenu, /自由画布/);
   assert.match(contextMenu, /时间排序/);
   assert.match(contextMenu, /类型排序/);
+  assert.match(contextMenu, /新建节点群区域/);
+  assert.match(groupRegion, /执行节点群/);
+  assert.match(groupRegion, /data-group-id=\{group\.id\}/);
+  assert.match(nodeCard, /data-node-id=\{node\.id\}/);
+  assert.match(edgeLayer, /data-edge-id=\{edge\.id\}/);
+  assert.doesNotMatch(edgeLayer, /edge-arrow|markerEnd/);
+  assert.match(controller, /function graphForGroup/);
+  assert.match(controller, /function startGroupRun/);
+  assert.match(controller, /target: \{ groupId\?: string \| null; edgeId\?: string \| null \}/);
+  assert.match(controller, /nodeBelongsToGroup\(node, group\)/);
+  assert.match(controller, /const pastedGroups = copied\.groups\.map/);
+  assert.match(canvasView, /contextMenu\.groupId/);
+  assert.match(canvasView, /contextMenu\.edgeId/);
   assert.doesNotMatch(
     canvasToolbar,
     /导入素材|添加卡片|连接节点|展开更多工具|canvas-toolbar-more/,
@@ -249,14 +294,27 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(canvasToolbar, /onClick=\{\(\) => onNavigate\("canvas"\)\}/);
   assert.match(
     canvasToolbar,
-    /tool-separator[\s\S]*进入灵境画布[\s\S]*打开资产中心/,
+    /tool-separator[\s\S]*进入灵境画布[\s\S]*打开画布管理[\s\S]*打开资产中心/,
   );
+  assert.doesNotMatch(canvasToolbar, /运行工作流|<Play/);
   assert.match(controller, /function undoCanvas/);
   assert.match(controller, /function selectNode/);
   assert.match(controller, /function connectNodes/);
   assert.match(controller, /function deleteEdge/);
-  assert.match(controller, /function arrangeNodes\(mode: "free" \| "time" \| "type"\)/);
+  assert.match(controller, /function arrangeNodes\([\s\S]{0,120}measuredHeights: Record<string, number>/);
+  assert.match(controller, /arrangeNodesWithoutOverlap\(current, mode, measuredHeights\)/);
+  assert.match(canvasView, /onArrange=\{\(mode\) => os\.arrangeNodes\(mode, nodeHeights\)\}/);
   assert.match(styles, /\.canvas-context-menu[\s\S]*z-index:\s*220;/);
+  assert.match(styles, /\.canvas-context-menu[\s\S]*width:\s*244px;/);
+  assert.match(styles, /\.canvas-context-item[\s\S]*min-height:\s*34px;/);
+  assert.match(
+    styles,
+    /\.canvas-context-menu[\s\S]*overflow:\s*visible;/,
+  );
+  assert.match(
+    styles,
+    /\.canvas-context-submenu[\s\S]*left:\s*calc\(100% - 2px\);[\s\S]*overflow-x:\s*hidden;/,
+  );
   assert.doesNotMatch(nodeCard, /Math\.max\(16|Math\.max\(24/);
   assert.doesNotMatch(styles, /width:\s*1240px|height:\s*720px/);
   assert.match(styles, /\.canvas-content[\s\S]*width:\s*0;[\s\S]*height:\s*0;/);
@@ -281,7 +339,10 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(canvasView, /nodeHeights\[node\.id\]/);
   assert.match(canvasView, /<CanvasEdgeLayer/);
   assert.match(nodeCard, /node-workbench-content/);
-  assert.doesNotMatch(styles, /\.node-workbench-content[\s\S]{0,180}overflow/);
+  assert.match(
+    styles,
+    /\.canvas-node\.node-role-execution \.node-workbench-content[\s\S]{0,180}overflow:\s*auto/,
+  );
   assert.match(styles, /\.image-workbench-preview[\s\S]*height:\s*108px;/);
   assert.match(styles, /\.video-workbench-preview[\s\S]*height:\s*104px;/);
   assert.match(styles, /\.port\s*\{[\s\S]*top:\s*50%;[\s\S]*transform:\s*translateY\(-50%\);/);
@@ -289,6 +350,10 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(nodeCard, /data-node-id=\{node\.id\}/);
   assert.match(canvasView, /connectionDraft/);
   assert.match(canvasView, /document[\s\S]*\.elementFromPoint/);
+  assert.match(canvasView, /droppedOnEmptyCanvas/);
+  assert.match(canvasView, /openContextMenuAt/);
+  assert.match(canvasView, /pendingAutoConnection/);
+  assert.match(canvasView, /contextMenu\?\.pendingConnection/);
   assert.match(edgeLayer, /canvas-edge-remove/);
   assert.match(styles, /\.edge-line\.is-selected/);
   assert.match(styles, /\.canvas-stage\.is-connecting \.port-input\.is-available/);
@@ -347,7 +412,7 @@ test("compiles and executes workflows through the AI microkernel contract", asyn
   assert.match(executors, /kernel\.builtin-preview/);
   assert.match(schema, /kernel_runs/);
   assert.match(schema, /kernel_tasks/);
-  assert.match(appShell, /AI 微内核在线/);
+  assert.doesNotMatch(appShell, /className="top-bar"/);
 });
 
 test("ships a persistent AI file system with versioned asset URIs", async () => {
@@ -380,7 +445,7 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   ]);
 
   assert.equal(typeof JSON.parse(hosting).project_id, "string");
-  assert.match(schema, /asset_folders/);
+  assert.doesNotMatch(schema, /asset_folders|asset_collections|folderId/);
   assert.match(schema, /asset_versions/);
   assert.match(schema, /asset_relations/);
   assert.match(kernel, /asset:\/\/workspace\//);
@@ -394,6 +459,15 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   assert.match(assetsView, /AI 文件系统/);
   assert.match(assetsView, /\/api\/v2\/files/);
   assert.match(assetsView, /版本历史/);
+  assert.doesNotMatch(
+    assetsView,
+    /文件夹|全部集合|加入集合|\/api\/v2\/folders|\/api\/v2\/collections/,
+  );
+  assert.doesNotMatch(
+    assetsView,
+    /任务中心|上传第一个文件|这里还没有文件|uploadRef|setSection\("tasks"\)/,
+  );
+  assert.doesNotMatch(assetsView, /来源|sourceFilter|sourceOptions|files\/lineage/);
   assert.doesNotMatch(assetsView, /initialAssets/);
   assert.match(canvasView, /os\.uploadAsset/);
   assert.match(canvasView, /source: "asset-kernel"/);
@@ -411,13 +485,31 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   assert.match(gitignore, /^!\.env\.example$/m);
 });
 
-test("offers a local development entry that uses remote MySQL and OSS", async () => {
-  const [packageJson, launcher, nextLauncher, envExample, gitignore] =
+test("offers an isolated local MySQL and file-storage development profile", async () => {
+  const [
+    packageJson,
+    launcher,
+    nextLauncher,
+    localMysql,
+    localSetup,
+    runtimeConfig,
+    envExample,
+    gitignore,
+  ] =
     await Promise.all([
       readFile(new URL("../package.json", import.meta.url), "utf8"),
       readFile(new URL("../start-local.cmd", import.meta.url), "utf8"),
       readFile(
         new URL("../scripts/start-local-next.mjs", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../scripts/local-mysql.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL("../scripts/setup-local-runtime.ps1", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/lib/server-runtime-config.ts", import.meta.url),
         "utf8",
       ),
       readFile(new URL("../.env.example", import.meta.url), "utf8"),
@@ -426,18 +518,31 @@ test("offers a local development entry that uses remote MySQL and OSS", async ()
 
   assert.equal(
     JSON.parse(packageJson).scripts["dev:local"],
-    "node scripts/start-local-next.mjs",
+    "node --env-file=.env.local-dev scripts/start-local-detached.mjs",
   );
+  assert.match(JSON.parse(packageJson).scripts["local:setup"], /setup-local-runtime/);
   assert.match(nextLauncher, /node_modules\/next\/dist\/bin\/next/);
+  assert.match(nextLauncher, /scripts\/local-mysql\.mjs/);
+  assert.match(nextLauncher, /scripts\/runtime-worker\.mjs/);
+  assert.match(nextLauncher, /isolated-worker\/server\.mjs/);
   assert.match(nextLauncher, /127\.0\.0\.1/);
-  assert.match(launcher, /http:\/\/localhost:3001\//);
-  assert.match(launcher, /remote MySQL \+ Alibaba Cloud OSS/);
+  assert.match(launcher, /http:\/\/127\.0\.0\.1:3001\//);
+  assert.match(launcher, /project-scoped MySQL \+ local file storage/);
+  assert.match(launcher, /Remote MySQL and Alibaba Cloud OSS are not used/);
+  assert.match(localMysql, /--no-monitor/);
+  assert.match(localMysql, /\.local-data/);
+  assert.match(localSetup, /cdn\.mysql\.com\/Downloads\/MySQL-8\.4/);
+  assert.match(runtimeConfig, /driver: "local"/);
+  assert.match(runtimeConfig, /生产环境不允许使用本地文件存储/);
   assert.doesNotMatch(launcher, /DATABASE_DRIVER=d1/);
   assert.doesNotMatch(launcher, /STORAGE_DRIVER=r2/);
-  assert.match(envExample, /no local business-data fallback/);
+  assert.match(envExample, /^STORAGE_DRIVER=oss$/m);
+  assert.match(envExample, /^LOCAL_STORAGE_ROOT=\.local-data\/storage$/m);
   assert.match(envExample, /^DB_HOST=$/m);
   assert.match(envExample, /^OSS_BUCKET=$/m);
   assert.match(gitignore, /^\/\.wrangler\/$/m);
+  assert.match(gitignore, /^\/\.local-runtime\/$/m);
+  assert.match(gitignore, /^\/\.local-data\/$/m);
 });
 
 test("keeps identity, canvases, and files on authenticated cloud services", async () => {
@@ -481,6 +586,39 @@ test("keeps identity, canvases, and files on authenticated cloud services", asyn
   assert.match(fileRoute, /requireWorkspaceContext/);
   assert.match(fileContentRoute, /eq\(assets\.workspaceId, home\.workspaceId\)/);
   assert.doesNotMatch(controller, /localStorage|sessionStorage/);
+});
+
+test("exposes canvases directly without a user-manageable workspace layer", async () => {
+  const [bootstrap, canvasRoute, controller, adminOverview, adminOperations] =
+    await Promise.all([
+      readFile(new URL("../app/api/v2/bootstrap/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/api/v2/canvases/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/hooks/use-intent-os.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL("../app/api/v2/admin/overview/route.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/components/admin-operations.tsx", import.meta.url),
+        "utf8",
+      ),
+    ]);
+
+  assert.match(bootstrap, /listUserCanvases/);
+  assert.match(bootstrap, /dataScopeId/);
+  assert.doesNotMatch(bootstrap, /listUserWorkspaces|workspaces:/);
+  assert.match(canvasRoute, /listUserCanvases/);
+  assert.doesNotMatch(controller, /workspaceName|switchWorkspace/);
+  assert.doesNotMatch(adminOverview, /AS workspaces|workspaces:/);
+  assert.doesNotMatch(adminOperations, /metrics\.workspaces/);
+  assert.doesNotMatch(
+    adminOperations,
+    /PackageTrustAdmin|Package 信任中心|package-trust-admin/,
+  );
+  await assert.rejects(
+    access(new URL("../app/api/v2/workspaces/route.ts", import.meta.url)),
+    { code: "ENOENT" },
+  );
 });
 
 test("ships phone recovery and the deliberately small membership model", async () => {
@@ -549,8 +687,8 @@ test("ships phone recovery and the deliberately small membership model", async (
   assert.doesNotMatch(mysql, /\bCREATE\s+TABLE\b|\bALTER\s+TABLE\b/i);
 });
 
-test("ships settings for API keys, canvas gestures, and shortcuts", async () => {
-  const [toolbar, settings, canvas, preferencesRoute, schema] =
+test("ships settings for API keys, interface themes, canvas gestures, and shortcuts", async () => {
+  const [toolbar, settings, canvas, appShell, preferencesRoute, schema] =
     await Promise.all([
       readFile(
         new URL("../app/components/canvas-toolbar.tsx", import.meta.url),
@@ -565,6 +703,10 @@ test("ships settings for API keys, canvas gestures, and shortcuts", async () => 
         "utf8",
       ),
       readFile(
+        new URL("../app/components/app-shell.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
         new URL("../app/api/v2/preferences/route.ts", import.meta.url),
         "utf8",
       ),
@@ -573,10 +715,18 @@ test("ships settings for API keys, canvas gestures, and shortcuts", async () => 
 
   assert.match(toolbar, /label="设置"/);
   assert.match(settings, /API Key/);
+  assert.match(settings, /界面风格/);
+  assert.match(settings, /画布、导航、页面、弹窗和表单会同步变化/);
+  assert.match(settings, /白天/);
+  assert.match(settings, /黑夜/);
   assert.match(settings, /画布手势/);
   assert.match(settings, /快捷键/);
   assert.doesNotMatch(settings, /自定义接口|请求体 JSON|响应示例 JSON/);
   assert.match(canvas, /gesturePreset === "zoom-wheel"/);
+  assert.match(canvas, /canvas-background-\$\{canvasBackground\}/);
+  assert.match(preferencesRoute, /canvasBackground/);
+  assert.match(appShell, /root\.dataset\.theme = os\.preferences\.canvasBackground/);
+  assert.match(appShell, /data-theme=\{os\.preferences\.canvasBackground\}/);
   assert.match(canvas, /keyboardShortcuts/);
   assert.match(preferencesRoute, /onDuplicateKeyUpdate/);
   assert.match(schema, /xiaoluo_v2_user_preferences/);
@@ -632,6 +782,8 @@ test("ships a secure personal center with profile and device management", async 
   assert.match(personal, /修改密码/);
   assert.match(personal, /安全设置/);
   assert.match(personal, /登录设备/);
+  assert.match(personal, /退出登录/);
+  assert.match(personal, /personal-logout-button/);
   assert.match(profileRoute, /requireUser/);
   assert.match(phoneRoute, /verifyPhoneChallenge/);
   assert.match(phoneRoute, /verifyPassword/);
@@ -687,9 +839,16 @@ test("isolates system administration from ordinary user settings", async () => {
     ),
   ]);
 
-  assert.match(shell, /user\.platformRole === "system_admin"/);
-  assert.match(shell, /后台管理/);
+  assert.match(
+    shell,
+    /adminOpen && user\.platformRole === "system_admin"/,
+  );
+  assert.match(shell, /onOpenAdmin/);
+  assert.doesNotMatch(shell, /className="profile-menu"/);
   assert.match(shell, /<AdminCenter/);
+  assert.match(settings, /user\.platformRole === "system_admin"/);
+  assert.match(settings, /后台管理/);
+  assert.match(settings, /onLogout=\{onLogout\}/);
   assert.doesNotMatch(settings, /内核运维|AdminOperations|"kernel"/);
   assert.doesNotMatch(account, /\/api\/v2\/admin\/users|企业审核/);
   assert.match(adminCenter, /<AdminOperations/);

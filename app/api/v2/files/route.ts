@@ -31,6 +31,13 @@ import {
 } from "../../../lib/model-adapters";
 import type { NodeKind } from "../../../types";
 import { artifactFormat } from "../../../lib/artifact-format";
+import {
+  ASSET_UPLOAD_FILE_NAME_HEADER,
+  ASSET_UPLOAD_SOURCE_REF_HEADER,
+  ASSET_UPLOAD_SOURCE_TYPE_HEADER,
+  ASSET_UPLOAD_TAGS_HEADER,
+  decodeAssetUploadHeader,
+} from "../../../lib/asset-upload";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -97,7 +104,6 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const query = url.searchParams.get("q")?.trim() ?? "";
     const kind = url.searchParams.get("kind")?.trim() ?? "";
-    const folder = url.searchParams.get("folder");
     const trashed = url.searchParams.get("trash") === "1";
     const favorite = url.searchParams.get("favorite") === "1";
     const cursor = url.searchParams.get("cursor")?.trim() ?? "";
@@ -112,8 +118,6 @@ export async function GET(request: Request) {
     if (query) conditions.push(like(assets.searchText, `%${query}%`));
     if (kind) conditions.push(eq(assets.kind, kind));
     if (favorite) conditions.push(eq(assets.favorite, true));
-    if (folder === "root") conditions.push(isNull(assets.folderId));
-    else if (folder) conditions.push(eq(assets.folderId, folder));
     const db = await getDb();
     if (cursor) {
       const separator = cursor.indexOf("::");
@@ -155,8 +159,42 @@ export async function POST(request: Request) {
   try {
     const { user, home } = await requireWorkspaceContext(request);
     const contentType = request.headers.get("content-type") ?? "";
+    const encodedFileName = request.headers.get(ASSET_UPLOAD_FILE_NAME_HEADER);
     let input: Parameters<typeof storeAsset>[2];
-    if (contentType.includes("multipart/form-data")) {
+    if (encodedFileName) {
+      const declaredLength = Number(request.headers.get("content-length") ?? 0);
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_FILE_BYTES) {
+        return errorResponse(new Error("单个文件暂时不能超过 100 MB"), 413);
+      }
+      const bytes = await request.arrayBuffer();
+      if (bytes.byteLength > MAX_FILE_BYTES) {
+        return errorResponse(new Error("单个文件暂时不能超过 100 MB"), 413);
+      }
+      const validated = validateUploadedFile({
+        name: decodeAssetUploadHeader(encodedFileName),
+        declaredMimeType: contentType,
+        bytes,
+      });
+      input = {
+        workspaceId: home.workspaceId,
+        name: validated.name,
+        mimeType: validated.mimeType,
+        bytes,
+        tags: jsonTags(
+          decodeAssetUploadHeader(
+            request.headers.get(ASSET_UPLOAD_TAGS_HEADER),
+          ),
+        ),
+        sourceType:
+          decodeAssetUploadHeader(
+            request.headers.get(ASSET_UPLOAD_SOURCE_TYPE_HEADER),
+          ) || "upload",
+        sourceRef:
+          decodeAssetUploadHeader(
+            request.headers.get(ASSET_UPLOAD_SOURCE_REF_HEADER),
+          ) || null,
+      };
+    } else if (contentType.includes("multipart/form-data")) {
       const form = await request.formData();
       const file = form.get("file");
       if (!(file instanceof File)) throw new Error("请选择要上传的文件");
@@ -174,7 +212,6 @@ export async function POST(request: Request) {
         name: validated.name,
         mimeType: validated.mimeType,
         bytes,
-        folderId: String(form.get("folderId") ?? "").trim() || null,
         tags: jsonTags(String(form.get("tags") ?? "")),
         description: String(form.get("description") ?? "").trim(),
         sourceType: String(form.get("sourceType") ?? "upload").trim(),
@@ -234,7 +271,6 @@ export async function PATCH(request: Request) {
     const payload = (await request.json()) as {
       id?: string;
       name?: string;
-      folderId?: string | null;
       tags?: string[];
       description?: string;
       favorite?: boolean;
@@ -259,9 +295,6 @@ export async function PATCH(request: Request) {
       .set({
         ...(payload.name !== undefined
           ? { name: sanitizeAssetName(payload.name) }
-          : {}),
-        ...(payload.folderId !== undefined
-          ? { folderId: payload.folderId || null }
           : {}),
         ...(payload.tags !== undefined
           ? { tagsJson: JSON.stringify(jsonTags(payload.tags)) }

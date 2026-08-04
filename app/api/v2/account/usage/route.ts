@@ -1,0 +1,71 @@
+import type { RowDataPacket } from "mysql2/promise";
+import { jsonError, requireUser } from "../../../../lib/auth";
+import { mysqlRows } from "../../../../lib/mysql";
+
+const DEFAULT_STORAGE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024;
+
+interface UsageRow extends RowDataPacket {
+  textCount: number | string;
+  imageCount: number | string;
+  videoCount: number | string;
+  storageBytes: number | string;
+}
+
+function storageQuotaBytes() {
+  const parsed = Number(process.env.USER_STORAGE_QUOTA_BYTES);
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_STORAGE_QUOTA_BYTES;
+}
+
+export async function GET(request: Request) {
+  try {
+    const user = await requireUser(request);
+    const rows = await mysqlRows<UsageRow>(
+      `SELECT
+         (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_model_execution_audits mea
+           WHERE mea.user_id = ? AND mea.modality = 'text'
+         ) AS textCount,
+         (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_model_execution_audits mea
+           WHERE mea.user_id = ? AND mea.modality = 'image'
+         ) AS imageCount,
+         (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_model_execution_audits mea
+           WHERE mea.user_id = ? AND mea.modality = 'video'
+         ) AS videoCount,
+         (
+           SELECT COALESCE(SUM(a.size), 0)
+           FROM xiaoluo_v2_assets a
+           INNER JOIN xiaoluo_v2_workspaces w ON w.id = a.workspace_id
+           WHERE w.owner_id = ? AND a.trashed_at IS NULL
+         ) AS storageBytes`,
+      [user.id, user.id, user.id, user.id],
+    );
+    const row = rows[0];
+    const usedBytes = Number(row?.storageBytes ?? 0);
+    const quotaBytes = storageQuotaBytes();
+    return Response.json({
+      usage: {
+        text: Number(row?.textCount ?? 0),
+        image: Number(row?.imageCount ?? 0),
+        video: Number(row?.videoCount ?? 0),
+      },
+      storage: {
+        usedBytes,
+        quotaBytes,
+        remainingBytes: Math.max(0, quotaBytes - usedBytes),
+        usedPercent:
+          quotaBytes > 0
+            ? Math.min(100, Number(((usedBytes / quotaBytes) * 100).toFixed(2)))
+            : 0,
+      },
+    });
+  } catch (error) {
+    return jsonError(error, "读取个人用量失败");
+  }
+}

@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   CircleStop,
+  Cpu,
   ListChecks,
   MessageSquareText,
   PanelRightClose,
@@ -18,19 +19,43 @@ import {
 } from "lucide-react";
 import { useRef, useState } from "react";
 import type {
+  CanvasAssetReference,
   ChatAttachment,
   ChatMessage,
   Capability,
   IntentPlan,
+  ModelConnection,
+  ModelInputAssetKind,
+  ModelInputConstraints,
+  NodeKind,
   RunState,
 } from "../types";
 import { IconButton } from "./icon-button";
+import { InputAssetPreview, NodePromptEditor } from "./node-card";
+import {
+  normalizeModelInputConstraints,
+  validateModelInputAssets,
+} from "../lib/model-input-constraints";
+import { resolveProfessionalGeneratorRules } from "../lib/professional-generator-rules";
 
 const suggestions = [
   "把当前脚本扩展成 30 秒品牌短片",
   "为这个角色建立统一视觉 DNA",
   "检查画布中可能失败的依赖",
 ];
+
+const XIAOLUO_INPUT_CONSTRAINTS: ModelInputConstraints = {
+  maxTotal: 8,
+  maxByType: { image: 8, video: 8, audio: 8, document: 8 },
+};
+
+function attachmentInputKind(attachment: ChatAttachment): ModelInputAssetKind {
+  return attachment.kind === "image" ||
+    attachment.kind === "video" ||
+    attachment.kind === "audio"
+    ? attachment.kind
+    : "document";
+}
 
 interface IntentConsoleProps {
   messages: ChatMessage[];
@@ -39,10 +64,20 @@ interface IntentConsoleProps {
   runState: RunState;
   onClose: () => void;
   capabilities: Capability[];
+  models: ModelConnection[];
+  canvasAssets: CanvasAssetReference[];
   onSubmit: (
     value: string,
     attachments?: ChatAttachment[],
     preferredCapabilityId?: string,
+    preferredModelId?: string,
+  ) => void;
+  onGenerate: (
+    value: string,
+    kind: Extract<NodeKind, "text" | "image" | "video">,
+    capabilityId?: string,
+    modelId?: string,
+    attachments?: ChatAttachment[],
   ) => void;
   onUploadAttachments: (files: File[]) => Promise<ChatAttachment[]>;
   onConfirmPlan: () => void | Promise<void>;
@@ -60,7 +95,10 @@ export function IntentConsole({
   runState,
   onClose,
   capabilities,
+  models,
+  canvasAssets,
   onSubmit,
+  onGenerate,
   onUploadAttachments,
   onConfirmPlan,
   onUpdatePlan,
@@ -74,16 +112,124 @@ export function IntentConsole({
   const [uploading, setUploading] = useState(false);
   const [editingPlan, setEditingPlan] = useState(false);
   const [planDraft, setPlanDraft] = useState<IntentPlan | null>(null);
-  const [preferredCapabilityId, setPreferredCapabilityId] = useState("auto");
+  const [composerMode, setComposerMode] = useState<
+    "xiaoluo" | "text" | "image" | "video"
+  >("xiaoluo");
+  const [preferredCapabilityId, setPreferredCapabilityId] = useState("none");
+  const [preferredModelId, setPreferredModelId] = useState("");
   const attachmentRef = useRef<HTMLInputElement>(null);
+  const professionalMode = composerMode === "xiaoluo" ? null : composerMode;
+  const professionalRules = professionalMode
+    ? resolveProfessionalGeneratorRules({
+        capabilities,
+        models,
+        kind: professionalMode,
+        requestedCapabilityId: preferredCapabilityId,
+        requestedModelId: preferredModelId || undefined,
+      })
+    : null;
+  const inputConstraints = professionalMode
+    ? normalizeModelInputConstraints(
+        professionalRules?.model?.inputConstraints,
+        professionalMode,
+        professionalRules?.model?.protocol,
+      )
+    : XIAOLUO_INPUT_CONSTRAINTS;
+  const attachmentValidation = validateModelInputAssets(
+    inputConstraints,
+    attachments.map((attachment) => ({
+      kind: attachmentInputKind(attachment),
+    })),
+  );
+  const generatorReady = professionalMode
+    ? Boolean(professionalRules?.model || professionalRules?.usesSkillRuntime)
+    : true;
+  const canAddInputAsset =
+    inputConstraints.maxTotal > 0 &&
+    attachments.length < inputConstraints.maxTotal;
+
+  const attachmentAssets: CanvasAssetReference[] = attachments.map((attachment) => ({
+    sourceNodeId: attachment.sourceNodeId ?? `attachment:${attachment.id}`,
+    assetId: attachment.id,
+    title: attachment.name,
+    kind:
+      attachment.kind === "image" ||
+      attachment.kind === "video" ||
+      attachment.kind === "audio"
+        ? attachment.kind
+        : "document",
+    url: attachment.previewUrl ?? attachment.uri,
+    mimeType: attachment.mimeType,
+    status: "succeeded" as const,
+  }));
+  const mentionAssets = [
+    ...attachmentAssets,
+    ...canvasAssets.filter(
+      (asset) =>
+        !attachmentAssets.some(
+          (attachment) => attachment.sourceNodeId === asset.sourceNodeId,
+        ),
+    ),
+  ];
+  const attachedSourceIds = new Set(
+    attachmentAssets.map((asset) => asset.sourceNodeId),
+  );
+
+  function attachCanvasAsset(sourceNodeId: string) {
+    const asset = canvasAssets.find(
+      (candidate) => candidate.sourceNodeId === sourceNodeId,
+    );
+    if (!asset?.assetId || !asset.url) return;
+    const assetId = asset.assetId;
+    const assetUrl = asset.url;
+    setAttachments((current) => {
+      if (
+        current.some(
+          (attachment) =>
+            attachment.id === assetId ||
+            attachment.sourceNodeId === sourceNodeId,
+        ) ||
+        current.length >= inputConstraints.maxTotal
+      ) {
+        return current;
+      }
+      return [
+        ...current,
+        {
+          id: assetId,
+          uri: assetUrl,
+          name: asset.title,
+          kind: asset.kind,
+          mimeType:
+            asset.mimeType ??
+            (asset.kind === "image"
+              ? "image/*"
+              : asset.kind === "video"
+                ? "video/*"
+                : asset.kind === "audio"
+                  ? "audio/*"
+                  : "application/octet-stream"),
+          previewUrl: assetUrl,
+          sourceNodeId,
+        },
+      ];
+    });
+  }
 
   function submit() {
     if (!draft.trim()) return;
-    onSubmit(
-      draft,
-      attachments,
-      preferredCapabilityId === "auto" ? undefined : preferredCapabilityId,
-    );
+    if (composerMode !== "xiaoluo") {
+      if (!generatorReady || !attachmentValidation.valid) return;
+      onGenerate(
+        draft,
+        composerMode,
+        preferredCapabilityId,
+        professionalRules?.model?.id,
+        attachments,
+      );
+    } else {
+      onSubmit(draft, attachments);
+    }
     setDraft("");
     setAttachments([]);
   }
@@ -96,16 +242,14 @@ export function IntentConsole({
             <Sparkles size={17} />
           </span>
           <div>
-            <strong>Intent Console</strong>
+            <strong>小逻</strong>
             <small>
-              <i className="online-dot" /> Brain Planner 在线
+              <i className="online-dot" />
+              {composerMode === "xiaoluo" ? "小逻大脑在线" : "专业生成器"}
             </small>
           </div>
         </div>
         <div className="console-header-actions">
-          <button type="button" className="context-button">
-            当前画布 <ChevronDown size={14} />
-          </button>
           <IconButton label="折叠 Intent Console" onClick={onClose}>
             <PanelRightClose size={17} />
           </IconButton>
@@ -427,12 +571,46 @@ export function IntentConsole({
       </div>
 
       <div className="composer-wrap">
-        {!!attachments.length && (
-          <div className="composer-attachments">
+        {(!!attachments.length || Boolean(professionalMode)) && (
+          <section
+            className={`composer-input-assets ${attachmentValidation.valid ? "" : "has-error"}`}
+            aria-label="输入素材"
+          >
+            <div className="composer-input-assets-heading">
+              <strong>输入素材</strong>
+              <span>
+                {attachmentValidation.total} / {inputConstraints.maxTotal}
+              </span>
+            </div>
+            {inputConstraints.maxTotal <= 0 ? (
+              <p className="composer-input-assets-empty">
+                当前模型未开放参考素材
+              </p>
+            ) : (
+            <div className="composer-input-asset-grid">
             {attachments.map((attachment) => (
-              <span key={attachment.id}>
-                <Paperclip size={12} />
-                {attachment.name}
+              <div
+                className="composer-input-asset-card"
+                key={attachment.id}
+                title={attachment.name}
+              >
+                <InputAssetPreview
+                  asset={{
+                    sourceNodeId:
+                      attachment.sourceNodeId ?? `attachment:${attachment.id}`,
+                    assetId: attachment.id,
+                    title: attachment.name,
+                    kind:
+                      attachment.kind === "image" ||
+                      attachment.kind === "video" ||
+                      attachment.kind === "audio"
+                        ? attachment.kind
+                        : "document",
+                    url: attachment.previewUrl ?? attachment.uri,
+                    mimeType: attachment.mimeType,
+                    status: "succeeded",
+                  }}
+                />
                 <button
                   type="button"
                   aria-label={`移除附件 ${attachment.name}`}
@@ -444,53 +622,157 @@ export function IntentConsole({
                 >
                   ×
                 </button>
-              </span>
+              </div>
             ))}
-          </div>
+              {canAddInputAsset && (
+                <button
+                  type="button"
+                  className="composer-input-asset-add"
+                  aria-label={uploading ? "正在上传附件" : "添加输入素材"}
+                  disabled={uploading}
+                  onClick={() => attachmentRef.current?.click()}
+                >
+                  <span aria-hidden="true">＋</span>
+                </button>
+              )}
+            </div>
+            )}
+            {!attachmentValidation.valid && (
+              <div className="composer-input-assets-errors" role="alert">
+                {attachmentValidation.errors.map((error) => (
+                  <span key={error}>{error}</span>
+                ))}
+              </div>
+            )}
+          </section>
         )}
         <div className="composer">
-          <textarea
+          <div className="intent-composer-editor">
+            <NodePromptEditor
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) submit();
-            }}
+            assets={mentionAssets}
+            attachedSourceIds={attachedSourceIds}
+            onChange={setDraft}
+            onAttach={attachCanvasAsset}
+            onSubmitShortcut={submit}
             aria-label="描述你的创作目标"
             placeholder="描述你想完成的目标…"
           />
+          </div>
           <div className="composer-footer">
             <div>
               <IconButton
-                label={uploading ? "正在上传附件" : "添加附件"}
+                label={
+                  uploading
+                    ? "正在上传附件"
+                    : canAddInputAsset
+                      ? "添加附件"
+                      : "当前模型不再接受更多输入素材"
+                }
+                disabled={uploading || !canAddInputAsset}
                 onClick={() => attachmentRef.current?.click()}
               >
                 <Paperclip size={17} />
               </IconButton>
               <label className="composer-skill">
-                <MessageSquareText size={15} />
+                <Sparkles size={15} />
+                <span>
+                  {composerMode === "xiaoluo"
+                    ? "小逻"
+                    : composerMode === "text"
+                      ? "文本生成"
+                      : composerMode === "image"
+                        ? "图片生成"
+                        : "视频生成"}
+                </span>
                 <select
-                  aria-label="意图首选能力"
-                  value={preferredCapabilityId}
-                  onChange={(event) => setPreferredCapabilityId(event.target.value)}
+                  aria-label="工作模式"
+                  value={composerMode}
+                  onChange={(event) => {
+                    setComposerMode(
+                      event.target.value as "xiaoluo" | "text" | "image" | "video",
+                    );
+                    setPreferredCapabilityId("none");
+                    setPreferredModelId("");
+                  }}
                 >
-                  <option value="auto">自动选择能力</option>
-                  {capabilities
-                    .filter((capability) => capability.enabled)
-                    .map((capability) => (
-                      <option key={capability.id} value={capability.id}>
-                        {capability.title}
-                      </option>
-                    ))}
+                  <option value="xiaoluo">小逻</option>
+                  <option value="text">文本生成</option>
+                  <option value="image">图片生成</option>
+                  <option value="video">视频生成</option>
                 </select>
                 <ChevronDown size={13} />
               </label>
+              {composerMode !== "xiaoluo" && (
+                <>
+                  <label className="composer-skill composer-kind">
+                    <MessageSquareText size={15} />
+                    <span>
+                      {preferredCapabilityId === "none"
+                        ? "无"
+                        : capabilities.find(
+                            (capability) => capability.id === preferredCapabilityId,
+                          )?.title ?? "无"}
+                    </span>
+                    <select
+                      aria-label="生成 Skill"
+                      value={preferredCapabilityId}
+                      onChange={(event) => {
+                        setPreferredCapabilityId(event.target.value);
+                        setPreferredModelId("");
+                      }}
+                    >
+                      <option value="none">无</option>
+                      {professionalRules?.compatibleCapabilities.map(
+                        (capability) => (
+                          <option key={capability.id} value={capability.id}>
+                            {capability.title}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                    <ChevronDown size={13} />
+                  </label>
+                  <label className="composer-skill composer-model">
+                    <Cpu size={15} />
+                    <span>
+                      {professionalRules?.usesSkillRuntime
+                        ? "Skill 内置执行服务"
+                        : professionalRules?.model?.name ?? "暂无可用模型"}
+                    </span>
+                    <select
+                      aria-label="生成模型"
+                      value={professionalRules?.model?.id ?? ""}
+                      disabled={professionalRules?.usesSkillRuntime}
+                      onChange={(event) => setPreferredModelId(event.target.value)}
+                    >
+                      {professionalRules?.usesSkillRuntime ? (
+                        <option value="">Skill 内置执行服务</option>
+                      ) : !professionalRules?.compatibleModels.length ? (
+                        <option value="">暂无可用模型</option>
+                      ) : null}
+                      {professionalRules?.compatibleModels.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.name}
+                          </option>
+                        ))}
+                    </select>
+                    <ChevronDown size={13} />
+                  </label>
+                </>
+              )}
             </div>
             <span>⌘ Enter 发送</span>
             <button
               type="button"
               className="send-button"
               aria-label="发送意图"
-              disabled={!draft.trim() || isPlanning}
+              disabled={
+                !draft.trim() ||
+                isPlanning ||
+                !generatorReady ||
+                !attachmentValidation.valid
+              }
               onClick={submit}
             >
               <Send size={17} />
@@ -502,20 +784,30 @@ export function IntentConsole({
           className="canvas-file-input"
           type="file"
           multiple
-          disabled={uploading}
+          disabled={uploading || !canAddInputAsset}
           onChange={(event) => {
-            const files = [...(event.target.files ?? [])];
+            const remaining = Math.max(
+              0,
+              inputConstraints.maxTotal - attachments.length,
+            );
+            const files = [...(event.target.files ?? [])].slice(0, remaining);
             event.currentTarget.value = "";
             if (!files.length) return;
             setUploading(true);
             void onUploadAttachments(files)
               .then((uploaded) =>
-                setAttachments((current) => [...current, ...uploaded].slice(0, 8)),
+                setAttachments((current) =>
+                  [...current, ...uploaded].slice(0, inputConstraints.maxTotal),
+                ),
               )
               .finally(() => setUploading(false));
           }}
         />
-        <small className="composer-note">AI 会先生成可检查计划，不会未经确认直接执行。</small>
+        <small className="composer-note">
+          {composerMode === "xiaoluo"
+            ? "小逻会先生成可检查计划，不会未经确认直接执行。"
+            : "专业生成会直接创建并运行当前画布节点，不经过 Agent 规划。"}
+        </small>
       </div>
     </aside>
   );

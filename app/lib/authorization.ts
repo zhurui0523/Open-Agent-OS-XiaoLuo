@@ -92,20 +92,37 @@ export async function requireCanvasAccess(
   userId: string,
   canvasId: string,
   required: AccessLevel = "view",
+  includeDeleted = false,
 ) {
   const rows = await mysqlRows<
     AccessRow & { projectId: string; workspaceId: string }
   >(
     `SELECT
-       wm.role,
-       COALESCE(canvas_permission.permission, project_permission.permission)
+       COALESCE(
+         wm.role,
+         CASE WHEN enterprise_member.user_id IS NOT NULL THEN 'editor' END
+       ) AS role,
+       COALESCE(
+         canvas_permission.permission,
+         project_permission.permission,
+         CASE WHEN enterprise_member.user_id IS NOT NULL THEN 'edit' END
+       )
          AS directPermission,
        c.project_id AS projectId,
        p.workspace_id AS workspaceId
      FROM xiaoluo_v2_canvases c
      INNER JOIN xiaoluo_v2_projects p ON p.id = c.project_id
-     INNER JOIN xiaoluo_v2_workspace_members wm
+     LEFT JOIN xiaoluo_v2_workspace_members wm
        ON wm.workspace_id = p.workspace_id AND wm.user_id = ?
+     LEFT JOIN xiaoluo_v2_canvas_enterprise_shares enterprise_share
+       ON enterprise_share.canvas_id = c.id
+     LEFT JOIN xiaoluo_v2_organization_members enterprise_member
+       ON enterprise_member.organization_id = enterprise_share.organization_id
+      AND enterprise_member.user_id = ?
+      AND enterprise_member.status = 'active'
+     LEFT JOIN xiaoluo_v2_organizations enterprise
+       ON enterprise.id = enterprise_share.organization_id
+      AND enterprise.status = 'active'
      LEFT JOIN xiaoluo_v2_resource_permissions canvas_permission
        ON canvas_permission.resource_type = 'canvas'
       AND canvas_permission.resource_id = c.id
@@ -116,9 +133,16 @@ export async function requireCanvasAccess(
       AND project_permission.user_id = ?
      WHERE c.id = ?
        AND p.status = 'active'
-       AND c.deleted_at IS NULL
+       ${includeDeleted ? "" : "AND c.deleted_at IS NULL"}
+       AND (
+         wm.user_id IS NOT NULL
+         OR (
+           enterprise_member.user_id IS NOT NULL
+           AND enterprise.id IS NOT NULL
+         )
+       )
      LIMIT 1`,
-    [userId, userId, userId, canvasId],
+    [userId, userId, userId, userId, canvasId],
   );
   const row = rows[0];
   if (!row || !canAccess(row, required)) throw forbidden();

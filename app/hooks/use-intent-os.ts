@@ -8,6 +8,7 @@ import {
 import type {
   AppView,
   CanvasEdge,
+  CanvasGroup,
   CanvasNode,
   CanvasSummary,
   Capability,
@@ -20,24 +21,27 @@ import type {
   ModelProviderTemplate,
   ModelConnectionDraft,
   NodeKind,
+  PackageInstallResult,
+  GithubPackageImportResult,
   ProjectSummary,
   RegistryEvent,
   RegistrySnapshot,
   RunState,
   UserPreferences,
-  WorkspaceOption,
 } from "../types";
 import { messageTime } from "../lib/intent-plan";
 import {
   compatibleInputPorts,
   defaultOutputPort,
   portForNode,
+  sanitizeCanvasEdges,
   validatePortCardinality,
 } from "../lib/node-ports";
 import {
   compileWorkflow,
   wouldCreateCycle,
 } from "../lib/workflow-kernel";
+import { roleForNode } from "../lib/node-role";
 import {
   modelMatchesCapability,
   nodeCapabilitySnapshot,
@@ -45,10 +49,19 @@ import {
   preferredModel,
   snapshotCapability,
 } from "../lib/capability-sync";
+import { useAppDialog } from "../components/app-dialog";
+import { assetUploadRequestInit } from "../lib/asset-upload";
+import { arrangeNodesWithoutOverlap } from "../lib/node-layout";
+import {
+  normalizeModelInputConstraints,
+  validateModelInputAssets,
+} from "../lib/model-input-constraints";
+import { resolveProfessionalGeneratorRules } from "../lib/professional-generator-rules";
 
 interface CanvasHistoryEntry {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
+  groups: CanvasGroup[];
   selectedNodeIds: string[];
   arrangeMode: "free" | "time" | "type";
 }
@@ -64,7 +77,9 @@ type NodePreset = Partial<
     | "result"
     | "parameters"
   >
->;
+> & {
+  inputAttachments?: ChatAttachment[];
+};
 
 interface ActiveKernelRun {
   id: string;
@@ -73,11 +88,41 @@ interface ActiveKernelRun {
   controllers: Map<string, AbortController>;
 }
 
+const GROUP_NODE_WIDTH = 264;
+const GROUP_NODE_HEIGHT = 220;
+const GROUP_PADDING = 48;
+const DEFAULT_CANVAS_ZOOM = 100;
+
+type StoredKernelNodeOutput = KernelNodeOutput & { result?: string };
+
+function hasKernelOutputValue(output: StoredKernelNodeOutput | null) {
+  if (!output) return false;
+  if (typeof output.result === "string" && output.result.trim()) return true;
+  if (typeof output.text === "string" && output.text.trim()) return true;
+  if (typeof output.assetUrl === "string" && output.assetUrl.trim()) return true;
+  return output.data !== undefined && output.data !== null;
+}
+
+function nodeBelongsToGroup(node: CanvasNode, group: CanvasGroup) {
+  const centerX = node.x + GROUP_NODE_WIDTH / 2;
+  const centerY = node.y + GROUP_NODE_HEIGHT / 2;
+  return (
+    centerX >= group.x &&
+    centerX <= group.x + group.width &&
+    centerY >= group.y &&
+    centerY <= group.y + group.height
+  );
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const bodyIsFormData =
+    typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(url, {
     ...init,
     headers: {
-      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...(init?.body && !bodyIsFormData
+        ? { "content-type": "application/json" }
+        : {}),
       ...init?.headers,
     },
   });
@@ -86,6 +131,9 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     issues?: string[];
   } & T;
   if (!response.ok) {
+    if (response.status === 413) {
+      throw new Error("上传内容超过传输上限，单个文件最大支持 100 MB");
+    }
     throw new Error(
       payload.issues?.length
         ? `${payload.error ?? "请求失败"}：${payload.issues.join("；")}`
@@ -96,9 +144,11 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function useIntentOS() {
+  const dialog = useAppDialog();
   const [view, setView] = useState<AppView>("canvas");
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
+  const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const [capabilities, setCapabilities] =
     useState<Capability[]>(coreCapabilities);
   const [models, setModels] = useState(initialModels);
@@ -117,9 +167,7 @@ export function useIntentOS() {
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [collaborationSessionId] = useState(() => crypto.randomUUID());
   const [canvases, setCanvases] = useState<CanvasSummary[]>([]);
-  const [workspaceName, setWorkspaceName] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
-  const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -127,11 +175,12 @@ export function useIntentOS() {
     "loading" | "ready" | "saving" | "saved" | "conflict" | "error"
   >("loading");
   const [cloudError, setCloudError] = useState("");
+  const clearCloudError = useCallback(() => setCloudError(""), []);
   const [cloudLoaded, setCloudLoaded] = useState(false);
   const [canvasViewport, setCanvasViewportState] = useState({
     x: 0,
     y: 0,
-    zoom: 92,
+    zoom: DEFAULT_CANVAS_ZOOM,
   });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -139,9 +188,10 @@ export function useIntentOS() {
   const [arrangeMode, setArrangeMode] = useState<"free" | "time" | "type">(
     "free",
   );
-  const [zoom, setZoom] = useState(92);
+  const [zoom, setZoom] = useState(DEFAULT_CANVAS_ZOOM);
   const [runState, setRunState] = useState<RunState>("ready");
   const [preferences, setPreferences] = useState<UserPreferences>({
+    canvasBackground: "day",
     gesturePreset: "figma",
     invertZoom: false,
     zoomSensitivity: "normal",
@@ -160,9 +210,12 @@ export function useIntentOS() {
     },
   ]);
   const activeRun = useRef<ActiveKernelRun | null>(null);
+  const reconciledKernelRuns = useRef(new Set<string>());
+  const pendingDirectRunNodeId = useRef<string | null>(null);
   const canvasHistory = useRef<CanvasHistoryEntry[]>([]);
   const canvasFuture = useRef<CanvasHistoryEntry[]>([]);
   const canvasClipboard = useRef<CanvasHistoryEntry | null>(null);
+  const [canPaste, setCanPaste] = useState(false);
   const [historyDepth, setHistoryDepth] = useState(0);
   const revisions = useRef(new Map<string, number>());
   const saveSequence = useRef(Promise.resolve());
@@ -188,19 +241,23 @@ export function useIntentOS() {
       revision: number;
       arrangeMode: "free" | "time" | "type";
       viewport: { x?: number; y?: number; zoom?: number };
+      groups: CanvasGroup[];
       nodes: CanvasNode[];
       edges: CanvasEdge[];
     }) => {
       const viewport = {
         x: Number(canvas.viewport.x ?? 0),
         y: Number(canvas.viewport.y ?? 0),
-        zoom: Number(canvas.viewport.zoom ?? 92),
+        // Opening or refreshing a canvas always starts at the neutral scale.
+        zoom: DEFAULT_CANVAS_ZOOM,
       };
       revisions.current.set(canvas.id, canvas.revision);
       setCanvasRevision(canvas.revision);
       setActiveCanvasIdState(canvas.id);
+      const nextEdges = sanitizeCanvasEdges(canvas.nodes, canvas.edges);
       setNodes(canvas.nodes);
-      setEdges(canvas.edges);
+      setEdges(nextEdges);
+      setGroups(canvas.groups ?? []);
       setArrangeMode(canvas.arrangeMode);
       setCanvasViewportState(viewport);
       setZoom(viewport.zoom);
@@ -209,18 +266,17 @@ export function useIntentOS() {
       canvasHistory.current = [];
       canvasFuture.current = [];
       setHistoryDepth(0);
-      skipNextCloudSave.current = true;
+      skipNextCloudSave.current = nextEdges.length === canvas.edges.length;
     },
     [],
   );
 
-  const loadCloudWorkspace = useCallback(async (preferredWorkspaceId = "") => {
+  const loadCanvasHome = useCallback(async () => {
     setCloudLoaded(false);
     setCloudStatus("loading");
     try {
       const payload = await requestJson<{
-        workspace: { id: string; name: string };
-        workspaces: WorkspaceOption[];
+        dataScopeId: string;
         project: { id: string; name: string };
         projects: ProjectSummary[];
         canvases: CanvasSummary[];
@@ -229,17 +285,12 @@ export function useIntentOS() {
           revision: number;
           arrangeMode: "free" | "time" | "type";
           viewport: { x?: number; y?: number; zoom?: number };
+          groups: CanvasGroup[];
           nodes: CanvasNode[];
           edges: CanvasEdge[];
         };
-      }>(
-        preferredWorkspaceId
-          ? `/api/v2/bootstrap?workspaceId=${encodeURIComponent(preferredWorkspaceId)}`
-          : "/api/v2/bootstrap",
-      );
-      setWorkspaceId(payload.workspace.id);
-      setWorkspaceName(payload.workspace.name);
-      setWorkspaces(payload.workspaces);
+      }>("/api/v2/bootstrap");
+      setWorkspaceId(payload.dataScopeId);
       setProjectId(payload.project.id);
       setProjectName(payload.project.name);
       setProjects(payload.projects);
@@ -256,14 +307,6 @@ export function useIntentOS() {
     }
   }, [applyCloudCanvas]);
 
-  const switchWorkspace = useCallback(
-    async (nextWorkspaceId: string) => {
-      if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
-      await loadCloudWorkspace(nextWorkspaceId);
-    },
-    [loadCloudWorkspace, workspaceId],
-  );
-
   async function switchProject(nextProjectId: string) {
     if (!nextProjectId || nextProjectId === projectId) return;
     const project = projects.find((item) => item.id === nextProjectId);
@@ -278,7 +321,14 @@ export function useIntentOS() {
   }
 
   async function createProject() {
-    const name = window.prompt("新项目名称", "新的项目")?.trim();
+    const name = (
+      await dialog.prompt("为新项目设置一个名称。", {
+        title: "新建项目",
+        inputLabel: "项目名称",
+        defaultValue: "新的项目",
+        confirmText: "创建项目",
+      })
+    )?.trim();
     if (!name) return;
     const payload = await requestJson<{
       project: { id: string; name: string };
@@ -302,7 +352,14 @@ export function useIntentOS() {
 
   async function renameProject(id: string) {
     const current = projects.find((item) => item.id === id);
-    const name = window.prompt("项目名称", current?.name ?? "")?.trim();
+    const name = (
+      await dialog.prompt("修改当前项目的显示名称。", {
+        title: "修改项目名称",
+        inputLabel: "项目名称",
+        defaultValue: current?.name ?? "",
+        confirmText: "保存名称",
+      })
+    )?.trim();
     if (!name || name === current?.name) return;
     await requestJson("/api/v2/projects", {
       method: "PATCH",
@@ -358,10 +415,11 @@ export function useIntentOS() {
     setNodes((current) => {
       let changed = false;
       const next = current.map((node) => {
-        const capability = capabilities.find(
-          (item) => item.id === node.capabilityId,
-        );
-        if (!capability) return node;
+        const hasNoCapability = node.capabilityId === "none";
+        const capability = hasNoCapability
+          ? undefined
+          : capabilities.find((item) => item.id === node.capabilityId);
+        if (!capability && !hasNoCapability) return node;
         const pinned = nodeCapabilitySnapshot(node);
         const currentModel = models.find((item) => item.id === node.modelId);
         const compatibleModel =
@@ -370,24 +428,28 @@ export function useIntentOS() {
             ? currentModel
             : preferredModel(models, capability, node.kind);
         const modelId =
-          capability.executionMode === "remote"
+          capability?.executionMode === "remote"
             ? "skill-runtime"
             : (compatibleModel?.id ?? "unconfigured");
         if (
-          pinned?.packageVersion === capability.packageVersion &&
-          pinned.id === capability.id &&
+          (hasNoCapability ||
+            (pinned?.packageVersion === capability?.packageVersion &&
+              pinned?.id === capability?.id)) &&
           modelId === node.modelId
         ) {
           return node;
         }
         changed = true;
+        const parameters = { ...node.parameters };
+        if (capability) {
+          parameters.capabilitySnapshot = snapshotCapability(capability);
+        } else {
+          delete parameters.capabilitySnapshot;
+        }
         return {
           ...node,
           modelId,
-          parameters: {
-            ...node.parameters,
-            capabilitySnapshot: snapshotCapability(capability),
-          },
+          parameters,
         };
       });
       return changed ? next : current;
@@ -401,9 +463,9 @@ export function useIntentOS() {
   }, [refreshRegistry, workspaceId]);
 
   useEffect(() => {
-    const timer = setTimeout(() => void loadCloudWorkspace(), 0);
+    const timer = setTimeout(() => void loadCanvasHome(), 0);
     return () => clearTimeout(timer);
-  }, [loadCloudWorkspace]);
+  }, [loadCanvasHome]);
 
   useEffect(() => {
     if (
@@ -417,12 +479,17 @@ export function useIntentOS() {
       return;
     }
     const canvasId = activeCanvasId;
+    const sanitizedEdges = sanitizeCanvasEdges(nodes, edges);
+    if (sanitizedEdges.length !== edges.length) {
+      setEdges(sanitizedEdges);
+    }
     const snapshot = {
       id: canvasId,
       arrangeMode,
       viewport: { ...canvasViewport, zoom },
+      groups,
       nodes,
-      edges,
+      edges: sanitizedEdges,
     };
     const timer = setTimeout(() => {
       saveSequence.current = saveSequence.current
@@ -474,6 +541,7 @@ export function useIntentOS() {
     canvasViewport,
     cloudLoaded,
     edges,
+    groups,
     nodes,
     zoom,
     collaborationSessionId,
@@ -498,6 +566,7 @@ export function useIntentOS() {
           revision: number;
           arrangeMode: "free" | "time" | "type";
           viewport: { x?: number; y?: number; zoom?: number };
+          groups: CanvasGroup[];
           nodes: CanvasNode[];
           edges: CanvasEdge[];
         };
@@ -523,6 +592,14 @@ export function useIntentOS() {
   async function reloadActiveCanvas() {
     if (!activeCanvasId) return;
     await loadCanvas(activeCanvasId);
+  }
+
+  async function refreshCanvases() {
+    const payload = await requestJson<{ canvases: CanvasSummary[] }>(
+      "/api/v2/canvases",
+    );
+    setCanvases(payload.canvases);
+    return payload.canvases;
   }
 
   async function createCanvas(title = "未命名画布") {
@@ -556,13 +633,12 @@ export function useIntentOS() {
   }
 
   async function restoreCanvas(id: string) {
-    if (!projectId) return;
     await requestJson("/api/v2/canvases", {
       method: "PATCH",
-      body: JSON.stringify({ id, projectId, action: "restore" }),
+      body: JSON.stringify({ id, action: "restore" }),
     });
     const payload = await requestJson<{ canvases: CanvasSummary[] }>(
-      `/api/v2/canvases?projectId=${encodeURIComponent(projectId)}`,
+      "/api/v2/canvases",
     );
     setCanvases(payload.canvases);
   }
@@ -724,7 +800,7 @@ export function useIntentOS() {
   function rememberCanvas() {
     canvasHistory.current = [
       ...canvasHistory.current.slice(-39),
-      { nodes, edges, selectedNodeIds, arrangeMode },
+      { nodes, edges, groups, selectedNodeIds, arrangeMode },
     ];
     canvasFuture.current = [];
     setHistoryDepth(canvasHistory.current.length);
@@ -769,6 +845,109 @@ export function useIntentOS() {
     );
   }
 
+  function addGroup(position?: { x: number; y: number }) {
+    rememberCanvas();
+    const selected = nodes.filter((node) => selectedNodeIds.includes(node.id));
+    const colors: CanvasGroup["color"][] = [
+      "indigo",
+      "emerald",
+      "amber",
+      "rose",
+    ];
+    const id = `group_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const bounds = selected.length
+      ? {
+          minX: Math.min(...selected.map((node) => node.x)),
+          minY: Math.min(...selected.map((node) => node.y)),
+          maxX: Math.max(
+            ...selected.map((node) => node.x + GROUP_NODE_WIDTH),
+          ),
+          maxY: Math.max(
+            ...selected.map((node) => node.y + GROUP_NODE_HEIGHT),
+          ),
+        }
+      : null;
+    const group: CanvasGroup = {
+      id,
+      title: `节点群 ${groups.length + 1}`,
+      x: bounds ? bounds.minX - GROUP_PADDING : (position?.x ?? 240),
+      y: bounds ? bounds.minY - GROUP_PADDING : (position?.y ?? 180),
+      width: bounds
+        ? Math.max(360, bounds.maxX - bounds.minX + GROUP_PADDING * 2)
+        : 680,
+      height: bounds
+        ? Math.max(260, bounds.maxY - bounds.minY + GROUP_PADDING * 2)
+        : 420,
+      color: colors[groups.length % colors.length],
+      createdAt: Date.now(),
+    };
+    setGroups((current) => [...current, group]);
+    setArrangeMode("free");
+    return id;
+  }
+
+  function beginGroupChange() {
+    rememberCanvas();
+    setArrangeMode("free");
+  }
+
+  function moveGroupBy(
+    id: string,
+    deltaX: number,
+    deltaY: number,
+    memberNodeIds: string[],
+  ) {
+    const memberSet = new Set(memberNodeIds);
+    setGroups((current) =>
+      current.map((group) =>
+        group.id === id
+          ? { ...group, x: group.x + deltaX, y: group.y + deltaY }
+          : group,
+      ),
+    );
+    if (memberSet.size) {
+      setNodes((current) =>
+        current.map((node) =>
+          memberSet.has(node.id)
+            ? { ...node, x: node.x + deltaX, y: node.y + deltaY }
+            : node,
+        ),
+      );
+    }
+  }
+
+  function resizeGroupBy(id: string, deltaWidth: number, deltaHeight: number) {
+    setGroups((current) =>
+      current.map((group) =>
+        group.id === id
+          ? {
+              ...group,
+              width: Math.min(4_000, Math.max(320, group.width + deltaWidth)),
+              height: Math.min(
+                4_000,
+                Math.max(220, group.height + deltaHeight),
+              ),
+            }
+          : group,
+      ),
+    );
+  }
+
+  function updateGroup(id: string, patch: Partial<CanvasGroup>) {
+    rememberCanvas();
+    setGroups((current) =>
+      current.map((group) =>
+        group.id === id ? { ...group, ...patch, id: group.id } : group,
+      ),
+    );
+  }
+
+  function deleteGroup(id: string) {
+    if (!groups.some((group) => group.id === id)) return;
+    rememberCanvas();
+    setGroups((current) => current.filter((group) => group.id !== id));
+  }
+
   function updateNode(id: string, patch: Partial<CanvasNode>) {
     setNodes((current) =>
       current.map((node) => (node.id === id ? { ...node, ...patch } : node)),
@@ -779,6 +958,7 @@ export function useIntentOS() {
     kind: NodeKind = "text",
     position?: { x: number; y: number },
     preset: NodePreset = {},
+    connection?: { targetId: string; targetPortId?: string },
   ) {
     rememberCanvas();
     const id = `node_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -791,18 +971,23 @@ export function useIntentOS() {
           : preset.parameters?.resultSlot === true
             ? "result"
             : "execution");
+    const explicitlyWithoutCapability = preset.capabilityId === "none";
     const capability =
-      inferredRole === "execution"
+      inferredRole === "execution" && !explicitlyWithoutCapability
         ? capabilities.find((item) => item.id === preset.capabilityId) ??
           preferredCapability(
             capabilities.filter((item) => item.category === "SKILL"),
             kind,
           )
         : undefined;
+    const requestedModel = models.find(
+      (item) =>
+        item.id === preset.modelId &&
+        modelMatchesCapability(item, capability, kind),
+    );
     const model =
       inferredRole === "execution"
-        ? models.find((item) => item.id === preset.modelId) ??
-          preferredModel(models, capability, kind)
+        ? requestedModel ?? preferredModel(models, capability, kind)
         : undefined;
     const next: CanvasNode = {
       id,
@@ -823,7 +1008,7 @@ export function useIntentOS() {
       status: "draft",
       capabilityId:
         inferredRole === "execution"
-          ? preset.capabilityId ?? capability?.id ?? "unconfigured-skill"
+          ? preset.capabilityId ?? capability?.id ?? "none"
           : inferredRole === "plugin"
             ? preset.capabilityId ?? "core.plugin.runner"
             : inferredRole === "result"
@@ -834,11 +1019,9 @@ export function useIntentOS() {
           ? "plugin-runtime"
           : inferredRole !== "execution"
             ? "none"
-            : !capability
-              ? "unconfigured"
-              : capability.executionMode === "remote"
-          ? "skill-runtime"
-          : (preset.modelId ?? model?.id ?? "unconfigured"),
+            : capability?.executionMode === "remote"
+              ? "skill-runtime"
+              : (preset.modelId ?? model?.id ?? "unconfigured"),
       x: position?.x ?? 320 + (nodes.length % 3) * 72,
       y: position?.y ?? 250 + (nodes.length % 2) * 110,
       createdAt: Date.now(),
@@ -851,49 +1034,118 @@ export function useIntentOS() {
           : {}),
       },
     };
-    setArrangeMode("free");
-    if (inferredRole === "execution") {
-      const resultId = `result_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const resultNode: CanvasNode = {
-        id: resultId,
-        title: `${next.title} · 结果`,
-        prompt: "执行前保持为空，完成后自动沉淀为可复用资产。",
-        kind,
-        role: "result",
-        status: "waiting",
-        capabilityId: "core.result.placeholder",
-        modelId: "none",
-        x: next.x + 340,
-        y: next.y,
-        createdAt: (next.createdAt ?? Date.now()) + 1,
-        parameters: {
-          nodeRole: "result",
-          resultSlot: true,
-          resultOf: id,
-        },
-      };
-      const output = defaultOutputPort(next);
-      const input = compatibleInputPorts(
-        resultNode,
-        output.dataTypes[0],
-      )[0];
-      setNodes((current) => [...current, next, resultNode]);
-      if (input) {
+    const supplementalNodes: CanvasNode[] = [];
+    const inputSourceNodes: CanvasNode[] = [];
+    const seenInputSources = new Set<string>();
+    for (const [index, attachment] of (preset.inputAttachments ?? []).entries()) {
+      let sourceNode =
+        (attachment.sourceNodeId
+          ? nodes.find((node) => node.id === attachment.sourceNodeId)
+          : undefined) ??
+        nodes.find((node) => node.parameters?.assetId === attachment.id);
+      if (!sourceNode) {
+        const sourceId = `node_asset_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`;
+        const sourceKind: NodeKind =
+          attachment.kind === "image" ||
+          attachment.kind === "video" ||
+          attachment.kind === "audio"
+            ? attachment.kind
+            : "document";
+        sourceNode = {
+          id: sourceId,
+          title: attachment.name,
+          prompt: `输入素材：${attachment.name}`,
+          kind: sourceKind,
+          role: "material",
+          status: "succeeded",
+          capabilityId: "core.material.source",
+          modelId: "none",
+          x: next.x - 420 - Math.floor(index / 4) * 380,
+          y: next.y + (index % 4) * 150,
+          createdAt: Date.now() + index,
+          result: "已加入画布输入素材",
+          parameters: {
+            nodeRole: "material",
+            source: "asset-kernel",
+            assetId: attachment.id,
+            assetUri: attachment.uri,
+            assetContentUrl: attachment.previewUrl ?? attachment.uri,
+            fileName: attachment.name,
+            mimeType: attachment.mimeType,
+            sourceType: "intent-attachment",
+          },
+        };
+        supplementalNodes.push(sourceNode);
+      }
+      if (!seenInputSources.has(sourceNode.id)) {
+        seenInputSources.add(sourceNode.id);
+        inputSourceNodes.push(sourceNode);
+      }
+    }
+    const inputEdges = inputSourceNodes.flatMap((sourceNode, index) => {
+      const sourcePort = defaultOutputPort(sourceNode);
+      const targetPort =
+        portForNode(next, "reference", "input") ??
+        sourcePort.dataTypes
+          .flatMap((dataType) => compatibleInputPorts(next, dataType))
+          .at(0);
+      const dataType = sourcePort.dataTypes.find((candidate) =>
+        targetPort?.dataTypes.includes(candidate),
+      );
+      if (!targetPort || !dataType) return [];
+      return [
+        {
+          id: `edge_direct_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
+          source: sourceNode.id,
+          target: next.id,
+          sourcePort: sourcePort.id,
+          targetPort: targetPort.id,
+          dataType,
+        } satisfies CanvasEdge,
+      ];
+    });
+    if (connection) {
+      const targetNode = nodes.find((node) => node.id === connection.targetId);
+      const sourcePort = defaultOutputPort(next);
+      const dataType = sourcePort?.dataTypes[0];
+      const targetPort =
+        targetNode && dataType
+          ? connection.targetPortId
+            ? portForNode(targetNode, connection.targetPortId, "input")
+            : compatibleInputPorts(targetNode, dataType)[0]
+          : undefined;
+      if (targetNode && sourcePort && dataType && targetPort) {
         setEdges((current) => [
           ...current,
           {
-            id: `edge_result_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            source: next.id,
-            target: resultNode.id,
-            sourcePort: output.id,
-            targetPort: input.id,
-            dataType: output.dataTypes[0],
+            id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            source: id,
+            target: targetNode.id,
+            sourcePort: sourcePort.id,
+            targetPort: targetPort.id,
+            dataType,
           },
         ]);
+      } else {
+        setCloudError("上传素材已加入画布，但目标节点没有兼容的输入端口");
       }
-    } else {
-      setNodes((current) => [...current, next]);
     }
+    if (inputEdges.length) {
+      setEdges((current) => [
+        ...current,
+        ...inputEdges.filter(
+          (edge) =>
+            !current.some(
+              (existing) =>
+                existing.source === edge.source &&
+                existing.target === edge.target &&
+                existing.targetPort === edge.targetPort,
+            ),
+        ),
+      ]);
+    }
+    setArrangeMode("free");
+    setNodes((current) => [...current, ...supplementalNodes, next]);
     setSelectedNodeIdState(id);
     setSelectedNodeIds([id]);
     return id;
@@ -936,7 +1188,7 @@ export function useIntentOS() {
     });
   }
 
-  function deleteSelected() {
+  async function deleteSelected() {
     const ids = selectedNodeIds.length
       ? selectedNodeIds
       : selectedNodeId
@@ -954,9 +1206,14 @@ export function useIntentOS() {
     );
     if (
       downstream.size &&
-      !window.confirm(
+      !(await dialog.confirm(
         `删除后会断开 ${downstream.size} 个下游节点的输入，是否继续？`,
-      )
+        {
+          title: "删除所选节点",
+          confirmText: "继续删除",
+          tone: "danger",
+        },
+      ))
     ) {
       return;
     }
@@ -970,6 +1227,32 @@ export function useIntentOS() {
     );
     setSelectedNodeIdState(null);
     setSelectedNodeIds([]);
+  }
+
+  async function deleteNode(id: string) {
+    const downstream = new Set(
+      edges.filter((edge) => edge.source === id).map((edge) => edge.target),
+    );
+    if (
+      downstream.size &&
+      !(await dialog.confirm(
+        `删除后会断开 ${downstream.size} 个下游节点的输入，是否继续？`,
+        {
+          title: "删除节点",
+          confirmText: "继续删除",
+          tone: "danger",
+        },
+      ))
+    ) {
+      return;
+    }
+    rememberCanvas();
+    setNodes((current) => current.filter((node) => node.id !== id));
+    setEdges((current) =>
+      current.filter((edge) => edge.source !== id && edge.target !== id),
+    );
+    setSelectedNodeIdState((current) => (current === id ? null : current));
+    setSelectedNodeIds((current) => current.filter((nodeId) => nodeId !== id));
   }
 
   function connectNodes(
@@ -1055,11 +1338,13 @@ export function useIntentOS() {
     canvasFuture.current.push({
       nodes,
       edges,
+      groups,
       selectedNodeIds,
       arrangeMode,
     });
     setNodes(previous.nodes);
     setEdges(previous.edges);
+    setGroups(previous.groups);
     setSelectedNodeIds(previous.selectedNodeIds);
     setSelectedNodeIdState(previous.selectedNodeIds.at(-1) ?? null);
     setArrangeMode(previous.arrangeMode);
@@ -1072,40 +1357,70 @@ export function useIntentOS() {
     canvasHistory.current.push({
       nodes,
       edges,
+      groups,
       selectedNodeIds,
       arrangeMode,
     });
     setNodes(next.nodes);
     setEdges(next.edges);
+    setGroups(next.groups);
     setSelectedNodeIds(next.selectedNodeIds);
     setSelectedNodeIdState(next.selectedNodeIds.at(-1) ?? null);
     setArrangeMode(next.arrangeMode);
     setHistoryDepth(canvasHistory.current.length);
   }
 
-  function copySelected() {
-    const ids = new Set(
+  function copySelected(
+    target: { groupId?: string | null; edgeId?: string | null } = {},
+  ) {
+    let ids = new Set(
       selectedNodeIds.length
         ? selectedNodeIds
         : selectedNodeId
           ? [selectedNodeId]
           : [],
     );
-    if (!ids.size) return false;
+    let copiedGroups: CanvasGroup[] = [];
+    let copiedEdges: CanvasEdge[] = [];
+
+    if (target.groupId) {
+      const group = groups.find((item) => item.id === target.groupId);
+      if (group) {
+        copiedGroups = [group];
+        ids = new Set(
+          nodes
+            .filter((node) => nodeBelongsToGroup(node, group))
+            .map((node) => node.id),
+        );
+      }
+    } else if (target.edgeId) {
+      const edge = edges.find((item) => item.id === target.edgeId);
+      if (edge) {
+        ids = new Set([edge.source, edge.target]);
+        copiedEdges = [edge];
+      }
+    }
+
+    if (!ids.size && !copiedGroups.length) return false;
+    if (!copiedEdges.length) {
+      copiedEdges = edges.filter(
+        (edge) => ids.has(edge.source) && ids.has(edge.target),
+      );
+    }
     canvasClipboard.current = {
       nodes: nodes.filter((node) => ids.has(node.id)),
-      edges: edges.filter(
-        (edge) => ids.has(edge.source) && ids.has(edge.target),
-      ),
+      edges: copiedEdges,
+      groups: copiedGroups,
       selectedNodeIds: [...ids],
       arrangeMode: "free",
     };
+    setCanPaste(true);
     return true;
   }
 
   function pasteCopied() {
     const copied = canvasClipboard.current;
-    if (!copied?.nodes.length) return false;
+    if (!copied || (!copied.nodes.length && !copied.groups.length)) return false;
     rememberCanvas();
     const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const idMap = new Map(
@@ -1130,66 +1445,39 @@ export function useIntentOS() {
       source: idMap.get(edge.source) as string,
       target: idMap.get(edge.target) as string,
     }));
+    const pastedGroups = copied.groups.map((group, index) => ({
+      ...group,
+      id: `${group.id}_copy_${suffix}_${index}`,
+      title: `${group.title} 副本`,
+      x: group.x + 36,
+      y: group.y + 36,
+      createdAt: Date.now(),
+    }));
     const nextSelection = pastedNodes.map((node) => node.id);
     setNodes((current) => [...current, ...pastedNodes]);
     setEdges((current) => [...current, ...pastedEdges]);
+    setGroups((current) => [...current, ...pastedGroups]);
     setSelectedNodeIds(nextSelection);
     setSelectedNodeIdState(nextSelection.at(-1) ?? null);
     setArrangeMode("free");
     return true;
   }
 
-  function arrangeNodes(mode: "free" | "time" | "type") {
+  function arrangeNodes(
+    mode: "free" | "time" | "type",
+    measuredHeights: Record<string, number> = {},
+  ) {
     setArrangeMode(mode);
     if (mode === "free" || nodes.length < 2) return;
     rememberCanvas();
-    const startX = Math.min(...nodes.map((node) => node.x));
-    const startY = Math.min(...nodes.map((node) => node.y));
-    setNodes((current) => {
-      if (mode === "type") {
-        const kindOrder: Record<NodeKind, number> = {
-          text: 0,
-          image: 1,
-          video: 2,
-          audio: 3,
-          document: 4,
-        };
-        const typeIndex: Record<NodeKind, number> = {
-          text: 0,
-          image: 0,
-          video: 0,
-          audio: 0,
-          document: 0,
-        };
-        return current.map((node) => {
-          const row = typeIndex[node.kind]++;
-          return {
-            ...node,
-            x: startX + kindOrder[node.kind] * 324,
-            y: startY + row * 250,
-          };
-        });
-      }
-      const sourceOrder = new Map(
-        current.map((node, index) => [node.id, index]),
-      );
-      return [...current]
-        .sort(
-          (first, second) =>
-            (first.createdAt ?? sourceOrder.get(first.id) ?? 0) -
-            (second.createdAt ?? sourceOrder.get(second.id) ?? 0),
-        )
-        .map((node, index) => ({
-          ...node,
-          x: startX + (index % 4) * 324,
-          y: startY + Math.floor(index / 4) * 250,
-        }));
-    });
+    setNodes((current) =>
+      arrangeNodesWithoutOverlap(current, mode, measuredHeights),
+    );
   }
 
   async function uploadIntentAttachments(files: File[]) {
     const uploaded: ChatAttachment[] = [];
-    for (const file of files.slice(0, 8)) {
+    for (const file of files.slice(0, 100)) {
       const asset = await uploadAsset(file, {
         sourceType: "intent-attachment",
         sourceRef: activeCanvasId,
@@ -1201,6 +1489,7 @@ export function useIntentOS() {
         name: asset.name,
         kind: asset.kind,
         mimeType: asset.mimeType,
+        previewUrl: asset.contentUrl,
       });
     }
     return uploaded;
@@ -1210,6 +1499,7 @@ export function useIntentOS() {
     value: string,
     attachments: ChatAttachment[] = [],
     preferredCapabilityId?: string,
+    preferredModelId?: string,
   ) {
     const intent = value.trim();
     if (!intent || isPlanning || !activeCanvasId) return;
@@ -1236,6 +1526,7 @@ export function useIntentOS() {
           content: intent,
           attachments,
           preferredCapabilityId,
+          preferredModelId,
         }),
       });
       if (!response.ok || !response.body) {
@@ -1354,11 +1645,9 @@ export function useIntentOS() {
         kind,
         role: "execution",
         status: "queued",
-        capabilityId: cap?.id ?? "unconfigured-skill",
+        capabilityId: cap?.id ?? "none",
         modelId:
-          !cap
-            ? "unconfigured"
-            : cap.executionMode === "remote"
+          cap?.executionMode === "remote"
             ? "skill-runtime"
             : (model?.id ?? "unconfigured"),
         x: startX + level * 360,
@@ -1395,60 +1684,8 @@ export function useIntentOS() {
         }];
       });
     });
-    const dependencyIds = new Set(
-      plan.tasks.flatMap((task) => task.dependsOn),
-    );
-    const resultNodes: CanvasNode[] = plan.tasks
-      .filter((task) => !dependencyIds.has(task.id))
-      .flatMap((task, index) => {
-        const sourceId = nodeIdByTask.get(task.id);
-        const source = sourceId ? nodeById.get(sourceId) : undefined;
-        if (!source) return [];
-        return [{
-          id: `planned_result_${task.id}_${timestamp}`,
-          title: `${task.title} · 结果`,
-          prompt: "执行前保持为空，完成后自动沉淀为可复用资产。",
-          kind: source.kind,
-          role: "result" as const,
-          status: "waiting" as const,
-          capabilityId: "core.result.placeholder",
-          modelId: "none",
-          x: source.x + 360,
-          y: source.y,
-          createdAt: timestamp + plan.tasks.length + index,
-          progress: 0,
-          parameters: {
-            nodeRole: "result",
-            resultSlot: true,
-            resultOf: source.id,
-          },
-          layer: plan.tasks.length + index,
-        }];
-      });
-    const resultEdges = resultNodes.flatMap((resultNode, index) => {
-      const sourceId =
-        typeof resultNode.parameters?.resultOf === "string"
-          ? resultNode.parameters.resultOf
-          : "";
-      const source = nodeById.get(sourceId);
-      if (!source) return [];
-      const output = defaultOutputPort(source);
-      const input = compatibleInputPorts(
-        resultNode,
-        output.dataTypes[0],
-      )[0];
-      if (!input) return [];
-      return [{
-        id: `planned_result_edge_${source.id}_${index}`,
-        source: source.id,
-        target: resultNode.id,
-        sourcePort: output.id,
-        targetPort: input.id,
-        dataType: output.dataTypes[0],
-      }];
-    });
-    setNodes([...plannedNodes, ...resultNodes]);
-    setEdges([...plannedEdges, ...resultEdges]);
+    setNodes(plannedNodes);
+    setEdges(plannedEdges);
     setSelectedNodeIdState(plannedNodes[0]?.id ?? null);
     setSelectedNodeIds(plannedNodes[0] ? [plannedNodes[0].id] : []);
     setPlan(null);
@@ -1513,6 +1750,27 @@ export function useIntentOS() {
   function graphForTarget(targetNodeId?: string) {
     if (!targetNodeId) return { nodes, edges };
     const included = new Set([targetNodeId]);
+
+    // A node-level run is expected to fill its connected result card. Result
+    // slots are passive sinks, so include them without pulling in arbitrary
+    // downstream execution branches (those remain the explicit branch action).
+    let addedResult = true;
+    while (addedResult) {
+      addedResult = false;
+      edges.forEach((edge) => {
+        const target = nodes.find((node) => node.id === edge.target);
+        if (
+          included.has(edge.source) &&
+          target &&
+          roleForNode(target) === "result" &&
+          !included.has(edge.target)
+        ) {
+          included.add(edge.target);
+          addedResult = true;
+        }
+      });
+    }
+
     let changed = true;
     while (changed) {
       changed = false;
@@ -1562,6 +1820,32 @@ export function useIntentOS() {
     };
   }
 
+  function graphForGroup(groupId: string) {
+    const group = groups.find((item) => item.id === groupId);
+    if (!group) return { nodes: [], edges: [] };
+    const included = new Set(
+      nodes
+        .filter((node) => nodeBelongsToGroup(node, group))
+        .map((node) => node.id),
+    );
+    let changed = true;
+    while (changed) {
+      changed = false;
+      edges.forEach((edge) => {
+        if (included.has(edge.target) && !included.has(edge.source)) {
+          included.add(edge.source);
+          changed = true;
+        }
+      });
+    }
+    return {
+      nodes: nodes.filter((node) => included.has(node.id)),
+      edges: edges.filter(
+        (edge) => included.has(edge.source) && included.has(edge.target),
+      ),
+    };
+  }
+
   async function readRunState(runId: string) {
     const result = await requestJson<{
       run: { status: RunState; error?: string | null };
@@ -1578,38 +1862,78 @@ export function useIntentOS() {
       current.map((node) => {
         const task = taskMap.get(node.id);
         if (!task) return node;
-        let output: (KernelNodeOutput & { result?: string }) | null = null;
+        let output: StoredKernelNodeOutput | null = null;
         try {
           output = task.outputJson
-            ? (JSON.parse(task.outputJson) as KernelNodeOutput & {
-                result?: string;
-              })
+            ? (JSON.parse(task.outputJson) as StoredKernelNodeOutput)
             : null;
         } catch {
           output = null;
         }
+        const missingResultOutput =
+          roleForNode(node) === "result" &&
+          task.status === "succeeded" &&
+          !hasKernelOutputValue(output);
+        const blockedByFailedRun =
+          result.run.status === "failed" &&
+          ["queued", "waiting", "running"].includes(task.status);
+        const nextStatus = missingResultOutput
+          ? "failed"
+          : blockedByFailedRun
+            ? "skipped"
+            : task.status;
+        const nextError = missingResultOutput
+          ? "上游节点已完成，但没有返回可写入占位卡片的结果"
+          : blockedByFailedRun
+            ? result.run.error || "上游节点执行失败，结果未生成"
+            : task.error;
+        const nextParameters = { ...node.parameters };
+        delete nextParameters.kernelOutput;
+        delete nextParameters.kernelExecutor;
+        if (output && !missingResultOutput) {
+          nextParameters.kernelOutput = output;
+        }
+        if (task.executor) nextParameters.kernelExecutor = task.executor;
+        nextParameters.kernelRunId = runId;
+
+        const outputResult =
+          (typeof output?.result === "string" && output.result.trim()) ||
+          (typeof output?.text === "string" && output.text.trim()) ||
+          undefined;
         return {
           ...node,
-          status: task.status,
+          status: nextStatus,
           progress:
-            task.status === "succeeded" || task.status === "failed" ? 100 : 0,
-          ...(output?.result || output?.text
-            ? { result: output.result ?? output.text }
-            : task.error
-              ? { result: `执行失败：${task.error}` }
-              : {}),
-          parameters: {
-            ...node.parameters,
-            ...(output ? { kernelOutput: output } : {}),
-            ...(task.executor ? { kernelExecutor: task.executor } : {}),
-            kernelRunId: runId,
-          },
+            ["succeeded", "failed", "skipped", "canceled"].includes(nextStatus)
+              ? 100
+              : 0,
+          result: outputResult ?? (nextError ? `执行失败：${nextError}` : undefined),
+          parameters: nextParameters,
         };
       }),
     );
     setRunState(result.run.status);
     return result;
   }
+
+  useEffect(() => {
+    const recoverableRunIds = new Set(
+      nodes
+        .filter((node) =>
+          ["queued", "waiting", "running"].includes(node.status),
+        )
+        .map((node) => node.parameters?.kernelRunId)
+        .filter((runId): runId is string => typeof runId === "string"),
+    );
+
+    recoverableRunIds.forEach((runId) => {
+      if (reconciledKernelRuns.current.has(runId)) return;
+      reconciledKernelRuns.current.add(runId);
+      void readRunState(runId).catch(() => {
+        reconciledKernelRuns.current.delete(runId);
+      });
+    });
+  }, [nodes]);
 
   async function waitForRun(
     runId: string,
@@ -1642,8 +1966,9 @@ export function useIntentOS() {
 
   async function startRunServer(
     targetNodeId?: string,
-    mode: "target" | "branch" = "target",
+    mode: "target" | "branch" | "group" = "target",
   ) {
+    setCloudError("");
     const current = activeRun.current;
     if (current?.paused) {
       current.paused = false;
@@ -1663,18 +1988,30 @@ export function useIntentOS() {
     const graph =
       targetNodeId && mode === "branch"
         ? graphForBranch(targetNodeId)
-        : graphForTarget(targetNodeId);
+        : targetNodeId && mode === "group"
+          ? graphForGroup(targetNodeId)
+          : graphForTarget(targetNodeId);
+    if (!graph.nodes.length) {
+      setCloudError(
+        mode === "group"
+          ? "该节点群区域内没有可执行节点"
+          : "没有可执行节点",
+      );
+      return;
+    }
     try {
       compileWorkflow(graph.nodes, graph.edges);
     } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "工作流编译失败";
       setRunState("failed");
+      setCloudError(message);
       setMessages((messages) => [
         ...messages,
         {
           id: `msg_${Date.now()}`,
           role: "assistant",
-          content:
-            error instanceof Error ? error.message : "工作流编译失败",
+          content: message,
           time: messageTime(),
         },
       ]);
@@ -1701,11 +2038,20 @@ export function useIntentOS() {
       };
       const included = new Set(graph.nodes.map((node) => node.id));
       setNodes((currentNodes) =>
-        currentNodes.map((node) =>
-          included.has(node.id)
-            ? { ...node, status: "queued", progress: 0 }
-            : node,
-        ),
+        currentNodes.map((node) => {
+          if (!included.has(node.id)) return node;
+          const parameters = { ...node.parameters };
+          delete parameters.kernelOutput;
+          delete parameters.kernelExecutor;
+          delete parameters.kernelRunId;
+          return {
+            ...node,
+            status: "queued",
+            progress: 0,
+            result: undefined,
+            parameters,
+          };
+        }),
       );
       setRunState("running");
       const initialDispatch = await readRunState(created.runId);
@@ -1725,28 +2071,124 @@ export function useIntentOS() {
             time: messageTime(),
           },
         ]);
+      } else if (dispatched.run.status === "failed") {
+        const message =
+          dispatched.run.error ||
+          dispatched.tasks.find((task) => task.error)?.error ||
+          "节点运行失败";
+        setCloudError(message);
       }
       if (!["paused", "waiting"].includes(dispatched.run.status)) {
         activeRun.current = null;
       }
     } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "工作流执行失败";
       setRunState("failed");
       activeRun.current = null;
+      setCloudError(message);
       setMessages((messages) => [
         ...messages,
         {
           id: `msg_${Date.now()}`,
           role: "assistant",
-          content:
-            error instanceof Error ? error.message : "工作流执行失败",
+          content: message,
           time: messageTime(),
         },
       ]);
     }
   }
 
+  function generateDirectly(
+    value: string,
+    kind: Extract<NodeKind, "text" | "image" | "video">,
+    requestedCapabilityId?: string,
+    requestedModelId?: string,
+    attachments: ChatAttachment[] = [],
+  ) {
+    const prompt = value.trim();
+    if (!prompt || isPlanning || activeRun.current) return;
+    const rules = resolveProfessionalGeneratorRules({
+      capabilities,
+      models,
+      kind,
+      requestedCapabilityId,
+      requestedModelId,
+    });
+    if (!rules.model && !rules.usesSkillRuntime) {
+      setCloudError(`当前没有可用的${kind === "text" ? "文本" : kind === "image" ? "图片" : "视频"}模型`);
+      return;
+    }
+    const inputConstraints = normalizeModelInputConstraints(
+      rules.model?.inputConstraints,
+      kind,
+      rules.model?.protocol,
+    );
+    const inputValidation = validateModelInputAssets(
+      inputConstraints,
+      attachments.map((attachment) => ({
+        kind:
+          attachment.kind === "image" ||
+          attachment.kind === "video" ||
+          attachment.kind === "audio"
+            ? attachment.kind
+            : "document",
+      })),
+    );
+    if (!inputValidation.valid) {
+      setCloudError(inputValidation.errors.join("；"));
+      return;
+    }
+    const title =
+      kind === "image"
+        ? "专业图片生成"
+        : kind === "video"
+          ? "专业视频生成"
+          : "专业文本生成";
+    const nodeId = addNode(kind, undefined, {
+      title,
+      prompt,
+      capabilityId: rules.capability?.id ?? "none",
+      modelId: rules.usesSkillRuntime
+        ? "skill-runtime"
+        : (rules.model?.id ?? "unconfigured"),
+      inputAttachments: attachments,
+      parameters: {
+        directGenerator: true,
+        failurePolicy: "stop",
+      },
+    });
+    pendingDirectRunNodeId.current = nodeId;
+    setMessages((current) => [
+      ...current,
+      {
+        id: `msg_${Date.now()}`,
+        role: "user",
+        content: prompt,
+        time: messageTime(),
+      },
+      {
+        id: `msg_${Date.now()}_generator`,
+        role: "assistant",
+        content: `已创建${title}节点，正在使用 ${rules.usesSkillRuntime ? `${rules.capability?.title ?? "Skill"} 内置服务` : rules.model?.name ?? "模型"} 直接生成。`,
+        time: messageTime(),
+      },
+    ]);
+  }
+
+  useEffect(() => {
+    const nodeId = pendingDirectRunNodeId.current;
+    if (!nodeId || !nodes.some((node) => node.id === nodeId)) return;
+    pendingDirectRunNodeId.current = null;
+    void startRunServer(nodeId);
+  }, [nodes]);
+
   function rerunBranchServer(nodeId: string) {
     return startRunServer(nodeId, "branch");
+  }
+
+  function startGroupRun(groupId: string) {
+    return startRunServer(groupId, "group");
   }
 
   async function pauseRunServer() {
@@ -1805,17 +2247,18 @@ export function useIntentOS() {
     try {
       const payload = await requestJson<{
         model: (typeof models)[number];
-        probe: { message: string; catalogCount?: number };
+        probe: { ok: boolean; message: string; catalogCount?: number };
       }>("/api/v2/models/test", {
         method: "POST",
         body: JSON.stringify({ id, workspaceId }),
       });
-      setModels((current) =>
-        current.map((model) => (model.id === id ? payload.model : model)),
-      );
-      return payload.probe.catalogCount
-        ? `${payload.probe.message}，已同步 ${payload.probe.catalogCount} 个可用模型。`
-        : payload.probe.message;
+      await refreshRegistry();
+      return {
+        ok: payload.probe.ok,
+        message: payload.probe.catalogCount
+          ? `${payload.probe.message}，已同步 ${payload.probe.catalogCount} 个可用模型。`
+          : payload.probe.message,
+      };
     } catch (error) {
       setModels((current) =>
         current.map((model) =>
@@ -1833,14 +2276,53 @@ export function useIntentOS() {
     } catch {
       throw new Error("文件不是有效的 JSON Package");
     }
-    const result = await requestJson<{
-      package: InstalledPackage;
-      action: "installed" | "updated";
-    }>("/api/v2/packages", {
+    const result = await requestJson<PackageInstallResult>("/api/v2/packages", {
       method: "POST",
       body: JSON.stringify({ workspaceId, manifest: payload }),
     });
     await refreshRegistry();
+    return result;
+  }
+
+  async function installPackageArchive(
+    file: File,
+    accessScope?: "personal" | "workspace" | "marketplace",
+  ) {
+    const form = new FormData();
+    form.set("workspaceId", workspaceId);
+    form.set("file", file);
+    if (accessScope) form.set("accessScope", accessScope);
+    const result = await requestJson<PackageInstallResult>(
+      "/api/v2/packages/import/archive",
+      {
+        method: "POST",
+        body: form,
+      },
+    );
+    await refreshRegistry();
+    return result;
+  }
+
+  async function installPackageFromGithub(input: {
+    url: string;
+    ref?: string;
+    accessScope?: "personal" | "workspace" | "marketplace";
+  }) {
+    const result = await requestJson<GithubPackageImportResult>(
+      "/api/v2/packages/import/github",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          workspaceId,
+          url: input.url,
+          ...(input.ref?.trim() ? { ref: input.ref.trim() } : {}),
+          ...(input.accessScope ? { accessScope: input.accessScope } : {}),
+        }),
+      },
+    );
+    if (result.status !== "needs_adaptation") {
+      await refreshRegistry();
+    }
     return result;
   }
 
@@ -1883,6 +2365,21 @@ export function useIntentOS() {
     await refreshRegistry();
   }
 
+  async function setPackageAccessScope(
+    id: string,
+    accessScope: "personal" | "marketplace",
+  ) {
+    const result = await requestJson<{ package: InstalledPackage }>(
+      "/api/v2/packages",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ id, accessScope, workspaceId }),
+      },
+    );
+    await refreshRegistry();
+    return result.package;
+  }
+
   async function uninstallPackage(id: string) {
     await requestJson(
       `/api/v2/packages?id=${encodeURIComponent(id)}&workspaceId=${encodeURIComponent(workspaceId)}`,
@@ -1922,6 +2419,14 @@ export function useIntentOS() {
     return result.model;
   }
 
+  async function setModelEnabled(id: string, enabled: boolean) {
+    await requestJson<{ model: (typeof models)[number] }>("/api/v2/models", {
+      method: "PATCH",
+      body: JSON.stringify({ id, enabled, workspaceId }),
+    });
+    await refreshRegistry();
+  }
+
   async function updatePreferences(next: UserPreferences) {
     const previous = preferences;
     setPreferences(next);
@@ -1944,21 +2449,14 @@ export function useIntentOS() {
   async function uploadAsset(
     file: File,
     metadata: {
-      folderId?: string | null;
       sourceType?: string;
       sourceRef?: string | null;
       tags?: string[];
     } = {},
   ) {
-    const form = new FormData();
-    form.set("file", file);
-    if (metadata.folderId) form.set("folderId", metadata.folderId);
-    if (metadata.sourceType) form.set("sourceType", metadata.sourceType);
-    if (metadata.sourceRef) form.set("sourceRef", metadata.sourceRef);
-    if (metadata.tags?.length) form.set("tags", metadata.tags.join(","));
     const result = await requestJson<{ asset: FileSystemAsset }>(
       `/api/v2/files?workspaceId=${encodeURIComponent(workspaceId)}`,
-      { method: "POST", body: form },
+      assetUploadRequestInit(file, metadata),
     );
     return result.asset;
   }
@@ -1976,6 +2474,7 @@ export function useIntentOS() {
     setView,
     nodes,
     edges,
+    groups,
     capabilities,
     models,
     modelProviders,
@@ -1993,10 +2492,7 @@ export function useIntentOS() {
     canvasRevision,
     collaborationSessionId,
     canvases,
-    workspaceName,
     workspaceId,
-    workspaces,
-    switchWorkspace,
     projectId,
     projectName,
     projects,
@@ -2006,10 +2502,12 @@ export function useIntentOS() {
     archiveProject,
     cloudStatus,
     cloudError,
+    clearCloudError,
     canvasViewport,
     setCanvasViewport,
     setActiveCanvasId,
     reloadActiveCanvas,
+    refreshCanvases,
     createCanvas,
     duplicateCanvas,
     restoreCanvas,
@@ -2035,12 +2533,20 @@ export function useIntentOS() {
     messages,
     canUndo: historyDepth > 0,
     canRedo: canvasFuture.current.length > 0,
+    canPaste,
     beginNodeMove,
     moveNode,
+    addGroup,
+    beginGroupChange,
+    moveGroupBy,
+    resizeGroupBy,
+    updateGroup,
+    deleteGroup,
     updateNode,
     addNode,
     addAssetToCanvas,
     deleteSelected,
+    deleteNode,
     connectNodes,
     deleteEdge,
     undoCanvas,
@@ -2049,11 +2555,13 @@ export function useIntentOS() {
     pasteCopied,
     arrangeNodes,
     submitIntent: submitIntentServer,
+    generateDirectly,
     uploadIntentAttachments,
     confirmPlan,
     updatePlan,
     rejectPlan,
     startRun: startRunServer,
+    startGroupRun,
     rerunBranch: rerunBranchServer,
     pauseRun: pauseRunServer,
     cancelRun: cancelRunServer,
@@ -2061,12 +2569,16 @@ export function useIntentOS() {
     testModel,
     refreshRegistry,
     installPackage,
+    installPackageArchive,
+    installPackageFromGithub,
     installWorkflow,
     setPackageEnabled,
+    setPackageAccessScope,
     uninstallPackage,
     testPlugin,
     createModel,
     updateModel,
+    setModelEnabled,
     deleteModel,
     updatePreferences,
     uploadAsset,

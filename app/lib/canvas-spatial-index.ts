@@ -1,8 +1,8 @@
 import type { CanvasEdge, CanvasNode } from "../types";
 import type { WorldBounds } from "./canvas-geometry";
+import { widthForNode } from "./node-layout";
 
 const DEFAULT_CELL_SIZE = 512;
-const NODE_WIDTH = 264;
 const DEFAULT_NODE_HEIGHT = 220;
 
 function keysFor(bounds: WorldBounds, cellSize: number) {
@@ -53,7 +53,7 @@ export class CanvasSpatialIndex {
         {
           minX: node.x,
           minY: node.y,
-          maxX: node.x + NODE_WIDTH,
+          maxX: node.x + widthForNode(node),
           maxY: node.y + (nodeHeights[node.id] ?? DEFAULT_NODE_HEIGHT),
         },
         cellSize,
@@ -63,7 +63,7 @@ export class CanvasSpatialIndex {
       const source = this.nodeById.get(edge.source);
       const target = this.nodeById.get(edge.target);
       if (!source || !target) continue;
-      const sourceX = source.x + NODE_WIDTH;
+      const sourceX = source.x + widthForNode(source);
       const sourceY = source.y + (nodeHeights[source.id] ?? DEFAULT_NODE_HEIGHT) / 2;
       const targetX = target.x;
       const targetY = target.y + (nodeHeights[target.id] ?? DEFAULT_NODE_HEIGHT) / 2;

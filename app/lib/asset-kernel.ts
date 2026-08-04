@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { getDb } from "../../db";
 import {
   assets,
@@ -170,6 +170,146 @@ export interface FileBucket {
   delete(key: string | string[]): Promise<void>;
 }
 
+async function getLocalFileBucket(rootSetting: string): Promise<FileBucket> {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const root = path.resolve(process.cwd(), rootSetting);
+
+  function objectPath(key: string) {
+    const segments = key
+      .replaceAll("\\", "/")
+      .split("/")
+      .filter(Boolean);
+    if (
+      !segments.length ||
+      segments.some(
+        (segment) =>
+          segment === "." ||
+          segment === ".." ||
+          segment.includes("\0"),
+      )
+    ) {
+      throw new Error("本地存储对象键无效");
+    }
+    const target = path.resolve(root, ...segments);
+    if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+      throw new Error("本地存储对象越过了允许目录");
+    }
+    return target;
+  }
+
+  function metadataPath(target: string) {
+    return `${target}.xiaoluo-meta.json`;
+  }
+
+  async function digest(bytes: Uint8Array) {
+    const value = await crypto.subtle.digest(
+      "SHA-256",
+      Uint8Array.from(bytes).buffer,
+    );
+    return `"${Array.from(new Uint8Array(value))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("")}"`;
+  }
+
+  async function remove(key: string) {
+    const target = objectPath(key);
+    await Promise.all([
+      fs.rm(target, { force: true }),
+      fs.rm(metadataPath(target), { force: true }),
+    ]);
+  }
+
+  return {
+    async health() {
+      await fs.mkdir(root, { recursive: true });
+      const probe = path.join(root, ".xiaoluo-write-probe");
+      await fs.writeFile(probe, "ready", "utf8");
+      await fs.rm(probe, { force: true });
+    },
+    async put(key, value, options) {
+      const target = objectPath(key);
+      const valueBuffer =
+        value instanceof ReadableStream
+          ? await new Response(value).arrayBuffer()
+          : value instanceof ArrayBuffer
+            ? value
+            : Uint8Array.from(value).buffer;
+      const bytes = new Uint8Array(valueBuffer);
+      const etag = await digest(bytes);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      const suffix = `${process.pid}-${crypto.randomUUID()}`;
+      const temporary = `${target}.${suffix}.tmp`;
+      const temporaryMetadata = `${metadataPath(target)}.${suffix}.tmp`;
+      await fs.writeFile(temporary, bytes);
+      await fs.writeFile(
+        temporaryMetadata,
+        JSON.stringify({
+          contentType:
+            options?.httpMetadata?.contentType ??
+            "application/octet-stream",
+          customMetadata: options?.customMetadata ?? {},
+          etag,
+        }),
+        "utf8",
+      );
+      await fs.rename(temporary, target);
+      await fs.rename(temporaryMetadata, metadataPath(target));
+      return { etag };
+    },
+    async get(key, options) {
+      const target = objectPath(key);
+      try {
+        const [bytes, stat, metadataText] = await Promise.all([
+          fs.readFile(target),
+          fs.stat(target),
+          fs.readFile(metadataPath(target), "utf8").catch(() => "{}"),
+        ]);
+        const metadata = JSON.parse(metadataText) as {
+          contentType?: string;
+          etag?: string;
+        };
+        const offset = Math.max(0, options?.range?.offset ?? 0);
+        const requestedLength = options?.range?.length;
+        const end =
+          requestedLength === undefined
+            ? bytes.length
+            : Math.min(bytes.length, offset + Math.max(0, requestedLength));
+        const selected =
+          options?.range === undefined ? bytes : bytes.subarray(offset, end);
+        const etag = metadata.etag || (await digest(bytes));
+        return {
+          body: new Response(selected).body,
+          size: options?.range === undefined ? stat.size : selected.byteLength,
+          etag,
+          httpEtag: etag,
+          range: options?.range,
+          httpMetadata: {
+            contentType:
+              metadata.contentType ?? "application/octet-stream",
+          },
+        };
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    async delete(key) {
+      if (Array.isArray(key)) {
+        await Promise.all(key.map(remove));
+      } else {
+        await remove(key);
+      }
+    },
+  };
+}
+
 function ossObjectUrl(
   origin: string,
   key = "",
@@ -240,8 +380,108 @@ async function ossAuthorization(input: {
   return `OSS ${input.accessKeyId}:${base64(signature)}`;
 }
 
+async function ossQuerySignature(input: {
+  accessKeySecret: string;
+  canonicalResource: string;
+  expires: number;
+}) {
+  const stringToSign = [
+    "GET",
+    "",
+    "",
+    String(input.expires),
+    input.canonicalResource,
+  ].join("\n");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(input.accessKeySecret),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  return base64(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(stringToSign),
+    ),
+  );
+}
+
+/**
+ * Returns a short-lived URL that a remote model provider can fetch without
+ * inheriting the browser session. Browser-facing asset URLs deliberately stay
+ * private and relative; they must never be sent to a third party as-is.
+ */
+export async function externalAssetAccessUrl(
+  db: Database,
+  input: {
+    assetId: string;
+    workspaceId: string;
+    expiresInSeconds?: number;
+  },
+) {
+  const [asset] = await db
+    .select({
+      blobKey: assetVersions.blobKey,
+      mimeType: assetVersions.mimeType,
+      size: assetVersions.size,
+    })
+    .from(assets)
+    .innerJoin(
+      assetVersions,
+      eq(assetVersions.id, assets.currentVersionId),
+    )
+    .where(
+      and(
+        eq(assets.id, input.assetId),
+        eq(assets.workspaceId, input.workspaceId),
+      ),
+    )
+    .limit(1);
+  if (!asset) throw new Error("输入素材不存在或无权访问");
+
+  const storage = serverRuntimeConfig().storage;
+  if (storage.driver === "oss") {
+    const expires =
+      Math.floor(Date.now() / 1000) +
+      Math.max(300, Math.min(input.expiresInSeconds ?? 7_200, 86_400));
+    const canonicalResource = `/${storage.oss.bucket}/${asset.blobKey}`;
+    const signature = await ossQuerySignature({
+      accessKeySecret: storage.oss.accessKeySecret,
+      canonicalResource,
+      expires,
+    });
+    const query = new URLSearchParams({
+      OSSAccessKeyId: storage.oss.accessKeyId,
+      Expires: String(expires),
+      Signature: signature,
+    });
+    return ossObjectUrl(
+      ossOrigin(storage.oss),
+      asset.blobKey,
+      `?${query.toString()}`,
+    );
+  }
+
+  // Local storage has no public origin. A data URI keeps local development
+  // functional for ordinary reference assets while avoiding an authenticated
+  // localhost URL that external providers cannot reach.
+  if (asset.size > 50 * 1024 * 1024) {
+    throw new Error("本地素材超过 50 MB，无法作为第三方模型的内联输入");
+  }
+  const object = await (await getFileBucket()).get(asset.blobKey);
+  if (!object?.body) throw new Error("输入素材内容不存在");
+  const bytes = await new Response(object.body).arrayBuffer();
+  return `data:${asset.mimeType};base64,${base64(bytes)}`;
+}
+
 export async function getFileBucket(): Promise<FileBucket> {
-  const { oss } = serverRuntimeConfig().storage;
+  const storage = serverRuntimeConfig().storage;
+  if (storage.driver === "local") {
+    return getLocalFileBucket(storage.local.root);
+  }
+  const { oss } = storage;
   const origin = ossOrigin(oss);
 
   async function request(input: {
@@ -259,7 +499,13 @@ export async function getFileBucket(): Promise<FileBucket> {
     if (contentType) headers.set("content-type", contentType);
     if (input.range) headers.set("range", input.range);
     Object.entries(input.metadata ?? {}).forEach(([name, value]) => {
-      headers.set(`x-oss-meta-${name.toLowerCase()}`, value);
+      // Fetch Headers only accepts ByteString values. OSS user metadata is
+      // carried in HTTP headers, so Unicode values (for example Chinese file
+      // names) must be converted to an ASCII-safe representation first.
+      headers.set(
+        `x-oss-meta-${name.toLowerCase()}`,
+        encodeURIComponent(value),
+      );
     });
     const canonicalHeaders = [...headers.entries()]
       .filter(([name]) => name.startsWith("x-oss-"))
@@ -435,7 +681,6 @@ export function serializeFileAsset(row: AssetRow): FileSystemAsset {
     kind: row.kind as AssetKind,
     mimeType: row.mimeType,
     size: row.size,
-    folderId: row.folderId,
     tags: parseTags(row.tagsJson),
     description: row.description,
     sourceType: row.sourceType,
@@ -468,7 +713,6 @@ export interface StoreAssetInput {
   name: string;
   mimeType: string;
   bytes: ArrayBuffer;
-  folderId?: string | null;
   tags?: string[];
   description?: string;
   sourceType?: string;
@@ -526,7 +770,6 @@ export async function storeAsset(
     kind,
     mimeType: input.mimeType || "application/octet-stream",
     size: input.bytes.byteLength,
-    folderId: input.folderId ?? null,
     currentVersionId: versionId,
     currentVersion: 1,
     versionCount: 1,
@@ -569,7 +812,7 @@ export async function storeAssetVersion(
   asset: AssetRow,
   input: Omit<
     StoreAssetInput,
-    "workspaceId" | "folderId" | "tags" | "description"
+    "workspaceId" | "tags" | "description"
   >,
 ) {
   if (!input.bytes.byteLength) throw new Error("文件内容为空");
@@ -587,7 +830,10 @@ export async function storeAssetVersion(
   if (!existingBlob) {
     await bucket.put(blobKey, input.bytes, {
       httpMetadata: { contentType: input.mimeType },
-      customMetadata: { sha256: hash, originalName: input.name },
+      customMetadata: {
+        sha256: hash,
+        originalName: sanitizeAssetName(input.name),
+      },
     });
   }
   const nextVersion = asset.currentVersion + 1;

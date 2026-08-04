@@ -1,21 +1,25 @@
 "use client";
 
 import {
+  Building2,
   Check,
   ChevronRight,
   CircleAlert,
   KeyRound,
   Keyboard,
+  LogOut,
+  MoonStar,
   MousePointer2,
   Pencil,
   Plus,
   Save,
   ShieldCheck,
+  Sun,
   Trash2,
   UserRound,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import type {
   AccountUser,
@@ -23,15 +27,43 @@ import type {
   ModelConnection,
   ModelConnectionDraft,
   ModelProtocol,
-  ModelUsageSummary,
   NodeKind,
   UserPreferences,
 } from "../types";
+import {
+  builtInModelParameterSchema,
+  DALL_E_3_ENDPOINT,
+  DALL_E_3_MODEL,
+  GEMINI_IMAGE_ENDPOINT,
+  GEMINI_IMAGE_MODEL,
+  RUNNINGHUB_MINIMAX_H3_ENDPOINT,
+  RUNNINGHUB_MINIMAX_H3_MODEL,
+  RUNNINGHUB_SPARKVIDEO_ENDPOINT,
+  RUNNINGHUB_SPARKVIDEO_MINI_ENDPOINT,
+  RUNNINGHUB_SPARKVIDEO_MINI_MULTIMODAL_ENDPOINT,
+  RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
+  RUNNINGHUB_SPARKVIDEO_MODEL,
+  RUNNINGHUB_SPARKVIDEO_MULTIMODAL_ENDPOINT,
+  defaultProtocolForModelType,
+  modelProtocolOptions,
+  modelProtocolOptionsForType,
+  protocolSupportsModelType,
+} from "../lib/model-protocol-options";
+import {
+  defaultModelInputConstraints,
+  MODEL_INPUT_ASSET_KINDS,
+  normalizeModelInputConstraints,
+} from "../lib/model-input-constraints";
+import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
 import { PersonalSettings } from "./personal-settings";
-import { SchemaOptionBuilder } from "./schema-option-builder";
 
-type SettingsTab = "account" | "api" | "gesture" | "shortcuts";
+type SettingsTab =
+  | "account"
+  | "appearance"
+  | "api"
+  | "gesture"
+  | "shortcuts";
 
 const emptyDraft: ModelConnectionDraft = {
   name: "",
@@ -49,28 +81,208 @@ const emptyDraft: ModelConnectionDraft = {
   circuitCooldownSeconds: 60,
   parameterSchema: { type: "object", properties: {} },
   uiSchema: {},
+  inputConstraints: defaultModelInputConstraints("text", "openai-compatible"),
   capabilityTags: [],
+  accessScope: "personal",
 };
-
-const emptyUsage: ModelUsageSummary = {
-  text: { total: 0, success: 0, failure: 0 },
-  image: { total: 0, success: 0, failure: 0 },
-  video: { total: 0, success: 0, failure: 0 },
-  retryCount: 0,
-  fallbackCount: 0,
-};
-
-const protocols: Array<{ value: ModelProtocol; label: string }> = [
-  { value: "openai-compatible", label: "OpenAI 兼容" },
-  { value: "anthropic-compatible", label: "Anthropic 兼容" },
-  { value: "gemini", label: "Google Gemini" },
-  { value: "ark", label: "火山方舟" },
-  { value: "async-video", label: "视频生成服务" },
-];
 
 const protocolLabels = Object.fromEntries(
-  protocols.map((item) => [item.value, item.label]),
+  modelProtocolOptions.map((item) => [item.value, item.label]),
 ) as Partial<Record<ModelProtocol, string>>;
+
+function protocolPreset(
+  protocol: ModelProtocol,
+  modelType: NodeKind,
+): Partial<ModelConnectionDraft> {
+  if (modelType === "video") {
+    if (protocol === "runninghub-sparkvideo-mini") {
+      return {
+        name: RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
+        modelName: RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
+        baseUrl: RUNNINGHUB_SPARKVIDEO_MINI_ENDPOINT,
+      };
+    }
+    if (protocol === "runninghub-sparkvideo-mini-multimodal") {
+      return {
+        name: `${RUNNINGHUB_SPARKVIDEO_MINI_MODEL} 多模态`,
+        modelName: RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
+        baseUrl: RUNNINGHUB_SPARKVIDEO_MINI_MULTIMODAL_ENDPOINT,
+      };
+    }
+    if (protocol === "runninghub-sparkvideo") {
+      return {
+        name: RUNNINGHUB_SPARKVIDEO_MODEL,
+        modelName: RUNNINGHUB_SPARKVIDEO_MODEL,
+        baseUrl: RUNNINGHUB_SPARKVIDEO_ENDPOINT,
+      };
+    }
+    if (protocol === "runninghub-sparkvideo-multimodal") {
+      return {
+        name: `${RUNNINGHUB_SPARKVIDEO_MODEL} 多模态`,
+        modelName: RUNNINGHUB_SPARKVIDEO_MODEL,
+        baseUrl: RUNNINGHUB_SPARKVIDEO_MULTIMODAL_ENDPOINT,
+      };
+    }
+    if (protocol === "runninghub-minimax-h3") {
+      return {
+        name: RUNNINGHUB_MINIMAX_H3_MODEL,
+        modelName: RUNNINGHUB_MINIMAX_H3_MODEL,
+        baseUrl: RUNNINGHUB_MINIMAX_H3_ENDPOINT,
+      };
+    }
+    return {};
+  }
+  if (modelType !== "image") return {};
+  if (protocol === "dall-e-3") {
+    return {
+      name: DALL_E_3_MODEL,
+      modelName: DALL_E_3_MODEL,
+      baseUrl: DALL_E_3_ENDPOINT,
+    };
+  }
+  if (protocol === "gemini") {
+    return {
+      name: GEMINI_IMAGE_MODEL,
+      modelName: GEMINI_IMAGE_MODEL,
+      baseUrl: GEMINI_IMAGE_ENDPOINT,
+    };
+  }
+  return {};
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function ModelBuiltInOptions({
+  schema,
+  onChange,
+}: {
+  schema: Record<string, unknown>;
+  onChange: (schema: Record<string, unknown>) => void;
+}) {
+  const properties = record(schema.properties);
+  const entries = Object.entries(properties).flatMap(([key, value]) => {
+    const property = record(value);
+    const values = Array.isArray(property.enum) ? property.enum : [];
+    if (!values.length) return [];
+    return [{ key, property, values }];
+  });
+
+  if (!entries.length) return null;
+
+  return (
+    <section className="model-built-in-options">
+      <header>
+        <strong>模型内置选项</strong>
+        <span>选项由当前模型类型与服务商提供，仅可选择默认值。</span>
+      </header>
+      <div className="model-built-in-options-grid">
+        {entries.map(({ key, property, values }) => {
+          const selected = property.default ?? values[0];
+          return (
+            <label key={key}>
+              {typeof property.title === "string" ? property.title : key}
+              <select
+                value={String(selected)}
+                onChange={(event) => {
+                  const nextDefault =
+                    values.find(
+                      (value) => String(value) === event.target.value,
+                    ) ?? event.target.value;
+                  onChange({
+                    ...schema,
+                    properties: {
+                      ...properties,
+                      [key]: { ...property, default: nextDefault },
+                    },
+                  });
+                }}
+              >
+                {values.map((value) => (
+                  <option key={String(value)} value={String(value)}>
+                    {String(value)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const inputAssetLabels = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+  document: "文档",
+} as const;
+
+function ModelInputConstraintEditor({
+  value,
+  modelType,
+  protocol,
+  onChange,
+}: {
+  value: ModelConnectionDraft["inputConstraints"];
+  modelType: NodeKind;
+  protocol: ModelProtocol;
+  onChange: (value: NonNullable<ModelConnectionDraft["inputConstraints"]>) => void;
+}) {
+  const constraints = normalizeModelInputConstraints(value, modelType, protocol);
+  return (
+    <section className="model-input-constraints">
+      <header>
+        <strong>输入素材能力</strong>
+        <span>同时校验素材总数与各类型上限；填写 0 表示不支持该类型。</span>
+      </header>
+      <div className="model-input-constraints-grid">
+        <label>
+          素材总上限
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={constraints.maxTotal}
+            onChange={(event) =>
+              onChange({
+                ...constraints,
+                maxTotal: Number(event.target.value),
+              })
+            }
+          />
+        </label>
+        {MODEL_INPUT_ASSET_KINDS.map((assetKind) => (
+          <label key={assetKind}>
+            {inputAssetLabels[assetKind]}上限
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={constraints.maxByType[assetKind]}
+              onChange={(event) =>
+                onChange({
+                  ...constraints,
+                  maxByType: {
+                    ...constraints.maxByType,
+                    [assetKind]: Number(event.target.value),
+                  },
+                })
+              }
+            />
+          </label>
+        ))}
+      </div>
+      <p>
+        例如总上限 12、图片 9、视频 3、音频 3：三类素材分别不能超限，合计也不能超过 12。
+      </p>
+    </section>
+  );
+}
 
 const gesturePresets: Array<{
   id: GesturePreset;
@@ -111,10 +323,25 @@ const shortcuts = [
 ];
 
 function draftFromModel(model: ModelConnection): ModelConnectionDraft {
-  const protocol =
+  const modelType = model.modalities[0] ?? "text";
+  const savedProtocol =
     model.protocol === "generic-rest"
       ? "openai-compatible"
       : (model.protocol ?? "openai-compatible");
+  const protocol = protocolSupportsModelType(savedProtocol, modelType)
+    ? savedProtocol
+    : defaultProtocolForModelType(modelType);
+  const savedSchema = model.parameterSchema ?? {};
+  const savedProperties =
+    savedSchema.properties && typeof savedSchema.properties === "object"
+      ? savedSchema.properties
+      : {};
+  const parameterSchema =
+    protocol === savedProtocol && Object.keys(savedProperties).length
+    ? savedSchema
+    : builtInModelParameterSchema(protocol, modelType);
+  const normalizedPreset =
+    protocol !== savedProtocol ? protocolPreset(protocol, modelType) : {};
   return {
     name: model.name,
     protocol,
@@ -126,18 +353,35 @@ function draftFromModel(model: ModelConnection): ModelConnectionDraft {
     secretValue: "",
     secretName: `${model.name} API Key`,
     priority: model.priority ?? 100,
-    fallbackModelId: model.fallbackModelId ?? null,
+    fallbackModelId: null,
     maxConcurrency: model.maxConcurrency ?? 2,
     retryLimit: model.retryLimit ?? 3,
     circuitFailureThreshold: model.circuitFailureThreshold ?? 5,
     circuitCooldownSeconds: model.circuitCooldownSeconds ?? 60,
-    parameterSchema: model.parameterSchema ?? {
-      type: "object",
-      properties: {},
-    },
+    parameterSchema,
     uiSchema: model.uiSchema ?? {},
+    inputConstraints:
+      model.inputConstraints ?? defaultModelInputConstraints(modelType, protocol),
     capabilityTags: model.capabilityTags ?? [],
+    accessScope: model.accessScope ?? "personal",
+    ...normalizedPreset,
   };
+}
+
+function modelInputConstraintSummary(model: ModelConnection) {
+  const kind = model.modalities[0] ?? "text";
+  const constraints = normalizeModelInputConstraints(
+    model.inputConstraints,
+    kind,
+    model.protocol,
+  );
+  if (!constraints.maxTotal) return "参考素材 0";
+  const enabled = MODEL_INPUT_ASSET_KINDS.flatMap((assetKind) =>
+    constraints.maxByType[assetKind] > 0
+      ? [`${inputAssetLabels[assetKind]} ${constraints.maxByType[assetKind]}`]
+      : [],
+  );
+  return [`素材 ${constraints.maxTotal}`, ...enabled].join(" · ");
 }
 
 function modelHost(model: ModelConnection) {
@@ -153,6 +397,8 @@ interface SettingsCenterProps {
   user: AccountUser;
   onUserUpdate: (user: AccountUser) => void;
   onOpenAccount: () => void;
+  onOpenAdmin: () => void;
+  onLogout: () => void;
   onClose: () => void;
 }
 
@@ -161,8 +407,11 @@ export function SettingsCenter({
   user,
   onUserUpdate,
   onOpenAccount,
+  onOpenAdmin,
+  onLogout,
   onClose,
 }: SettingsCenterProps) {
+  const dialog = useAppDialog();
   const [tab, setTab] = useState<SettingsTab>("account");
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -173,38 +422,24 @@ export function SettingsCenter({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [usage, setUsage] = useState<ModelUsageSummary>(emptyUsage);
-  const [usageLoading, setUsageLoading] = useState(false);
-
+  const [modelFeedback, setModelFeedback] = useState<{
+    modelId: string;
+    message: string;
+    tone: "success" | "error";
+  } | null>(null);
   const connectedCount = useMemo(
-    () => os.models.filter((model) => model.state === "healthy").length,
+    () =>
+      os.models.filter(
+        (model) => model.enabled !== false && model.state === "healthy",
+      ).length,
     [os.models],
   );
-
-  useEffect(() => {
-    if (tab !== "api" || editorOpen || !os.workspaceId) return;
-    const controller = new AbortController();
-    void fetch(
-      `/api/v2/models/stats?workspaceId=${encodeURIComponent(os.workspaceId)}&days=30`,
-      { signal: controller.signal },
-    )
-      .then(async (response) => {
-        const payload = (await response.json()) as {
-          usage?: ModelUsageSummary;
-          error?: string;
-        };
-        if (!response.ok) throw new Error(payload.error ?? "读取调用统计失败");
-        if (payload.usage) setUsage(payload.usage);
-      })
-      .catch((caught) => {
-        if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setError(caught instanceof Error ? caught.message : "读取调用统计失败");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setUsageLoading(false);
-      });
-    return () => controller.abort();
-  }, [editorOpen, os.workspaceId, tab]);
+  const selectedModelType = draft.modalities[0] ?? "text";
+  const compatibleProtocols = useMemo(
+    () => modelProtocolOptionsForType(selectedModelType),
+    [selectedModelType],
+  );
+  const canManageModels = Boolean(user.id);
 
   function openCreate() {
     setEditingId(null);
@@ -222,15 +457,6 @@ export function SettingsCenter({
     setEditorOpen(true);
   }
 
-  function toggleModality(kind: NodeKind) {
-    setDraft((current) => {
-      const selected = current.modalities.includes(kind)
-        ? current.modalities.filter((item) => item !== kind)
-        : [...current.modalities, kind];
-      return { ...current, modalities: selected };
-    });
-  }
-
   async function saveModel(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -239,13 +465,18 @@ export function SettingsCenter({
       setError("请至少选择一种模型能力。");
       return;
     }
+    if (!compatibleProtocols.length) {
+      setError("当前模型类型暂无可用服务商，请等待添加对应模型。");
+      return;
+    }
     setBusy(true);
     try {
+      const modelDraft = { ...draft, fallbackModelId: null };
       if (editingId) {
-        await os.updateModel(editingId, draft);
+        await os.updateModel(editingId, modelDraft);
         setNotice("API 连接已更新。");
       } else {
-        await os.createModel(draft);
+        await os.createModel(modelDraft);
         setNotice("API 连接已添加。");
       }
       setEditorOpen(false);
@@ -257,7 +488,14 @@ export function SettingsCenter({
   }
 
   async function removeModel(model: ModelConnection) {
-    if (!window.confirm(`确定删除“${model.name}”吗？节点将不再能选择它。`)) {
+    if (!(await dialog.confirm(
+      `删除“${model.name}”后，节点将不再能选择这个模型。`,
+      {
+        title: "删除模型连接",
+        confirmText: "删除模型",
+        tone: "danger",
+      },
+    ))) {
       return;
     }
     setBusy(true);
@@ -275,11 +513,21 @@ export function SettingsCenter({
   async function testConnection(model: ModelConnection) {
     setBusy(true);
     setError("");
+    setNotice("");
+    setModelFeedback(null);
     try {
-      const message = await os.testModel(model.id);
-      setNotice(message);
+      const result = await os.testModel(model.id);
+      setModelFeedback({
+        modelId: model.id,
+        message: result.message || (result.ok ? "连接成功" : "连接失败"),
+        tone: result.ok ? "success" : "error",
+      });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "连接测试失败");
+      setModelFeedback({
+        modelId: model.id,
+        message: caught instanceof Error ? caught.message : "连接失败",
+        tone: "error",
+      });
     } finally {
       setBusy(false);
     }
@@ -301,7 +549,6 @@ export function SettingsCenter({
 
   function selectTab(next: SettingsTab) {
     setTab(next);
-    setUsageLoading(next === "api");
     setEditorOpen(false);
     setError("");
     setNotice("");
@@ -344,6 +591,15 @@ export function SettingsCenter({
             </button>
             <button
               type="button"
+              className={tab === "appearance" ? "active" : ""}
+              onClick={() => selectTab("appearance")}
+            >
+              <Sun size={17} />
+              <span>界面风格</span>
+              <ChevronRight size={14} />
+            </button>
+            <button
+              type="button"
               className={tab === "api" ? "active" : ""}
               onClick={() => selectTab("api")}
             >
@@ -367,6 +623,40 @@ export function SettingsCenter({
             >
               <Keyboard size={17} />
               <span>快捷键</span>
+              <ChevronRight size={14} />
+            </button>
+            {user.platformRole === "system_admin" && (
+              <button
+                type="button"
+                className="settings-admin-entry"
+                onClick={onOpenAdmin}
+              >
+                <ShieldCheck size={17} />
+                <span>后台管理</span>
+                <ChevronRight size={14} />
+              </button>
+            )}
+            <button
+              type="button"
+              className={
+                user.platformRole === "system_admin"
+                  ? "settings-account-entry"
+                  : "settings-account-entry settings-account-entry-first"
+              }
+              onClick={onOpenAccount}
+            >
+              <Building2 size={17} />
+              <span>账号与企业</span>
+              <ChevronRight size={14} />
+            </button>
+            <button
+              type="button"
+              className="settings-logout-entry"
+              style={{ marginTop: 12, color: "#dc2626" }}
+              onClick={onLogout}
+            >
+              <LogOut size={17} />
+              <span>退出登录</span>
               <ChevronRight size={14} />
             </button>
             <div className="settings-security-note">
@@ -395,8 +685,83 @@ export function SettingsCenter({
               <PersonalSettings
                 user={user}
                 onUserUpdate={onUserUpdate}
-                onOpenAccount={onOpenAccount}
               />
+            )}
+            {tab === "appearance" && (
+              <>
+                <div className="settings-section-heading">
+                  <div>
+                    <h3>界面风格</h3>
+                    <p>
+                      在白天与黑夜两套完整风格之间切换，画布、导航、页面、弹窗和表单会同步变化。
+                    </p>
+                  </div>
+                </div>
+                <div className="canvas-background-grid">
+                  <button
+                    type="button"
+                    className={
+                      preferences.canvasBackground === "day" ? "active" : ""
+                    }
+                    aria-pressed={preferences.canvasBackground === "day"}
+                    disabled={busy}
+                    onClick={() => {
+                      const next = {
+                        ...preferences,
+                        canvasBackground: "day" as const,
+                      };
+                      setPreferences(next);
+                      void savePreferences(next);
+                    }}
+                  >
+                    <span className="canvas-background-preview is-day">
+                      <i />
+                      <i />
+                    </span>
+                    <span className="canvas-background-label">
+                      <span>
+                        <Sun size={17} />
+                        <strong>白天</strong>
+                      </span>
+                      {preferences.canvasBackground === "day" && (
+                        <Check size={17} />
+                      )}
+                    </span>
+                    <small>明亮清晰的完整浅色界面</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      preferences.canvasBackground === "night" ? "active" : ""
+                    }
+                    aria-pressed={preferences.canvasBackground === "night"}
+                    disabled={busy}
+                    onClick={() => {
+                      const next = {
+                        ...preferences,
+                        canvasBackground: "night" as const,
+                      };
+                      setPreferences(next);
+                      void savePreferences(next);
+                    }}
+                  >
+                    <span className="canvas-background-preview is-night">
+                      <i />
+                      <i />
+                    </span>
+                    <span className="canvas-background-label">
+                      <span>
+                        <MoonStar size={17} />
+                        <strong>黑夜</strong>
+                      </span>
+                      {preferences.canvasBackground === "night" && (
+                        <Check size={17} />
+                      )}
+                    </span>
+                    <small>低亮沉浸的完整深色界面</small>
+                  </button>
+                </div>
+              </>
             )}
             {tab === "api" && !editorOpen && (
               <>
@@ -411,58 +776,46 @@ export function SettingsCenter({
                   <button
                     type="button"
                     className="primary-button"
+                    disabled={!canManageModels}
+                    title="添加 API"
                     onClick={openCreate}
                   >
                     <Plus size={16} /> 添加 API
                   </button>
                 </div>
-                <section className="model-usage-section" aria-label="近 30 天调用统计">
-                  <div className="model-usage-heading">
-                    <strong>近 30 天调用</strong>
-                    <span>
-                      {usageLoading
-                        ? "统计读取中…"
-                        : `重试 ${usage.retryCount} 次 · 备用切换 ${usage.fallbackCount} 次`}
-                    </span>
-                  </div>
-                  <div className="model-usage-grid">
-                    {(["text", "image", "video"] as const).map((kind) => {
-                      const item = usage[kind];
-                      return (
-                        <article key={kind} className={`is-${kind}`}>
-                          <span>
-                            {kind === "text"
-                              ? "文本"
-                              : kind === "image"
-                                ? "图片"
-                                : "视频"}
-                          </span>
-                          <strong>{item.total}</strong>
-                          <small>
-                            成功 {item.success} · 失败 {item.failure}
-                          </small>
-                        </article>
-                      );
-                    })}
-                  </div>
-                  <p>这里只统计调用次数与成功状态，不计算 Token、金额或第三方账单。</p>
-                </section>
                 <div className="api-connection-list">
                   {os.models.map((model) => (
-                    <article key={model.id} className="api-connection-card">
-                      <span className="api-provider-mark">
-                        {model.name.slice(0, 2).toUpperCase()}
-                      </span>
-                      <div>
+                    <article
+                      key={model.id}
+                      className={`api-connection-card ${
+                        model.enabled === false ? "is-disabled" : ""
+                      }`}
+                    >
+                      <div className="api-card-content">
                         <div className="api-card-title">
                           <strong>{model.name}</strong>
-                          <em className={`is-${model.state}`}>
-                            {model.state === "healthy"
-                              ? "已连接"
-                              : model.state === "checking"
-                                ? "检测中"
-                                : "待检测"}
-                          </em>
+                          <span
+                            className={`api-status-light ${
+                              model.state === "healthy"
+                                ? "is-healthy"
+                                : "is-unhealthy"
+                            }`}
+                            role="status"
+                            aria-label={
+                              model.state === "healthy"
+                                ? "连接正常"
+                                : model.state === "checking"
+                                  ? "正在检测连接"
+                                  : "连接异常或尚未通过检测"
+                            }
+                            title={
+                              model.state === "healthy"
+                                ? "连接正常"
+                                : model.state === "checking"
+                                  ? "正在检测连接"
+                                  : "连接异常或尚未通过检测"
+                            }
+                          />
                         </div>
                         <p>
                           {model.modelName || "未指定模型"} · {modelHost(model)}
@@ -476,10 +829,12 @@ export function SettingsCenter({
                             : model.credentialRef
                               ? `环境变量 ${model.credentialRef}`
                               : "未保存密钥"}
+                          {" · "}
+                          {model.accessScope === "workspace"
+                            ? "企业共享模型"
+                            : "仅个人模型"}
                         </small>
                         <div className="api-policy-summary">
-                          <span>优先级 {model.priority ?? 100}</span>
-                          <span>并发 {model.maxConcurrency ?? 2}</span>
                           <span>重试 {model.retryLimit ?? 3}</span>
                           <span>
                             熔断{" "}
@@ -489,29 +844,57 @@ export function SettingsCenter({
                                 ? "恢复检测"
                                 : "正常"}
                           </span>
-                          {model.fallbackModelId && (
-                            <span>
-                              备用{" "}
-                              {os.models.find(
-                                (candidate) =>
-                                  candidate.id === model.fallbackModelId,
-                              )?.name ?? "已配置"}
-                            </span>
-                          )}
+                          <span>{modelInputConstraintSummary(model)}</span>
                         </div>
                       </div>
-                      <div className="api-card-actions">
+                      <div className="api-card-top-actions">
                         <button
                           type="button"
-                          className="secondary-button"
-                          disabled={busy}
-                          onClick={() => void testConnection(model)}
+                          className={`switch-button api-card-switch ${
+                            model.enabled !== false ? "is-on" : ""
+                          }`}
+                          aria-pressed={model.enabled !== false}
+                          disabled={busy || !model.canManage}
+                          onClick={async () => {
+                            setBusy(true);
+                            setError("");
+                            setNotice("");
+                            setModelFeedback(null);
+                            try {
+                              await os.setModelEnabled(
+                                model.id,
+                                model.enabled === false,
+                              );
+                              setModelFeedback({
+                                modelId: model.id,
+                                message: `${model.name} 已${
+                                  model.enabled === false ? "启用" : "停用"
+                                }。`,
+                                tone: "success",
+                              });
+                            } catch (caught) {
+                              setModelFeedback({
+                                modelId: model.id,
+                                message: caught instanceof Error
+                                  ? caught.message
+                                  : "更新模型状态失败",
+                                tone: "error",
+                              });
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
                         >
-                          测试
+                          <i />
+                          {model.enabled === false ? "已停用" : "已启用"}
                         </button>
                         <IconButton
                           label={`编辑 ${model.name}`}
-                          disabled={busy || model.protocol === "generic-rest"}
+                          disabled={
+                            busy ||
+                            !model.canManage ||
+                            model.protocol === "generic-rest"
+                          }
                           onClick={() => openEdit(model)}
                         >
                           <Pencil size={15} />
@@ -519,11 +902,38 @@ export function SettingsCenter({
                         <IconButton
                           label={`删除 ${model.name}`}
                           danger
-                          disabled={busy}
+                          disabled={busy || !model.canManage}
                           onClick={() => void removeModel(model)}
                         >
                           <Trash2 size={15} />
                         </IconButton>
+                      </div>
+                      {modelFeedback?.modelId === model.id && (
+                        <div
+                          className={`api-card-feedback is-${modelFeedback.tone}`}
+                          role="status"
+                        >
+                          {modelFeedback.tone === "success" ? (
+                            <Check size={13} />
+                          ) : (
+                            <CircleAlert size={13} />
+                          )}
+                          <span>{modelFeedback.message}</span>
+                        </div>
+                      )}
+                      <div className="api-card-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={
+                            busy ||
+                            model.enabled === false ||
+                            !model.canManage
+                          }
+                          onClick={() => void testConnection(model)}
+                        >
+                          测试
+                        </button>
                       </div>
                     </article>
                   ))}
@@ -575,8 +985,19 @@ export function SettingsCenter({
                           protocol: provider.protocol,
                           baseUrl: provider.baseUrl ?? current.baseUrl,
                           modalities: provider.modalities,
-                          parameterSchema: provider.parameterSchema ?? {},
-                          uiSchema: provider.uiSchema ?? {},
+                          parameterSchema:
+                            provider.parameterSchema ??
+                            builtInModelParameterSchema(
+                              provider.protocol,
+                              provider.modalities[0] ?? "text",
+                            ),
+                            uiSchema: provider.uiSchema ?? {},
+                            inputConstraints:
+                              provider.inputConstraints ??
+                              defaultModelInputConstraints(
+                                provider.modalities[0] ?? "text",
+                                provider.protocol,
+                              ),
                           capabilityTags: provider.capabilityTags ?? [],
                         }));
                       }}
@@ -597,8 +1018,88 @@ export function SettingsCenter({
                 )}
 
                 <div className="settings-form-grid">
+                  <div className="settings-field">
+                    <span>模型类型</span>
+                    <select
+                      value={draft.modalities[0] ?? "text"}
+                      onChange={(event) =>
+                        setDraft((current) => {
+                          const kind = event.target.value as NodeKind;
+                          const protocol = protocolSupportsModelType(
+                            current.protocol,
+                            kind,
+                          )
+                            ? current.protocol
+                            : defaultProtocolForModelType(kind);
+                          const hasProvider =
+                            modelProtocolOptionsForType(kind).length > 0;
+                          return {
+                            ...current,
+                            ...(hasProvider
+                              ? protocolPreset(protocol, kind)
+                              : { name: "", modelName: "", baseUrl: "" }),
+                            protocol,
+                            modalities: [kind],
+                            parameterSchema: hasProvider
+                              ? builtInModelParameterSchema(protocol, kind)
+                              : { type: "object", properties: {} },
+                            uiSchema: {},
+                            inputConstraints: defaultModelInputConstraints(
+                              kind,
+                              protocol,
+                            ),
+                          };
+                        })
+                      }
+                    >
+                      <option value="text">文本 (Text)</option>
+                      <option value="image">图片 (Image)</option>
+                      <option value="video">视频 (Video)</option>
+                    </select>
+                  </div>
                   <label>
-                    连接名称
+                    调用协议 / 服务商
+                    <select
+                      value={
+                        compatibleProtocols.some(
+                          (item) => item.value === draft.protocol,
+                        )
+                          ? draft.protocol
+                          : ""
+                      }
+                      disabled={!compatibleProtocols.length}
+                      onChange={(event) =>
+                        setDraft((current) => {
+                          const protocol = event.target.value as ModelProtocol;
+                          return {
+                            ...current,
+                            ...protocolPreset(protocol, current.modalities[0] ?? "text"),
+                            protocol,
+                            parameterSchema: builtInModelParameterSchema(
+                              protocol,
+                              current.modalities[0] ?? "text",
+                            ),
+                            uiSchema: {},
+                            inputConstraints: defaultModelInputConstraints(
+                              current.modalities[0] ?? "text",
+                              protocol,
+                            ),
+                          };
+                        })
+                      }
+                    >
+                      {!compatibleProtocols.length && (
+                        <option value="">暂无可用视频模型</option>
+                      )}
+                      {compatibleProtocols.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    模型名称 (MODEL)
                     <input
                       required
                       value={draft.name}
@@ -608,29 +1109,11 @@ export function SettingsCenter({
                           name: event.target.value,
                         }))
                       }
-                      placeholder="例如：OpenAI、火山方舟"
+                      placeholder="例如：gemini-3.5-flash"
                     />
                   </label>
-                  <label>
-                    API 类型
-                    <select
-                      value={draft.protocol}
-                      onChange={(event) =>
-                        setDraft((current) => ({
-                          ...current,
-                          protocol: event.target.value as ModelProtocol,
-                        }))
-                      }
-                    >
-                      {protocols.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                   <label className="settings-span-two">
-                    API 连接地址
+                    接口地址 (API ENDPOINT)
                     <input
                       required
                       type="url"
@@ -641,8 +1124,11 @@ export function SettingsCenter({
                           baseUrl: event.target.value,
                         }))
                       }
-                      placeholder="https://api.example.com/v1"
+                      placeholder="https://api.example.com/v1/chat/completions"
                     />
+                    <small>
+                      请填写完整业务接口地址；系统将原样调用，不自动追加路径。
+                    </small>
                   </label>
                   <label>
                     模型 ID
@@ -659,7 +1145,7 @@ export function SettingsCenter({
                     />
                   </label>
                   <label>
-                    API Key
+                    密钥 (API KEY)
                     <input
                       type="password"
                       autoComplete="new-password"
@@ -675,38 +1161,6 @@ export function SettingsCenter({
                         editingId ? "留空则保留现有密钥" : "sk-••••••••"
                       }
                     />
-                  </label>
-                  <label>
-                    路由优先级
-                    <input
-                      type="number"
-                      min={1}
-                      max={1000}
-                      value={draft.priority ?? 100}
-                      onChange={(event) =>
-                        setDraft((current) => ({
-                          ...current,
-                          priority: Number(event.target.value),
-                        }))
-                      }
-                    />
-                    <small>数字越小越优先。</small>
-                  </label>
-                  <label>
-                    最大并发
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={draft.maxConcurrency ?? 2}
-                      onChange={(event) =>
-                        setDraft((current) => ({
-                          ...current,
-                          maxConcurrency: Number(event.target.value),
-                        }))
-                      }
-                    />
-                    <small>超过后进入技术限流，保护第三方接口。</small>
                   </label>
                   <label>
                     单连接重试次数
@@ -753,83 +1207,49 @@ export function SettingsCenter({
                       }
                     />
                   </label>
+                </div>
+
+                {selectedModelType !== "text" && (
+                  <ModelBuiltInOptions
+                    key={`${editingId ?? "new"}-${selectedModelType}-${draft.protocol}`}
+                    schema={draft.parameterSchema ?? {}}
+                    onChange={(parameterSchema) =>
+                      setDraft((current) => ({
+                        ...current,
+                        parameterSchema,
+                      }))
+                    }
+                  />
+                )}
+
+                <ModelInputConstraintEditor
+                  value={draft.inputConstraints}
+                  modelType={selectedModelType}
+                  protocol={draft.protocol}
+                  onChange={(inputConstraints) =>
+                    setDraft((current) => ({ ...current, inputConstraints }))
+                  }
+                />
+
+                <div className="settings-form-grid settings-access-scope-row">
                   <label>
-                    备用模型
+                    使用权限
                     <select
-                      value={draft.fallbackModelId ?? ""}
+                      value={draft.accessScope ?? "personal"}
                       onChange={(event) =>
                         setDraft((current) => ({
                           ...current,
-                          fallbackModelId: event.target.value || null,
+                          accessScope: event.target.value as
+                            | "personal"
+                            | "workspace",
                         }))
                       }
                     >
-                      <option value="">自动选择同类型健康模型</option>
-                      {os.models
-                        .filter(
-                          (model) =>
-                            model.id !== editingId &&
-                            model.modalities.some((kind) =>
-                              draft.modalities.includes(kind),
-                            ),
-                        )
-                        .map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.name} · {model.modelName}
-                          </option>
-                        ))}
+                      <option value="personal">仅个人</option>
+                      <option value="workspace">所在企业</option>
                     </select>
                   </label>
                 </div>
-
-                <fieldset className="modality-picker">
-                  <legend>模型能力</legend>
-                  {(["text", "image", "video", "audio", "document"] as NodeKind[]).map((kind) => (
-                    <label key={kind}>
-                      <input
-                        type="checkbox"
-                        checked={draft.modalities.includes(kind)}
-                        onChange={() => toggleModality(kind)}
-                      />
-                      {kind === "text"
-                        ? "文本"
-                        : kind === "image"
-                          ? "图片"
-                          : "视频"}
-                    </label>
-                  ))}
-                </fieldset>
-
-                <label className="settings-model-tags">
-                  模型能力标签
-                  <input
-                    value={(draft.capabilityTags ?? []).join(", ")}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        capabilityTags: event.target.value
-                          .split(/[,，]/)
-                          .map((item) => item.trim().toLowerCase())
-                          .filter(Boolean),
-                      }))
-                    }
-                    placeholder="例如：vision, long-context, image-edit"
-                  />
-                  <small>Skill 可以使用这些标签筛选兼容模型。</small>
-                </label>
-
-                <SchemaOptionBuilder
-                  title="模型专属节点选项"
-                  schema={draft.parameterSchema}
-                  uiSchema={draft.uiSchema}
-                  onChange={(parameterSchema, uiSchema) =>
-                    setDraft((current) => ({
-                      ...current,
-                      parameterSchema,
-                      uiSchema,
-                    }))
-                  }
-                />
 
                 <footer className="settings-form-actions">
                   <button
@@ -842,7 +1262,7 @@ export function SettingsCenter({
                   <button
                     type="submit"
                     className="primary-button"
-                    disabled={busy}
+                    disabled={busy || !compatibleProtocols.length}
                   >
                     <Save size={15} />
                     {busy ? "保存中…" : "保存连接"}

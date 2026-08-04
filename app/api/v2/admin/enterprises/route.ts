@@ -128,7 +128,7 @@ export async function PATCH(request: Request) {
          VALUES (?, ?, ?)`,
         [
           workspaceId,
-          `${application.organizationName}工作空间`,
+          `${application.organizationName}企业数据`,
           application.applicantId,
         ],
       );
@@ -151,7 +151,7 @@ export async function PATCH(request: Request) {
         [
           canvasId,
           projectId,
-          JSON.stringify({ x: 0, y: 0, zoom: 92 }),
+          JSON.stringify({ x: 0, y: 0, zoom: 100 }),
           application.applicantId,
         ],
       );

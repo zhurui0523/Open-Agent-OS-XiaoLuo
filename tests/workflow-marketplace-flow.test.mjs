@@ -7,8 +7,13 @@ async function source(path) {
 }
 
 test("defines material, plugin, Skill execution, and result node contracts", async () => {
-  const { portsForNode, validatePortCardinality } =
+  const {
+    portsForNode,
+    validateEdgePorts,
+    validatePortCardinality,
+  } =
     await import("../app/lib/node-ports.ts");
+  const { compileWorkflow } = await import("../app/lib/workflow-kernel.ts");
 
   const material = {
     id: "material",
@@ -33,7 +38,55 @@ test("defines material, plugin, Skill execution, and result node contracts", asy
   assert.equal(portsForNode(material, "output")[0].id, "material");
   assert.equal(portsForNode(plugin, "input")[0].cardinality, "many");
   assert.equal(portsForNode(plugin, "output")[0].cardinality, "many");
-  assert.equal(portsForNode(result, "output").length, 0);
+  assert.deepEqual(portsForNode(result, "output"), [
+    {
+      id: "result_output",
+      label: "结果输出",
+      direction: "output",
+      dataTypes: ["image"],
+      cardinality: "many",
+    },
+  ]);
+  assert.equal(
+    portsForNode(
+      {
+        ...result,
+        status: "succeeded",
+        result: "generated image",
+        parameters: {
+          ...result.parameters,
+          kernelOutput: { type: "image", assetUrl: "/generated.png" },
+        },
+      },
+      "output",
+    )[0].id,
+    "result_output",
+  );
+  assert.equal(
+    validateEdgePorts(
+      {
+        id: "result_to_plugin",
+        source: "result",
+        target: "plugin",
+        sourcePort: "result_output",
+        targetPort: "materials",
+        dataType: "image",
+      },
+      result,
+      plugin,
+    ),
+    null,
+  );
+  assert.deepEqual(
+    compileWorkflow(
+      [{ id: "execute" }, { id: "result" }, { id: "plugin" }],
+      [
+        { id: "execute_to_result", source: "execute", target: "result" },
+        { id: "result_to_plugin", source: "result", target: "plugin" },
+      ],
+    ).levels,
+    [["execute"], ["result"], ["plugin"]],
+  );
   assert.equal(
     validatePortCardinality(
       { target: "result", targetPort: "result" },
@@ -189,7 +242,15 @@ test("publishes a privacy-safe, installable Workflow snapshot", async () => {
 });
 
 test("connects Workflow marketplace UI and isolated plugin execution", async () => {
-  const [marketplace, installer, canvas, capabilities, worker, migration] =
+  const [
+    marketplace,
+    installer,
+    canvas,
+    capabilities,
+    worker,
+    migration,
+    collaborationMigration,
+  ] =
     await Promise.all([
       source("app/api/v2/workflows/marketplace/route.ts"),
       source("app/api/v2/workflows/install/route.ts"),
@@ -197,16 +258,55 @@ test("connects Workflow marketplace UI and isolated plugin execution", async () 
       source("app/components/capabilities-view.tsx"),
       source("app/lib/kernel-worker.ts"),
       source("drizzle/0012_workflow_marketplace_node_roles.sql"),
+      source("drizzle/0014_canvas_enterprise_live_shares.sql"),
     ]);
 
   assert.match(marketplace, /sanitizeWorkflowGraph/);
   assert.match(marketplace, /workflow\.version\.published/);
+  assert.match(marketplace, /organizationScopes/);
+  assert.match(marketplace, /organization_live/);
+  assert.match(marketplace, /canvasEnterpriseShares/);
   assert.match(installer, /workflowIntegrity/);
   assert.match(installer, /workflow\.installed/);
+  assert.match(installer, /organizationWorkspaceIds/);
   assert.match(canvas, /发布到能力商城/);
+  assert.match(canvas, /所有用户（独立副本）/);
+  assert.match(canvas, /所在企业用户（实时协作）/);
+  assert.match(canvas, /双方后续修改互不影响/);
   assert.match(capabilities, /安装到当前项目/);
   assert.match(worker, /executeIsolatedPackage/);
   assert.match(worker, /batch-each/);
   assert.match(migration, /xiaoluo_v2_workflow_versions/);
   assert.match(migration, /node_role/);
+  assert.match(
+    collaborationMigration,
+    /xiaoluo_v2_canvas_enterprise_shares/,
+  );
+});
+
+test("only system administrators can delete shared Workflow canvases", async () => {
+  const [marketplace, capabilities, styles] = await Promise.all([
+    source("app/api/v2/workflows/marketplace/route.ts"),
+    source("app/components/capabilities-view.tsx"),
+    source("app/globals.css"),
+  ]);
+
+  assert.match(marketplace, /export async function DELETE\(request: Request\)/);
+  assert.match(marketplace, /user\.platformRole !== "system_admin"/);
+  assert.match(marketplace, /仅系统管理员可以删除共享画布/);
+  assert.match(marketplace, /\.delete\(workflowInstallations\)/);
+  assert.match(marketplace, /\.delete\(workflowVersions\)/);
+  assert.match(marketplace, /\.delete\(workflowListings\)/);
+  assert.match(marketplace, /eventType: "workflow\.deleted"/);
+  assert.match(marketplace, /retainedInstalledCanvases: true/);
+  assert.match(capabilities, /async function deleteWorkflow/);
+  assert.match(capabilities, /确认删除共享画布/);
+  assert.match(capabilities, /tone: "danger"/);
+  assert.match(capabilities, /\{isSystemAdmin && \(/);
+  assert.match(capabilities, /className="workflow-admin-delete"/);
+  assert.match(capabilities, /aria-label=\{`删除画布 \$\{item\.title\}`\}/);
+  assert.match(capabilities, /<span>删除画布<\/span>/);
+  assert.doesNotMatch(capabilities, /Workflow 分享链接已复制/);
+  assert.doesNotMatch(capabilities, /current\.searchParams\.set\("workflow", item\.id\)/);
+  assert.match(styles, /\.workflow-admin-delete \{/);
 });

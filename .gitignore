@@ -43,3 +43,15 @@ next-env.d.ts
 /.pnpm-store/
 /outputs/
 /work/
+/.local-runtime/
+/.local-data/
+/.local-services/
+/.local-logs/
+/.next-stale-*/
+/.tmp-*/
+/.tmp-*
+/.codex-local-probe
+/.local-mysql-diagnostic*.txt
+/.local-processes-before.txt
+/_codex_local_diag.ps1
+/mysql-local-status.png

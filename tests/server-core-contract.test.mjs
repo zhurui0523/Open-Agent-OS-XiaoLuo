@@ -33,7 +33,6 @@ test("enforces workspace scope on extension model runtime and asset APIs", async
     "app/api/v2/registry/route.ts",
     "app/api/v2/runtime/invoke/route.ts",
     "app/api/v2/tasks/route.ts",
-    "app/api/v2/collections/route.ts",
     "app/api/v2/files/bulk/route.ts",
     "app/api/v2/files/reconcile/route.ts",
   ];
@@ -121,18 +120,80 @@ test("routes model calls with retry fallback circuit breaking and async jobs", a
   assert.match(migration, /model_execution_audits/);
 });
 
-test("stores provider credentials as encrypted server-side references", async () => {
-  const [vault, models, schema] = await Promise.all([
-    source("app/lib/secret-vault.ts"),
+test("preserves exact provider endpoints and exposes connection failure details", async () => {
+  const [endpoints, modelRoute, settings] = await Promise.all([
+    source("app/lib/model-endpoints.ts"),
     source("app/api/v2/models/route.ts"),
-    source("db/schema.ts"),
+    source("app/components/settings-center.tsx"),
   ]);
+
+  assert.match(endpoints, /return baseUrl/);
+  assert.doesNotMatch(modelRoute, /baseUrl:\s*baseUrl\.replace/);
+  assert.match(settings, /message: result\.message/);
+  assert.match(settings, /caught instanceof Error \? caught\.message/);
+});
+
+test("renders API connection health as lights without squeezing card content", async () => {
+  const [settings, styles] = await Promise.all([
+    source("app/components/settings-center.tsx"),
+    source("app/globals.css"),
+  ]);
+
+  assert.match(settings, /api-status-light/);
+  assert.match(settings, /is-healthy/);
+  assert.match(settings, /is-unhealthy/);
+  assert.doesNotMatch(settings, /api-provider-mark/);
+  assert.match(styles, /\.api-status-light\.is-healthy/);
+  assert.match(styles, /\.api-status-light\.is-unhealthy/);
+  assert.doesNotMatch(styles, /\.api-provider-mark/);
+  assert.match(styles, /\.api-card-feedback\s*\{[\s\S]*?grid-area:\s*feedback/);
+  assert.match(styles, /\.api-card-title strong\s*\{[\s\S]*?white-space:\s*nowrap/);
+});
+
+test("keeps model connection cards in a stable order after status checks", async () => {
+  const registry = await source("app/api/v2/registry/route.ts");
+
+  assert.match(
+    registry,
+    /\.from\(modelConnections\)[\s\S]*?\.orderBy\(\s*asc\(modelConnections\.priority\),\s*asc\(modelConnections\.createdAt\),\s*asc\(modelConnections\.id\)/,
+  );
+  assert.doesNotMatch(
+    registry,
+    /\.from\(modelConnections\)[\s\S]*?\.orderBy\(\s*asc\(modelConnections\.priority\),\s*desc\(modelConnections\.updatedAt\)/,
+  );
+});
+
+test("stores provider credentials as encrypted server-side references", async () => {
+  const [vault, models, secrets, schema, migration, localEnvironment] =
+    await Promise.all([
+      source("app/lib/secret-vault.ts"),
+      source("app/api/v2/models/route.ts"),
+      source("app/api/v2/secrets/route.ts"),
+      source("db/schema.ts"),
+      source("drizzle/0017_multi_user_secret_vault.sql"),
+      source("scripts/local-hybrid-env.mjs"),
+    ]);
 
   assert.match(vault, /AES-GCM/);
   assert.match(vault, /SECRET_ENCRYPTION_KEY/);
+  assert.doesNotMatch(vault, /serverRuntimeConfig/);
+  assert.doesNotMatch(vault, /database\.mysql\.password/);
+  assert.match(vault, /eq\(secretRefs\.createdBy, input\.userId\)/);
+  assert.match(vault, /eq\(secretRefs\.purpose, purpose\)/);
   assert.match(models, /saveSecret/);
+  assert.match(models, /assertOwnedSecretReference/);
+  assert.match(models, /purpose: "model_api_key"/);
   assert.doesNotMatch(models, /apiKey:\s*payload\.apiKey/);
   assert.match(schema, /secretRefId/);
+  assert.match(schema, /secret_refs_owner_purpose_name_unique/);
+  assert.match(
+    schema,
+    /table\.workspaceId,[\s\S]*?table\.createdBy,[\s\S]*?table\.purpose,[\s\S]*?table\.name/,
+  );
+  assert.match(secrets, /eq\(secretRefs\.createdBy, user\.id\)/);
+  assert.match(secrets, /isSecretReferencedByModel/);
+  assert.match(migration, /purpose.*model_api_key/s);
+  assert.match(localEnvironment, /\.env\.local-dev 缺少 SECRET_ENCRYPTION_KEY/);
 });
 
 test("versions packages and removes them through lifecycle state", async () => {
@@ -163,4 +224,22 @@ test("ships all eight frozen baseline inventories", async () => {
   await Promise.all(
     files.map((file) => access(new URL(`docs/baseline/${file}`, root))),
   );
+});
+
+test("restarts a local dev server whose health route works but page rendering fails", async () => {
+  const [launcher, localEnvironment] = await Promise.all([
+    source("scripts/start-local-detached.mjs"),
+    source("scripts/local-hybrid-env.mjs"),
+  ]);
+
+  assert.match(launcher, /node_modules\/next\/dist\/bin\/next/);
+  assert.doesNotMatch(launcher, /node_modules\/vinext\/dist\/cli/);
+  assert.match(launcher, /local-hybrid-env\.mjs/);
+  assert.match(localEnvironment, /DB_HOST: "127\.0\.0\.1"/);
+  assert.match(localEnvironment, /STORAGE_DRIVER: "oss"/);
+  assert.match(launcher, /healthResponse, pageResponse/);
+  assert.match(launcher, /api\/v2\/health\/live/);
+  assert.match(launcher, /fetch\("http:\/\/127\.0\.0\.1:3001\/"/);
+  assert.match(launcher, /return healthResponse\.ok && pageResponse\.ok/);
+  assert.match(launcher, /restart: true/);
 });

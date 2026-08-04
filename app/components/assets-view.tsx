@@ -7,8 +7,6 @@ import {
   Download,
   File as FileIcon,
   FileText,
-  Folder,
-  FolderPlus,
   Grid2X2,
   HardDrive,
   Image as ImageIcon,
@@ -17,32 +15,26 @@ import {
   RotateCcw,
   Search,
   Star,
-  Tag,
   Trash2,
-  Upload,
   Video,
   X,
-  ListChecks,
 } from "lucide-react";
 import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import type {
   AssetKind,
   FileSystemAsset,
-  FileSystemFolder,
 } from "../types";
 import {
-  SUPPORTED_FILE_ACCEPT,
   SUPPORTED_FILE_GROUPS,
 } from "../lib/file-formats";
 import { AssetContentPreview } from "./asset-content-preview";
+import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
-import { TaskCenter } from "./task-center";
 
 const filters: Array<{ id: "all" | AssetKind; label: string }> = [
   { id: "all", label: "全部" },
@@ -64,42 +56,6 @@ const typeLabel: Record<AssetKind, string> = {
   other: "文件",
 };
 
-interface AssetVersion {
-  id: string;
-  version: number;
-  mimeType: string;
-  size: number;
-  contentHash: string;
-  sourceType: string;
-  createdAt: string;
-}
-
-interface AssetLineage {
-  relations: Array<{
-    id: string;
-    relationType: string;
-    fromAssetId: string;
-    toAssetId: string;
-  }>;
-  generationJob: {
-    id: string;
-    status: string;
-    provider: string;
-  } | null;
-  run: {
-    id: string;
-    canvasId: string | null;
-    status: string;
-  } | null;
-}
-
-interface AssetCollection {
-  id: string;
-  name: string;
-  description: string;
-  assetIds: string[];
-}
-
 async function requestJson<T>(
   workspaceId: string,
   url: string,
@@ -112,6 +68,9 @@ async function requestJson<T>(
     error?: string;
   };
   if (!response.ok) {
+    if (response.status === 413) {
+      throw new Error("上传内容超过传输上限，单个文件最大支持 100 MB");
+    }
     throw new Error(payload.error ?? `文件系统请求失败：${response.status}`);
   }
   return payload;
@@ -184,81 +143,54 @@ function AssetMedia({
 
 export function AssetsView({
   workspaceId,
-  onOpenCanvas,
   onAddToCanvas,
 }: {
   workspaceId: string;
-  onOpenCanvas?: (canvasId: string) => void | Promise<void>;
   onAddToCanvas?: (asset: FileSystemAsset) => void | Promise<void>;
 }) {
-  const uploadRef = useRef<HTMLInputElement>(null);
-  const versionRef = useRef<HTMLInputElement>(null);
+  const dialog = useAppDialog();
   const [assets, setAssets] = useState<FileSystemAsset[]>([]);
-  const [folders, setFolders] = useState<FileSystemFolder[]>([]);
-  const [folderId, setFolderId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | AssetKind>("all");
   const [query, setQuery] = useState("");
   const [trash, setTrash] = useState(false);
   const [grid, setGrid] = useState(true);
   const [selected, setSelected] = useState<FileSystemAsset | null>(null);
-  const [versions, setVersions] = useState<AssetVersion[]>([]);
-  const [lineage, setLineage] = useState<AssetLineage | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [dragging, setDragging] = useState(false);
-  const [section, setSection] = useState<"files" | "tasks">("files");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [favoriteOnly, setFavoriteOnly] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [sourceFilter, setSourceFilter] = useState("all");
   const [sort, setSort] = useState<"updated" | "name" | "size">("updated");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [collections, setCollections] = useState<AssetCollection[]>([]);
-  const [collectionId, setCollectionId] = useState("all");
+  const [formatsOpen, setFormatsOpen] = useState(false);
 
-  const currentFolder = folders.find((folder) => folder.id === folderId) ?? null;
-  const visibleFolders = useMemo(
-    () =>
-      folders.filter(
-        (folder) => (folder.parentId ?? null) === folderId,
-      ),
-    [folderId, folders],
-  );
+  useEffect(() => {
+    if (!formatsOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFormatsOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [formatsOpen]);
+
   const totalBytes = assets.reduce((sum, asset) => sum + asset.size, 0);
-  const sourceOptions = useMemo(
-    () => [...new Set(assets.map((asset) => asset.sourceType))].sort(),
-    [assets],
-  );
   const visibleAssets = useMemo(() => {
-    const collection = collections.find((item) => item.id === collectionId);
     const filtered = assets.filter(
-      (asset) =>
-        (!collection || collection.assetIds.includes(asset.id)) &&
-        (statusFilter === "all" || asset.status === statusFilter) &&
-        (sourceFilter === "all" || asset.sourceType === sourceFilter),
+      (asset) => statusFilter === "all" || asset.status === statusFilter,
     );
     return [...filtered].sort((first, second) => {
       if (sort === "name") return first.name.localeCompare(second.name, "zh-CN");
       if (sort === "size") return second.size - first.size;
       return Date.parse(second.updatedAt) - Date.parse(first.updatedAt);
     });
-  }, [assets, collectionId, collections, sort, sourceFilter, statusFilter]);
-
-  const loadCollections = useCallback(async () => {
-    const payload = await requestJson<{ collections: AssetCollection[] }>(
-      workspaceId,
-      "/api/v2/collections",
-    );
-    setCollections(payload.collections);
-  }, [workspaceId]);
+  }, [assets, sort, statusFilter]);
 
   const loadAssets = useCallback(async (cursor?: string) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (query.trim()) params.set("q", query.trim());
-      else if (!trash) params.set("folder", folderId ?? "root");
       if (filter !== "all") params.set("kind", filter);
       if (trash) params.set("trash", "1");
       if (favoriteOnly) params.set("favorite", "1");
@@ -280,206 +212,12 @@ export function AssetsView({
     } finally {
       setLoading(false);
     }
-  }, [favoriteOnly, filter, folderId, query, trash, workspaceId]);
-
-  const loadFolders = useCallback(async () => {
-    try {
-      const payload = await requestJson<{ folders: FileSystemFolder[] }>(
-        workspaceId,
-        "/api/v2/folders",
-      );
-      setFolders(payload.folders);
-    } catch (loadError) {
-      setError(
-        loadError instanceof Error ? loadError.message : "文件夹加载失败",
-      );
-    }
-  }, [workspaceId]);
-
-  useEffect(() => {
-    let active = true;
-    void requestJson<{ folders: FileSystemFolder[] }>(
-      workspaceId,
-      "/api/v2/folders",
-    )
-      .then((payload) => {
-        if (active) setFolders(payload.folders);
-      })
-      .catch((loadError) => {
-        if (active) {
-          setError(
-            loadError instanceof Error
-              ? loadError.message
-              : "文件夹加载失败",
-          );
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [workspaceId]);
-
-  useEffect(() => {
-    let active = true;
-    void requestJson<{ collections: AssetCollection[] }>(
-      workspaceId,
-      "/api/v2/collections",
-    )
-      .then((payload) => {
-        if (active) setCollections(payload.collections);
-      })
-      .catch((cause) => {
-        if (active) {
-          setError(cause instanceof Error ? cause.message : "集合加载失败");
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [workspaceId]);
+  }, [favoriteOnly, filter, query, trash, workspaceId]);
 
   useEffect(() => {
     const timeout = setTimeout(() => void loadAssets(), 160);
     return () => clearTimeout(timeout);
   }, [loadAssets]);
-
-  useEffect(() => {
-    if (!selected) return;
-    void Promise.all([
-      requestJson<{ versions: AssetVersion[] }>(
-        workspaceId,
-        `/api/v2/files/versions?assetId=${encodeURIComponent(selected.id)}`,
-      ).catch(() => ({ versions: [] })),
-      requestJson<AssetLineage>(
-        workspaceId,
-        `/api/v2/files/lineage?assetId=${encodeURIComponent(selected.id)}`,
-      ).catch(() => null),
-    ]).then(([versionPayload, lineagePayload]) => {
-      setVersions(versionPayload.versions);
-      setLineage(lineagePayload);
-    });
-  }, [selected, workspaceId]);
-
-  async function uploadFiles(files: FileList | File[]) {
-    const list = Array.from(files);
-    if (!list.length) return;
-    setBusy(`正在上传 1/${list.length}`);
-    setError("");
-    try {
-      for (let index = 0; index < list.length; index += 1) {
-        setBusy(`正在上传 ${index + 1}/${list.length}`);
-        const form = new FormData();
-        form.set("file", list[index]);
-        if (folderId) form.set("folderId", folderId);
-        form.set("sourceType", "asset-manager-upload");
-        await requestJson(workspaceId, "/api/v2/files", {
-          method: "POST",
-          body: form,
-        });
-      }
-      await loadAssets();
-    } catch (uploadError) {
-      setError(
-        uploadError instanceof Error ? uploadError.message : "文件上传失败",
-      );
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function createFolder() {
-    const name = window.prompt("新文件夹名称");
-    if (!name?.trim()) return;
-    try {
-      await requestJson(workspaceId, "/api/v2/folders", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, parentId: folderId }),
-      });
-      await loadFolders();
-    } catch (folderError) {
-      setError(
-        folderError instanceof Error ? folderError.message : "新建文件夹失败",
-      );
-    }
-  }
-
-  async function createCollection() {
-    const name = window.prompt("新集合名称")?.trim();
-    if (!name) return;
-    await requestJson(workspaceId, "/api/v2/collections", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ workspaceId, name }),
-    });
-    await loadCollections();
-  }
-
-  async function addSelectionToCollection() {
-    const target = collectionId === "all"
-      ? window.prompt(
-          `输入集合 ID：\n${collections.map((item) => `${item.name}: ${item.id}`).join("\n")}`,
-        )?.trim()
-      : collectionId;
-    if (!target) return;
-    setBusy(`正在加入集合`);
-    try {
-      await Promise.all(
-        [...selectedIds].map((assetId) =>
-          requestJson(workspaceId, "/api/v2/collections", {
-            method: "PATCH",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              workspaceId,
-              collectionId: target,
-              assetId,
-              action: "add",
-            }),
-          }),
-        ),
-      );
-      await loadCollections();
-      setSelectedIds(new Set());
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function renameFolder(folder: FileSystemFolder) {
-    const name = window.prompt("重命名文件夹", folder.name);
-    if (!name?.trim() || name.trim() === folder.name) return;
-    setBusy("正在重命名文件夹");
-    try {
-      await requestJson(workspaceId, "/api/v2/folders", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: folder.id, name: name.trim() }),
-      });
-      await loadFolders();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "文件夹重命名失败");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function deleteFolder(folder: FileSystemFolder) {
-    if (!window.confirm(`删除空文件夹“${folder.name}”？`)) return;
-    setBusy("正在删除文件夹");
-    try {
-      await requestJson(
-        workspaceId,
-        `/api/v2/folders?id=${encodeURIComponent(folder.id)}`,
-        { method: "DELETE" },
-      );
-      if (folderId === folder.id) setFolderId(folder.parentId);
-      await loadFolders();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "文件夹删除失败");
-    } finally {
-      setBusy("");
-    }
-  }
 
   async function updateAsset(
     asset: FileSystemAsset,
@@ -508,13 +246,24 @@ export function AssetsView({
   }
 
   async function renameAsset(asset: FileSystemAsset) {
-    const name = window.prompt("重命名文件", asset.name);
+    const name = await dialog.prompt("修改文件的显示名称。", {
+      title: "重命名文件",
+      inputLabel: "文件名称",
+      defaultValue: asset.name,
+      confirmText: "保存名称",
+    });
     if (!name?.trim() || name.trim() === asset.name) return;
     await updateAsset(asset, { name });
   }
 
   async function permanentlyDelete(asset: FileSystemAsset) {
-    if (!window.confirm(`永久删除“${asset.name}”？此操作不能撤销。`)) return;
+    if (
+      !(await dialog.confirm(`“${asset.name}”将被永久删除，此操作不能撤销。`, {
+        title: "永久删除文件",
+        confirmText: "永久删除",
+        tone: "danger",
+      }))
+    ) return;
     setBusy("正在永久删除");
     try {
       await requestJson(
@@ -533,31 +282,8 @@ export function AssetsView({
     }
   }
 
-  async function uploadVersion(file: File) {
-    if (!selected) return;
-    setBusy("正在创建新版本");
-    try {
-      const form = new FormData();
-      form.set("assetId", selected.id);
-      form.set("file", file);
-      const payload = await requestJson<{ asset: FileSystemAsset }>(
-        workspaceId,
-        "/api/v2/files/versions",
-        { method: "POST", body: form },
-      );
-      setSelected(payload.asset);
-      await loadAssets();
-    } catch (versionError) {
-      setError(
-        versionError instanceof Error ? versionError.message : "版本上传失败",
-      );
-    } finally {
-      setBusy("");
-    }
-  }
-
   async function bulkUpdate(
-    action: "trash" | "restore" | "move" | "favorite" | "tags",
+    action: "trash" | "restore" | "favorite" | "tags",
     extra: Record<string, unknown> = {},
   ) {
     const ids = [...selectedIds];
@@ -593,103 +319,28 @@ export function AssetsView({
     });
   }
 
-  if (section === "tasks") {
-    return (
-      <TaskCenter
-        workspaceId={workspaceId}
-        onBack={() => setSection("files")}
-      />
-    );
-  }
-
   return (
     <section
-      className={`content-view assets-view file-system-view ${dragging ? "is-dragging" : ""}`}
+      className="content-view assets-view file-system-view"
       aria-label="AI 文件系统"
-      onDragEnter={(event) => {
-        event.preventDefault();
-        setDragging(true);
-      }}
-      onDragOver={(event) => event.preventDefault()}
-      onDragLeave={(event) => {
-        if (event.currentTarget === event.target) setDragging(false);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDragging(false);
-        void uploadFiles(event.dataTransfer.files);
-      }}
     >
       <header className="content-header file-system-header">
         <div>
           <span className="eyebrow">ASSET KERNEL · VFS</span>
           <h1>AI 文件系统</h1>
-          <p>文件、版本、来源和节点结果统一使用 asset:// 地址管理。</p>
-        </div>
-        <div className="file-header-actions">
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => setSection("tasks")}
-          >
-            <ListChecks size={16} /> 任务中心
-          </button>
-          <button type="button" className="secondary-button" onClick={() => void createFolder()}>
-            <FolderPlus size={16} /> 新建文件夹
-          </button>
-          <button type="button" className="secondary-button" onClick={() => void createCollection()}>
-            <FolderPlus size={16} /> 新建集合
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => uploadRef.current?.click()}
-          >
-            <Upload size={16} /> 上传文件
-          </button>
         </div>
       </header>
 
       <div className="file-system-stats">
         <span><HardDrive size={15} /> 当前视图 {assets.length} 个文件</span>
         <span>{formatBytes(totalBytes)}</span>
-        <span>内容哈希去重</span>
-        <span>版本与血缘已启用</span>
-      </div>
-
-      <div className="file-breadcrumbs">
-        <button type="button" onClick={() => setFolderId(null)}>
-          文件系统
-        </button>
-        {currentFolder && (
-          <>
-            <ChevronRight size={14} />
-            <strong>{currentFolder.name}</strong>
-          </>
-        )}
-      </div>
-
-      <div className="collection-tabs" role="tablist" aria-label="资产集合">
         <button
           type="button"
-          role="tab"
-          aria-selected={collectionId === "all"}
-          onClick={() => setCollectionId("all")}
+          className="supported-formats-chip"
+          onClick={() => setFormatsOpen(true)}
         >
-          全部集合
+          支持格式
         </button>
-        {collections.map((collection) => (
-          <button
-            type="button"
-            role="tab"
-            key={collection.id}
-            aria-selected={collectionId === collection.id}
-            className={collectionId === collection.id ? "is-active" : ""}
-            onClick={() => setCollectionId(collection.id)}
-          >
-            {collection.name} · {collection.assetIds.length}
-          </button>
-        ))}
       </div>
 
       <div className="asset-toolbar file-toolbar">
@@ -759,13 +410,6 @@ export function AssetsView({
           </select>
         </label>
         <label>
-          来源
-          <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
-            <option value="all">全部</option>
-            {sourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
-          </select>
-        </label>
-        <label>
           排序
           <select value={sort} onChange={(event) => setSort(event.target.value as "updated" | "name" | "size")}>
             <option value="updated">最近更新</option>
@@ -797,8 +441,15 @@ export function AssetsView({
               <button type="button" onClick={() => void bulkUpdate("favorite", { favorite: true })}>收藏</button>
               <button
                 type="button"
-                onClick={() => {
-                  const raw = window.prompt("批量设置标签（使用逗号分隔）", "");
+                onClick={async () => {
+                  const raw = await dialog.prompt(
+                    "多个标签请使用逗号分隔。",
+                    {
+                      title: "批量设置标签",
+                      inputLabel: "标签",
+                      confirmText: "保存标签",
+                    },
+                  );
                   if (raw !== null) {
                     void bulkUpdate("tags", {
                       tags: raw.split(",").map((tag) => tag.trim()).filter(Boolean),
@@ -809,16 +460,6 @@ export function AssetsView({
                 设置标签
               </button>
               <button type="button" onClick={bulkDownload}>批量下载</button>
-              <button type="button" onClick={() => void addSelectionToCollection()}>加入集合</button>
-              <button
-                type="button"
-                onClick={() => {
-                  const folder = window.prompt("移动到文件夹 ID（留空移到根目录）", "");
-                  if (folder !== null) void bulkUpdate("move", { folderId: folder.trim() || null });
-                }}
-              >
-                移动
-              </button>
               <button type="button" onClick={() => void bulkUpdate("trash")}>移到回收站</button>
             </>
           )}
@@ -829,28 +470,6 @@ export function AssetsView({
 
       {error && <div className="file-system-error" role="alert">{error}</div>}
       {busy && <div className="file-system-busy">{busy}</div>}
-
-      {!trash && !query && filter === "all" && visibleFolders.length > 0 && (
-        <div className="folder-grid" aria-label="文件夹">
-          {visibleFolders.map((folder) => (
-            <article key={folder.id} className="folder-card">
-              <button type="button" onClick={() => setFolderId(folder.id)}>
-                <span><Folder size={22} fill="currentColor" /></span>
-                <strong>{folder.name}</strong>
-                <ChevronRight size={15} />
-              </button>
-              <div className="folder-card-actions">
-                <button type="button" onClick={() => void renameFolder(folder)}>
-                  重命名
-                </button>
-                <button type="button" onClick={() => void deleteFolder(folder)}>
-                  删除
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
 
       <div className={`asset-grid file-grid ${grid ? "" : "is-list"}`}>
         {visibleAssets.map((asset) => (
@@ -904,7 +523,6 @@ export function AssetsView({
                 {asset.tags.slice(0, 3).map((tag) => (
                   <span key={tag}>{tag}</span>
                 ))}
-                {!asset.tags.length && <span>{asset.sourceType}</span>}
               </div>
               <small>{formatDate(asset.updatedAt)}</small>
             </div>
@@ -923,70 +541,52 @@ export function AssetsView({
       )}
 
       {!loading && !visibleAssets.length && (
-        <div className="empty-state file-empty-state">
-          {trash ? <Trash2 size={30} /> : <Upload size={30} />}
-          <h2>{trash ? "回收站为空" : "这里还没有文件"}</h2>
-          <p>
-            {trash
-              ? "删除的文件会先保留在这里，直到永久删除。"
-              : "上传文件或把文件拖到这里，文件内核会自动生成版本和内容哈希。"}
-          </p>
-          {!trash && (
-            <button type="button" className="primary-button" onClick={() => uploadRef.current?.click()}>
-              <Upload size={16} /> 上传第一个文件
-            </button>
-          )}
-        </div>
+        <div className="file-empty-state" aria-label="当前没有文件" />
       )}
 
       {loading && <div className="file-loading">正在读取文件索引…</div>}
 
-      <input
-        ref={uploadRef}
-        type="file"
-        multiple
-        accept={SUPPORTED_FILE_ACCEPT}
-        className="canvas-file-input"
-        onChange={(event) => {
-          if (event.target.files) void uploadFiles(event.target.files);
-          event.currentTarget.value = "";
-        }}
-      />
-      <input
-        ref={versionRef}
-        type="file"
-        accept={SUPPORTED_FILE_ACCEPT}
-        className="canvas-file-input"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) void uploadVersion(file);
-          event.currentTarget.value = "";
-        }}
-      />
-
-      {dragging && (
-        <div className="file-drop-overlay">
-          <Upload size={34} />
-          <strong>释放以写入 AI 文件系统</strong>
-          <span>自动去重、建立版本并生成 asset:// 地址</span>
+      {formatsOpen && (
+        <div
+          className="asset-formats-backdrop"
+          onMouseDown={() => setFormatsOpen(false)}
+        >
+          <section
+            className="asset-formats-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="asset-formats-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span className="eyebrow">UPLOAD FORMATS</span>
+                <h2 id="asset-formats-title">支持的上传格式</h2>
+                <p>文本、图片、视频、音频、文档和压缩文件均可进入资产系统。</p>
+              </div>
+              <IconButton
+                label="关闭支持格式"
+                onClick={() => setFormatsOpen(false)}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <div className="asset-format-grid">
+              {SUPPORTED_FILE_GROUPS.map((group) => (
+                <article key={group.label}>
+                  <b>{group.label}</b>
+                  <span>{group.extensions.join("、")}</span>
+                </article>
+              ))}
+            </div>
+            <small>
+              单文件最大 100 MB。图片、视频、音频、文本、PDF 可直接预览；
+              DOCX、XLSX、PPTX 会提取可读文本，旧版 Office 与 ZIP
+              可存储、下载并拖入画布。
+            </small>
+          </section>
         </div>
       )}
-
-      <details className="supported-file-formats">
-        <summary>查看支持的上传格式</summary>
-        <div>
-          {SUPPORTED_FILE_GROUPS.map((group) => (
-            <span key={group.label}>
-              <b>{group.label}</b>
-              {group.extensions.join("、")}
-            </span>
-          ))}
-        </div>
-        <small>
-          单文件最大 100 MB。图片、视频、音频、文本、PDF 可直接预览；
-          DOCX、XLSX、PPTX 会提取可读文本，旧版 Office 与 ZIP 可存储、下载并拖入画布。
-        </small>
-      </details>
 
       {selected && (
         <div className="preview-backdrop" onMouseDown={() => setSelected(null)}>
@@ -997,7 +597,6 @@ export function AssetsView({
           >
             <div className="preview-drawer-heading">
               <div>
-                <span className="eyebrow">ASSET:// FILE</span>
                 <h2>{selected.name}</h2>
               </div>
               <IconButton label="关闭文件详情" onClick={() => setSelected(null)}>
@@ -1007,15 +606,6 @@ export function AssetsView({
             <div className={`preview-hero file-detail-preview detail-${selected.kind}`}>
               <AssetMedia asset={selected} detail />
             </div>
-            <div className="asset-uri-row">
-              <code>{selected.uri}</code>
-              <button
-                type="button"
-                onClick={() => void navigator.clipboard.writeText(selected.uri)}
-              >
-                复制
-              </button>
-            </div>
             <p className="preview-description">
               {selected.description || "文件由 Asset Kernel 管理，可安全用于画布、模型和插件。"}
             </p>
@@ -1023,72 +613,8 @@ export function AssetsView({
               <div><dt>类型</dt><dd>{selected.mimeType}</dd></div>
               <div><dt>大小</dt><dd>{formatBytes(selected.size)}</dd></div>
               <div><dt>当前版本</dt><dd>v{selected.currentVersion} / 共 {selected.versionCount} 个版本</dd></div>
-              <div><dt>来源</dt><dd>{selected.sourceType}{selected.sourceRef ? ` · ${selected.sourceRef}` : ""}</dd></div>
-              <div><dt>内容哈希</dt><dd className="mono">{selected.contentHash.slice(0, 20)}…</dd></div>
               <div><dt>更新时间</dt><dd>{formatDate(selected.updatedAt)}</dd></div>
             </dl>
-            {lineage && (
-              <section className="asset-lineage">
-                <strong>来源追溯</strong>
-                <p>
-                  {lineage.generationJob
-                    ? `${lineage.generationJob.provider} · ${lineage.generationJob.status}`
-                    : "人工上传或外部导入"}
-                  {lineage.relations.length
-                    ? ` · ${lineage.relations.length} 条资产关系`
-                    : ""}
-                </p>
-                {lineage.run?.canvasId && onOpenCanvas && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => void onOpenCanvas(lineage.run!.canvasId!)}
-                  >
-                    打开来源画布
-                  </button>
-                )}
-              </section>
-            )}
-            <div className="preview-tags">
-              <Tag size={15} />
-              {selected.tags.length ? selected.tags.map((tag) => (
-                <span key={tag}>{tag}</span>
-              )) : <span>暂无标签</span>}
-            </div>
-            {!!versions.length && (
-              <div className="asset-version-list">
-                <strong>版本历史</strong>
-                {versions.slice(0, 5).map((version) => (
-                  <a
-                    key={version.id}
-                    href={`/api/v2/files/content?assetId=${encodeURIComponent(selected.id)}&version=${version.version}&workspaceId=${encodeURIComponent(workspaceId)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <span>v{version.version}</span>
-                    <small>{formatBytes(version.size)} · {formatDate(version.createdAt)}</small>
-                  </a>
-                ))}
-              </div>
-            )}
-            {!trash && (
-              <label className="file-move-field">
-                <span>所在文件夹</span>
-                <select
-                  value={selected.folderId ?? ""}
-                  onChange={(event) =>
-                    void updateAsset(selected, {
-                      folderId: event.target.value || null,
-                    })
-                  }
-                >
-                  <option value="">文件系统根目录</option>
-                  {folders.map((folder) => (
-                    <option key={folder.id} value={folder.id}>{folder.name}</option>
-                  ))}
-                </select>
-              </label>
-            )}
             <div className="preview-actions file-preview-actions">
               {trash ? (
                 <>
@@ -1117,25 +643,8 @@ export function AssetsView({
                     <Star size={15} fill={selected.favorite ? "currentColor" : "none"} />
                     {selected.favorite ? "取消收藏" : "收藏"}
                   </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => {
-                      const tags = window.prompt("标签（使用逗号分隔）", selected.tags.join(", "));
-                      if (tags !== null) {
-                        void updateAsset(selected, {
-                          tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
-                        });
-                      }
-                    }}
-                  >
-                    <Tag size={15} /> 编辑标签
-                  </button>
                   <button type="button" className="secondary-button" onClick={() => void renameAsset(selected)}>
                     重命名
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => versionRef.current?.click()}>
-                    <Upload size={15} /> 新版本
                   </button>
                   <button type="button" className="danger-text-button" onClick={() => void updateAsset(selected, { action: "trash" })}>
                     <Trash2 size={15} /> 移到回收站

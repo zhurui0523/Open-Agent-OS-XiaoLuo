@@ -2,15 +2,15 @@
 
 import {
   Activity,
-  Box,
   Braces,
   Check,
   CircleAlert,
   Code2,
   Cpu,
-  Database,
   Download,
-  Image as ImageIcon,
+  FileArchive,
+  FileJson,
+  Github,
   LoaderCircle,
   PackagePlus,
   PanelsTopLeft,
@@ -21,32 +21,25 @@ import {
   ShieldCheck,
   SquarePen,
   Trash2,
-  Type,
   Upload,
-  Video,
   Workflow,
-  AudioLines,
-  FileOutput,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import type {
+  AccountUser,
   Capability,
   InstalledPackage,
-  ModelProtocol,
+  GithubPackageImportResult,
+  MarketplacePackage,
   NodeKind,
   WorkflowMarketplaceItem,
 } from "../types";
+import { skillManifestFromMarkdown } from "../lib/skill-markdown";
+import { packageInstallStatus } from "../lib/package-install-status";
+import { useAppDialog } from "./app-dialog";
 import { SchemaOptionBuilder } from "./schema-option-builder";
-
-const modalityIcon = {
-  text: Type,
-  image: ImageIcon,
-  video: Video,
-  audio: AudioLines,
-  document: FileOutput,
-};
 
 const packageTypeLabel = {
   skill: "SKILL",
@@ -64,6 +57,79 @@ const runtimeMeta = {
   "isolated-worker": { label: "隔离 Worker", icon: Cpu },
 };
 
+const accessScopeLabel = {
+  personal: "私有",
+  workspace: "企业共享",
+  marketplace: "共享",
+};
+
+const skillTypeLabel: Record<NodeKind, string> = {
+  text: "文本",
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+  document: "文档",
+};
+
+const skillTypeOrder: NodeKind[] = [
+  "text",
+  "image",
+  "video",
+  "audio",
+  "document",
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeKind(value: unknown): value is NodeKind {
+  return skillTypeOrder.includes(value as NodeKind);
+}
+
+function getSkillTypeLabels(
+  item: InstalledPackage | MarketplacePackage,
+  capabilities: Capability[],
+) {
+  const modalities = new Set<NodeKind>();
+  const contributes = isRecord(item.manifest?.contributes)
+    ? item.manifest.contributes
+    : null;
+  const skills = contributes && Array.isArray(contributes.skills)
+    ? contributes.skills
+    : [];
+
+  skills.forEach((skill) => {
+    if (isRecord(skill) && isNodeKind(skill.modality)) {
+      modalities.add(skill.modality);
+    }
+  });
+
+  capabilities.forEach((capability) => {
+    if (
+      capability.packageId === item.id &&
+      capability.contributionType === "skill" &&
+      isNodeKind(capability.modality)
+    ) {
+      modalities.add(capability.modality);
+    }
+  });
+
+  if ("nodeContributions" in item) {
+    item.nodeContributions?.forEach((contribution) => {
+      if (isNodeKind(contribution.modality)) {
+        modalities.add(contribution.modality);
+      }
+    });
+  }
+
+  const labels = skillTypeOrder
+    .filter((modality) => modalities.has(modality))
+    .map((modality) => skillTypeLabel[modality]);
+
+  return labels.length ? labels : ["未标注类型"];
+}
+
 const starterManifest = `{
   "schemaVersion": "2.0",
   "id": "com.yourcompany.plugin-name",
@@ -71,6 +137,9 @@ const starterManifest = `{
   "version": "1.0.0",
   "description": "插件功能说明",
   "type": "plugin",
+  "access": {
+    "scope": "personal"
+  },
   "runtime": {
     "type": "sandbox-ui",
     "entry": "https://plugin.example.com/panel"
@@ -88,13 +157,14 @@ const starterManifest = `{
 
 interface CapabilitiesViewProps {
   os: IntentOSController;
+  user: AccountUser;
 }
 
-type RegistryTab = "marketplace" | "capabilities" | "packages";
-
-export function CapabilitiesView({ os }: CapabilitiesViewProps) {
-  const [tab, setTab] = useState<RegistryTab>("marketplace");
-  const [packageDialog, setPackageDialog] = useState(false);
+export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
+  const dialog = useAppDialog();
+  const [packageDialog, setPackageDialog] = useState<
+    InstalledPackage | "new" | null
+  >(null);
   const [skillDialog, setSkillDialog] = useState<Capability | "new" | null>(
     null,
   );
@@ -107,6 +177,9 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
     text: string;
   } | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowMarketplaceItem[]>([]);
+  const [marketplacePackages, setMarketplacePackages] = useState<
+    MarketplacePackage[]
+  >([]);
   const [marketplaceStatus, setMarketplaceStatus] = useState<
     "loading" | "ready" | "error"
   >("loading");
@@ -121,17 +194,26 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
       const query = new URLSearchParams({ workspaceId: os.workspaceId });
       if (current.get("workflow")) query.set("id", current.get("workflow") as string);
       if (current.get("token")) query.set("token", current.get("token") as string);
-      const response = await fetch(
-        `/api/v2/workflows/marketplace?${query.toString()}`,
-      );
-      const payload = (await response.json().catch(() => ({}))) as {
+      const [workflowResponse, packageResponse] = await Promise.all([
+        fetch(`/api/v2/workflows/marketplace?${query.toString()}`),
+        fetch(`/api/v2/packages/marketplace?${query.toString()}`),
+      ]);
+      const payload = (await workflowResponse.json().catch(() => ({}))) as {
         workflows?: WorkflowMarketplaceItem[];
         error?: string;
       };
-      if (!response.ok) {
+      const packagePayload = (await packageResponse.json().catch(() => ({}))) as {
+        packages?: MarketplacePackage[];
+        error?: string;
+      };
+      if (!workflowResponse.ok) {
         throw new Error(payload.error ?? "读取能力商城失败");
       }
+      if (!packageResponse.ok) {
+        throw new Error(packagePayload.error ?? "读取 Skill / 插件商城失败");
+      }
       setWorkflows(payload.workflows ?? []);
+      setMarketplacePackages(packagePayload.packages ?? []);
       setMarketplaceStatus("ready");
     } catch (error) {
       setMarketplaceError(
@@ -141,13 +223,22 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
     }
   }, [os.workspaceId]);
 
+  async function refreshCapabilities() {
+    await Promise.all([os.refreshRegistry(), refreshMarketplace()]);
+  }
+
   useEffect(() => {
-    void refreshMarketplace();
+    const timer = window.setTimeout(() => {
+      void refreshMarketplace();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refreshMarketplace]);
 
-  const extensionCount = os.packages.filter(
-    (item) => item.packageType !== "skill",
-  ).length;
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   function showNotice(
     text: string,
@@ -157,17 +248,18 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
   }
 
   return (
-    <section className="content-view capability-view" aria-label="扩展中心">
+    <section className="content-view capability-view" aria-label="能力中心">
       <header className="content-header extension-header">
         <div>
-          <span className="eyebrow">EXTENSION PLATFORM · CONTRACT V2</span>
-          <h1>扩展中心</h1>
+          <span className="eyebrow">CAPABILITY CENTER · CONTRACT V2</span>
+          <h1>能力中心</h1>
           <p>Skill、插件与 Workflow 分层管理；Agent 只服务于 Intent 对话与规划。</p>
         </div>
         <div className="header-button-group">
           <button
             type="button"
             className="secondary-button"
+            title="创建私有或共享 Skill"
             onClick={() => setSkillDialog("new")}
           >
             <Code2 size={16} /> 创建 Skill
@@ -175,7 +267,8 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
           <button
             type="button"
             className="primary-button"
-            onClick={() => setPackageDialog(true)}
+            title="导入 Skill Markdown 或 Package"
+            onClick={() => setPackageDialog("new")}
           >
             <PackagePlus size={16} /> 导入 Package
           </button>
@@ -192,88 +285,28 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         </div>
       )}
 
-      <div className="registry-stats registry-stats-three">
-        <button type="button" onClick={() => setTab("capabilities")}>
-          <span className="stat-icon stat-indigo">
-            <Box size={19} />
-          </span>
-          <p>能力投影</p>
-          <strong>{os.capabilities.length}</strong>
-          <small>节点与 Intent 即时可见</small>
-        </button>
-        <button type="button" onClick={() => setTab("packages")}>
-          <span className="stat-icon stat-violet">
-            <PlugZap size={19} />
-          </span>
-          <p>扩展包</p>
-          <strong>{extensionCount}</strong>
-          <small>Skill · Plugin · Provider</small>
-        </button>
-        <button type="button" onClick={() => setTab("marketplace")}>
-          <span className="stat-icon stat-amber">
-            <Workflow size={19} />
-          </span>
-          <p>Workflow 商城</p>
-          <strong>{workflows.length}</strong>
-          <small>发布 · 安装 · 派生</small>
-        </button>
-      </div>
-
-      <div className="registry-tabs" role="tablist" aria-label="扩展分类">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "marketplace"}
-          className={tab === "marketplace" ? "is-active" : ""}
-          onClick={() => setTab("marketplace")}
-        >
-          <Workflow size={15} /> 能力商城
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "packages"}
-          className={tab === "packages" ? "is-active" : ""}
-          onClick={() => setTab("packages")}
-        >
-          <PlugZap size={15} /> Package 管理
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "capabilities"}
-          className={tab === "capabilities" ? "is-active" : ""}
-          onClick={() => setTab("capabilities")}
-        >
-          <Database size={15} /> 能力投影
-        </button>
-      </div>
-
-      {tab === "marketplace" && (
-        <MarketplacePanel
-          os={os}
-          workflows={workflows}
-          status={marketplaceStatus}
-          error={marketplaceError}
-          onRefresh={refreshMarketplace}
-          onNotice={showNotice}
-        />
-      )}
-      {tab === "packages" && (
-        <PackagesPanel
-          os={os}
-          onImport={() => setPackageDialog(true)}
-          onNotice={showNotice}
-          onSandbox={(item) =>
-            item.runtimeUrl &&
-            setSandbox({ title: item.name, url: item.runtimeUrl })
+      <MarketplacePanel
+        os={os}
+        dialog={dialog}
+        isSystemAdmin={user.platformRole === "system_admin"}
+        workflows={workflows}
+        marketplacePackages={marketplacePackages}
+        status={marketplaceStatus}
+        error={marketplaceError}
+        onRefresh={refreshCapabilities}
+        onEditPackage={(item) => setPackageDialog(item)}
+        onEditSkill={(item) => {
+          const capability = os.capabilities.find(
+            (candidate) => candidate.packageId === item.id,
+          );
+          if (capability) {
+            setSkillDialog(capability);
+            return;
           }
-        />
-      )}
-      {tab === "capabilities" && (
-        <CapabilitiesPanel os={os} onEdit={setSkillDialog} />
-      )}
-
+          showNotice("该 Skill 尚未生成可编辑的能力契约。", "error");
+        }}
+        onNotice={showNotice}
+      />
       {notice && (
         <div className={`extension-toast is-${notice.tone}`} role="status">
           {notice.tone === "success" ? (
@@ -292,14 +325,36 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
 
       {packageDialog && (
         <PackageDialog
-          onClose={() => setPackageDialog(false)}
-          onInstall={async (raw) => {
-            const result = await os.installPackage(raw);
-            setPackageDialog(false);
-            setTab("packages");
-            showNotice(
-              `${result.package.name} 已${result.action === "installed" ? "安装" : "更新"}，能力投影已刷新。`,
-            );
+          initial={packageDialog === "new" ? undefined : packageDialog}
+          packages={os.packages}
+          onClose={() => setPackageDialog(null)}
+          onInstall={async (input) => {
+            const result =
+              input.kind === "archive"
+                ? await os.installPackageArchive(
+                    input.file,
+                    input.accessScope,
+                  )
+                : input.kind === "github"
+                  ? await os.installPackageFromGithub({
+                      url: input.url,
+                      ref: input.ref,
+                      accessScope: input.accessScope,
+                    })
+                  : await os.installPackage(input.raw);
+            if (result.status === "needs_adaptation") return result;
+            await refreshMarketplace();
+            if (result.source?.executionReady === false) {
+              showNotice(
+                `${result.package.name} 源码已导入并固定 Commit；该项目需要隔离构建，完成前不会执行第三方代码。`,
+                "info",
+              );
+            } else {
+              showNotice(
+                `${result.package.name} 已${result.action === "installed" ? "安装" : "更新"}，画布节点选项已刷新。`,
+              );
+            }
+            return result;
           }}
         />
       )}
@@ -307,11 +362,12 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
         <SkillBuilderDialog
           initial={skillDialog === "new" ? undefined : skillDialog}
           packages={os.packages}
+          isSystemAdmin={user.platformRole === "system_admin"}
           onClose={() => setSkillDialog(null)}
           onInstall={async (raw) => {
             const result = await os.installPackage(raw);
             setSkillDialog(null);
-            setTab("capabilities");
+            await refreshMarketplace();
             showNotice(
               `${result.package.name} 已${result.action === "installed" ? "创建" : "更新"}，节点选项与模型兼容规则已同步。`,
             );
@@ -331,28 +387,62 @@ export function CapabilitiesView({ os }: CapabilitiesViewProps) {
 
 function MarketplacePanel({
   os,
+  dialog,
+  isSystemAdmin,
   workflows,
+  marketplacePackages,
   status,
   error,
   onRefresh,
+  onEditPackage,
+  onEditSkill,
   onNotice,
 }: {
   os: IntentOSController;
+  dialog: ReturnType<typeof useAppDialog>;
+  isSystemAdmin: boolean;
   workflows: WorkflowMarketplaceItem[];
+  marketplacePackages: MarketplacePackage[];
   status: "loading" | "ready" | "error";
   error: string;
   onRefresh: () => Promise<void>;
+  onEditPackage: (item: InstalledPackage) => void;
+  onEditSkill: (item: InstalledPackage) => void;
   onNotice: (
     text: string,
     tone?: "success" | "error" | "info",
   ) => void;
 }) {
   const [category, setCategory] = useState<"skill" | "plugin" | "workflow">(
-    "workflow",
+    "skill",
   );
+  const [source, setSource] = useState<
+    "installed" | "private" | "shared"
+  >("installed");
   const [busyId, setBusyId] = useState("");
-  const packageItems = os.packages.filter(
-    (item) => item.enabled && item.packageType === category,
+  const myPackageItems = os.packages.filter(
+    (item) =>
+      item.packageType === category &&
+      item.lifecycleState !== "uninstalled",
+  );
+  const publicPackageItems = marketplacePackages.filter(
+    (item) => item.packageType === category,
+  );
+  const privatePackageItems = myPackageItems.filter(
+    (item) =>
+      item.ownerScope === "personal" &&
+      item.accessScope === "personal",
+  );
+  const ownedSharedPackageItems = myPackageItems.filter(
+    (item) =>
+      item.ownerScope === "personal" &&
+      item.accessScope !== "personal",
+  );
+  const ownedSharedKeys = new Set(
+    ownedSharedPackageItems.map((item) => item.packageKey).filter(Boolean),
+  );
+  const otherSharedPackageItems = publicPackageItems.filter(
+    (item) => !ownedSharedKeys.has(item.packageKey),
   );
 
   async function install(item: WorkflowMarketplaceItem) {
@@ -382,15 +472,143 @@ function MarketplacePanel({
     }
   }
 
+  async function deleteWorkflow(item: WorkflowMarketplaceItem) {
+    const confirmed = await dialog.confirm(
+      `确认删除共享画布“${item.title}”？它将从所有用户的 Workflow 列表中移除，但已经安装生成的独立画布会保留。`,
+      {
+        title: "删除共享画布",
+        confirmText: "确认删除",
+        tone: "danger",
+      },
+    );
+    if (!confirmed) return;
+
+    setBusyId(item.id);
+    try {
+      const response = await fetch(
+        `/api/v2/workflows/marketplace?id=${encodeURIComponent(item.id)}`,
+        { method: "DELETE" },
+      );
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "删除共享画布失败");
+      }
+      await onRefresh();
+      onNotice(`${item.title} 已从 Workflow 列表中删除。`);
+    } catch (reason) {
+      onNotice(
+        reason instanceof Error ? reason.message : "删除共享画布失败",
+        "error",
+      );
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function installPackage(item: MarketplacePackage) {
+    setBusyId(item.id);
+    try {
+      const result = await os.installPackage(
+        JSON.stringify({
+          ...item.manifest,
+          access: { scope: "personal" },
+        }),
+      );
+      await onRefresh();
+      onNotice(`${result.package.name} 已添加到可用能力。`);
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "安装失败", "error");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function changePluginVisibility(item: InstalledPackage) {
+    const nextScope =
+      item.accessScope === "personal" ? "marketplace" : "personal";
+    const nextLabel = nextScope === "personal" ? "私有" : "共享";
+    const confirmed = await dialog.confirm(
+      nextScope === "personal"
+        ? `将“${item.name}”改为私有插件？修改后，其他用户将无法继续从共享插件中添加它。`
+        : `将“${item.name}”改为共享插件？修改后，所有用户都可以在共享插件中看到并添加它。`,
+      {
+        title: "修改插件可见性",
+        confirmText: `改为${nextLabel}`,
+      },
+    );
+    if (!confirmed) return;
+    setBusyId(item.id);
+    try {
+      await os.setPackageAccessScope(item.id, nextScope);
+      await onRefresh();
+      setSource(nextScope === "personal" ? "private" : "shared");
+      onNotice(`${item.name} 已修改为${nextLabel}插件。`);
+    } catch (reason) {
+      onNotice(
+        reason instanceof Error ? reason.message : "修改插件可见性失败",
+        "error",
+      );
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function deleteSharedSkill(
+    item: Pick<InstalledPackage, "id" | "name" | "packageType">,
+  ) {
+    const confirmed = await dialog.confirm(
+      `删除共享 Skill“${item.name}”后，它将从所有用户的共享列表中移除。已经添加到个人账户的副本不会被强制删除。`,
+      {
+        title: "删除共享 Skill",
+        confirmText: "确认删除",
+        tone: "danger",
+      },
+    );
+    if (!confirmed) return;
+    setBusyId(item.id);
+    try {
+      await os.uninstallPackage(item.id);
+      await onRefresh();
+      onNotice(`${item.name} 已从共享 Skill 中删除。`);
+    } catch (reason) {
+      onNotice(
+        reason instanceof Error ? reason.message : "删除共享 Skill 失败",
+        "error",
+      );
+    } finally {
+      setBusyId("");
+    }
+  }
+
   return (
     <div className="workflow-marketplace">
-      <div className="marketplace-heading">
-        <div>
-          <h2>能力商城</h2>
-          <p>
-            Skill 是执行能力，插件是独立运行器，Workflow 是可安装的一整套画布。
-            Agent 只在 Intent 对话器中工作，不进入画布与商城。
-          </p>
+      <div className="marketplace-toolbar">
+        <div className="marketplace-categories" role="tablist">
+          {([
+            ["skill", "Skill"],
+            ["plugin", "插件"],
+            ["workflow", "Workflow"],
+          ] as const).map(([value, label]) => (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={category === value}
+              className={category === value ? "is-active" : ""}
+              key={value}
+              onClick={() => setCategory(value)}
+            >
+              {value === "workflow" ? (
+                <Workflow size={15} />
+              ) : value === "plugin" ? (
+                <PlugZap size={15} />
+              ) : (
+                <Code2 size={15} />
+              )}
+              {label}
+            </button>
+          ))}
         </div>
         <button
           type="button"
@@ -401,31 +619,37 @@ function MarketplacePanel({
         </button>
       </div>
 
-      <div className="marketplace-categories" role="tablist">
-        {([
-          ["skill", "Skill"],
-          ["plugin", "插件"],
-          ["workflow", "Workflow"],
-        ] as const).map(([value, label]) => (
+      {category !== "workflow" && (
+        <div className="marketplace-source-tabs" role="tablist" aria-label="能力来源">
           <button
             type="button"
             role="tab"
-            aria-selected={category === value}
-            className={category === value ? "is-active" : ""}
-            key={value}
-            onClick={() => setCategory(value)}
+            aria-selected={source === "installed"}
+            className={source === "installed" ? "is-active" : ""}
+            onClick={() => setSource("installed")}
           >
-            {value === "workflow" ? (
-              <Workflow size={15} />
-            ) : value === "plugin" ? (
-              <PlugZap size={15} />
-            ) : (
-              <Code2 size={15} />
-            )}
-            {label}
+            {category === "skill" ? "可用 Skill" : "可用插件"}
           </button>
-        ))}
-      </div>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={source === "private"}
+            className={source === "private" ? "is-active" : ""}
+            onClick={() => setSource("private")}
+          >
+            {category === "skill" ? "私有 Skill" : "私有插件"}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={source === "shared"}
+            className={source === "shared" ? "is-active" : ""}
+            onClick={() => setSource("shared")}
+          >
+            {category === "skill" ? "共享 Skill" : "共享插件"}
+          </button>
+        </div>
+      )}
 
       {category === "workflow" ? (
         status === "loading" ? (
@@ -472,21 +696,23 @@ function MarketplacePanel({
                   <small>已安装 {item.installCount} 次</small>
                 </div>
                 <footer>
-                  <button
-                    type="button"
-                    className="secondary-button compact"
-                    onClick={async () => {
-                      const current = new URL(window.location.href);
-                      current.searchParams.set("view", "capabilities");
-                      current.searchParams.set("workflow", item.id);
-                      await navigator.clipboard
-                        .writeText(current.toString())
-                        .catch(() => undefined);
-                      onNotice("Workflow 分享链接已复制。");
-                    }}
-                  >
-                    <Workflow size={14} /> 分享
-                  </button>
+                  {isSystemAdmin && (
+                    <button
+                      type="button"
+                      className="workflow-admin-delete"
+                      aria-label={`删除画布 ${item.title}`}
+                      title="删除共享画布"
+                      disabled={busyId === item.id}
+                      onClick={() => void deleteWorkflow(item)}
+                    >
+                      {busyId === item.id ? (
+                        <LoaderCircle size={15} className="spin" />
+                      ) : (
+                        <Trash2 size={15} />
+                      )}
+                      <span>删除画布</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="primary-button compact"
@@ -511,9 +737,110 @@ function MarketplacePanel({
             <p>回到画布点击“分享”，即可发布第一个可安装 Workflow。</p>
           </div>
         )
-      ) : packageItems.length ? (
+      ) : status === "loading" ? (
+        <RegistryLoading label="正在读取 Skill / 插件商城" />
+      ) : status === "error" ? (
+        <div className="registry-banner is-error">
+          <CircleAlert size={16} />
+          <span>{error}</span>
+          <button type="button" onClick={() => void onRefresh()}>
+            重试
+          </button>
+        </div>
+      ) : source === "installed" && myPackageItems.length ? (
         <div className="workflow-market-grid">
-          {packageItems.map((item) => (
+          {myPackageItems.map((item) => (
+            <article className={`workflow-market-card package-market-card is-${packageInstallStatus(item).kind}`} key={item.id}>
+              <header>
+                <span>
+                  {category === "skill" ? <Code2 size={19} /> : <PlugZap size={19} />}
+                </span>
+                <div>
+                  <h3>{item.name}</h3>
+                  <small>v{item.version} · {runtimeMeta[item.runtimeType].label}</small>
+                </div>
+                <b>{accessScopeLabel[item.accessScope ?? "personal"]}</b>
+              </header>
+              <p>{item.description || "未填写说明"}</p>
+              <div className="workflow-card-tags">
+                {category === "skill" ? (
+                  getSkillTypeLabels(item, os.capabilities).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))
+                ) : (
+                  <>
+                    <span>{item.contributionCount} 项能力</span>
+                    <span>{item.trustState ?? "unverified"}</span>
+                  </>
+                )}
+              </div>
+              <footer>
+                <div className={`package-install-status is-${packageInstallStatus(item).kind}`}>
+                  {packageInstallStatus(item).kind === "installing" ? (
+                    <LoaderCircle size={13} className="spin" />
+                  ) : packageInstallStatus(item).kind === "success" ? (
+                    <Check size={13} />
+                  ) : (
+                    <CircleAlert size={13} />
+                  )}
+                  <strong>{packageInstallStatus(item).label}</strong>
+                  <span>{packageInstallStatus(item).detail}</span>
+                </div>
+                {item.canManage && (
+                  <div className="package-manage-actions">
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    disabled={busyId === item.id}
+                    onClick={() =>
+                      item.packageType === "skill"
+                        ? onEditSkill(item)
+                        : onEditPackage(item)
+                    }
+                  >
+                    <SquarePen size={14} />
+                    {item.packageType === "skill" ? "修改 Skill" : "修改插件"}
+                  </button>
+                  <button
+                    type="button"
+                    className="danger-text-button"
+                    disabled={busyId === item.id}
+                    onClick={async () => {
+                      if (!(await dialog.confirm(
+                        `删除“${item.name}”后，画布中的对应选项也会同步移除。`,
+                        {
+                          title: "删除扩展能力",
+                          confirmText: "确认删除",
+                          tone: "danger",
+                        },
+                      ))) return;
+                      setBusyId(item.id);
+                      try {
+                        await os.uninstallPackage(item.id);
+                        await onRefresh();
+                        onNotice(`${item.name} 已删除。`);
+                      } catch (reason) {
+                        onNotice(
+                          reason instanceof Error ? reason.message : "删除失败",
+                          "error",
+                        );
+                      } finally {
+                        setBusyId("");
+                      }
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                  </div>
+                )}
+              </footer>
+            </article>
+          ))}
+        </div>
+      ) : source === "private" && privatePackageItems.length ? (
+        <div className="workflow-market-grid">
+          {privatePackageItems.map((item) => (
             <article className="workflow-market-card package-market-card" key={item.id}>
               <header>
                 <span>
@@ -523,21 +850,201 @@ function MarketplacePanel({
                   <h3>{item.name}</h3>
                   <small>v{item.version} · {runtimeMeta[item.runtimeType].label}</small>
                 </div>
-                <b>已安装</b>
+                <b>私有</b>
               </header>
               <p>{item.description || "未填写说明"}</p>
               <div className="workflow-card-tags">
-                <span>{item.contributionCount} 项能力</span>
-                <span>{item.trustState ?? "unverified"}</span>
+                {category === "skill" ? (
+                  getSkillTypeLabels(item, os.capabilities).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))
+                ) : (
+                  <>
+                    <span>{item.contributionCount} 项能力</span>
+                    <span>仅自己可见</span>
+                  </>
+                )}
               </div>
+              {item.canManage && item.packageType === "plugin" && (
+                <footer>
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    disabled={busyId === item.id}
+                    onClick={() => void changePluginVisibility(item)}
+                  >
+                    {busyId === item.id ? (
+                      <LoaderCircle size={14} className="spin" />
+                    ) : (
+                      <SquarePen size={14} />
+                    )}
+                    修改
+                  </button>
+                </footer>
+              )}
+            </article>
+          ))}
+        </div>
+      ) : source === "shared" &&
+        (ownedSharedPackageItems.length || otherSharedPackageItems.length) ? (
+        <div className="workflow-market-grid">
+          {ownedSharedPackageItems.map((item) => (
+            <article
+              className="workflow-market-card package-market-card"
+              key={item.id}
+            >
+              <header>
+                <span>
+                  {category === "skill" ? (
+                    <Code2 size={19} />
+                  ) : (
+                    <PlugZap size={19} />
+                  )}
+                </span>
+                <div>
+                  <h3>{item.name}</h3>
+                  <small>
+                    v{item.version} · {runtimeMeta[item.runtimeType].label}
+                  </small>
+                </div>
+                <b>我的共享</b>
+              </header>
+              <p>{item.description || "未填写说明"}</p>
+              <div className="workflow-card-tags">
+                {category === "skill" ? (
+                  getSkillTypeLabels(item, os.capabilities).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))
+                ) : (
+                  <>
+                    <span>{item.contributionCount} 项能力</span>
+                    <span>
+                      {item.enabled
+                        ? "已发布"
+                        : item.trustState === "quarantined"
+                          ? "已隔离"
+                          : "等待安全审核"}
+                    </span>
+                  </>
+                )}
+              </div>
+              {item.canManage && (
+                <footer>
+                  <div className="package-manage-actions">
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      disabled={busyId === item.id}
+                      onClick={() => {
+                        if (item.packageType === "plugin") {
+                          void changePluginVisibility(item);
+                          return;
+                        }
+                        onEditSkill(item);
+                      }}
+                    >
+                      {busyId === item.id ? (
+                        <LoaderCircle size={14} className="spin" />
+                      ) : (
+                        <SquarePen size={14} />
+                      )}
+                      修改
+                    </button>
+                    {item.packageType === "skill" && (
+                      <button
+                        type="button"
+                        className="danger-text-button"
+                        disabled={busyId === item.id}
+                        onClick={() => void deleteSharedSkill(item)}
+                      >
+                        <Trash2 size={14} />
+                        删除
+                      </button>
+                    )}
+                  </div>
+                </footer>
+              )}
+            </article>
+          ))}
+          {otherSharedPackageItems.map((item) => (
+            <article className="workflow-market-card package-market-card" key={item.id}>
+              <header>
+                <span>
+                  {category === "skill" ? <Code2 size={19} /> : <PlugZap size={19} />}
+                </span>
+                <div>
+                  <h3>{item.name}</h3>
+                  <small>
+                    @{item.publisher.username} · v{item.version} ·{" "}
+                    {runtimeMeta[item.runtimeType].label}
+                  </small>
+                </div>
+                <b>
+                  {item.publisher.platformRole === "system_admin"
+                    ? "管理员共享"
+                    : "用户共享"}
+                </b>
+              </header>
+              <p>{item.description || "未填写说明"}</p>
+              <div className="workflow-card-tags">
+                {category === "skill" ? (
+                  getSkillTypeLabels(item, os.capabilities).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))
+                ) : item.permissions.length ? (
+                  item.permissions.slice(0, 4).map((permission) => (
+                    <span key={permission}>{permission}</span>
+                  ))
+                ) : (
+                  <span>零权限</span>
+                )}
+              </div>
+              <footer>
+                <button
+                  type="button"
+                  className="primary-button compact"
+                  disabled={item.installed || busyId === item.id}
+                  onClick={() => void installPackage(item)}
+                >
+                  {busyId === item.id ? (
+                    <LoaderCircle size={14} className="spin" />
+                  ) : (
+                    <Download size={14} />
+                  )}
+                  {item.installed ? "已安装" : "安装"}
+                </button>
+                {isSystemAdmin && item.packageType === "skill" && (
+                  <button
+                    type="button"
+                    className="danger-text-button"
+                    disabled={busyId === item.id}
+                    onClick={() => void deleteSharedSkill(item)}
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                )}
+              </footer>
             </article>
           ))}
         </div>
       ) : (
         <div className="extension-empty">
           <span>{category === "skill" ? <Code2 size={24} /> : <PlugZap size={24} />}</span>
-          <h3>当前工作空间还没有{category === "skill" ? " Skill" : "插件"}</h3>
-          <p>通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。</p>
+          <h3>
+            {source === "installed"
+              ? `当前账号还没有可用${category === "skill" ? " Skill" : "插件"}`
+              : source === "private"
+                ? `还没有私有${category === "skill" ? " Skill" : "插件"}`
+                : `暂时没有共享${category === "skill" ? " Skill" : "插件"}`}
+          </h3>
+          <p>
+            {source === "installed"
+              ? "通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。"
+              : source === "private"
+                ? `创建或安装${category === "skill" ? " Skill" : "插件"}时选择“私有”，它只会对你本人显示。`
+                : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}，以及用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，都会显示在这里供所有用户添加。`}
+          </p>
         </div>
       )}
     </div>
@@ -546,12 +1053,18 @@ function MarketplacePanel({
 
 function PackagesPanel({
   os,
+  dialog,
   onImport,
+  onEdit,
+  onEditSkill,
   onNotice,
   onSandbox,
 }: {
   os: IntentOSController;
+  dialog: ReturnType<typeof useAppDialog>;
   onImport: () => void;
+  onEdit: (item: InstalledPackage) => void;
+  onEditSkill: (item: InstalledPackage) => void;
   onNotice: (
     text: string,
     tone?: "success" | "error" | "info",
@@ -624,6 +1137,9 @@ function PackagesPanel({
                       <span>{runtimeMeta[item.runtimeType].label}</span>
                       <span>{item.contributionCount} 项贡献</span>
                       <span>信任：{item.trustState ?? "unverified"}</span>
+                      <span>
+                        权限：{accessScopeLabel[item.accessScope ?? "personal"]}
+                      </span>
                     </div>
                   </div>
 
@@ -643,7 +1159,7 @@ function PackagesPanel({
                       type="button"
                       className={`switch-button ${item.enabled ? "is-on" : ""}`}
                       aria-pressed={item.enabled}
-                      disabled={busy}
+                      disabled={busy || !item.canManage}
                       onClick={() =>
                         void act(item.id, async () => {
                           await os.setPackageEnabled(item.id, !item.enabled);
@@ -657,7 +1173,7 @@ function PackagesPanel({
                     <button
                       type="button"
                       className="secondary-button compact"
-                      disabled={busy || !item.enabled}
+                      disabled={busy || !item.enabled || !item.canManage}
                       onClick={() =>
                         void act(item.id, async () => {
                           const result = await os.testPlugin(item.id);
@@ -673,12 +1189,39 @@ function PackagesPanel({
                       )}
                       {item.runtimeType === "sandbox-ui" ? "打开沙盒" : "运行检测"}
                     </button>
+                    {item.packageType === "plugin" && (
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        disabled={busy || !item.canManage || !item.manifest}
+                        onClick={() => onEdit(item)}
+                      >
+                        <SquarePen size={14} /> 修改
+                      </button>
+                    )}
+                    {item.packageType === "skill" && (
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        disabled={busy || !item.canManage}
+                        onClick={() => onEditSkill(item)}
+                      >
+                        <SquarePen size={14} /> 修改 Skill
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="danger-text-button"
-                      disabled={busy}
-                      onClick={() => {
-                        if (!window.confirm(`确认卸载 ${item.name}？能力投影会同步移除。`)) return;
+                      disabled={busy || !item.canManage}
+                      onClick={async () => {
+                        if (!(await dialog.confirm(
+                          `卸载“${item.name}”后，对应的画布节点选项也会同步移除。`,
+                          {
+                            title: "卸载扩展能力",
+                            confirmText: "确认卸载",
+                            tone: "danger",
+                          },
+                        ))) return;
                         void act(item.id, async () => {
                           await os.uninstallPackage(item.id);
                           onNotice(`${item.name} 已卸载。`);
@@ -753,96 +1296,6 @@ function PackagesPanel({
   );
 }
 
-function CapabilitiesPanel({
-  os,
-  onEdit,
-}: {
-  os: IntentOSController;
-  onEdit: (capability: Capability) => void;
-}) {
-  return (
-    <div className="registry-column">
-      <div className="section-title-row">
-        <div>
-          <h2>统一能力投影</h2>
-          <p>系统契约与已安装 Package 会自动同步到画布节点选择器。</p>
-        </div>
-        <span className="registry-version">Live Projection</span>
-      </div>
-      <div className="contract-grid capability-contract-grid">
-        {os.capabilities.map((capability) => (
-          <CapabilityContract
-            key={capability.id}
-            capability={capability}
-            editable={Boolean(
-              capability.packageId &&
-                os.packages
-                  .find((item) => item.id === capability.packageId)
-                  ?.packageKey?.startsWith("user.skill."),
-            )}
-            onEdit={() => onEdit(capability)}
-          />
-        ))}
-      </div>
-      <div className="skill-reserved-panel">
-        <span className="reserved-icon"><Code2 size={22} /></span>
-        <div>
-          <h3>Skill 契约与节点保持同步</h3>
-          <p>
-            创建或导入自己的 Skill 后，参数 Schema、端口和模型兼容规则会自动投影到画布；
-            已放入画布的节点保留版本快照，避免升级时静默破坏。
-          </p>
-          <div className="reserved-contracts">
-            <span>manifest.json</span>
-            <span>inputSchema</span>
-            <span>outputSchema</span>
-            <span>uiSchema</span>
-          </div>
-        </div>
-        <span className="ready-seal"><Check size={13} /> ENGINE READY</span>
-      </div>
-    </div>
-  );
-}
-
-function CapabilityContract({
-  capability,
-  editable,
-  onEdit,
-}: {
-  capability: Capability;
-  editable: boolean;
-  onEdit: () => void;
-}) {
-  const Icon = modalityIcon[capability.modality];
-  return (
-    <article className={`contract-card ${capability.enabled ? "" : "is-disabled"}`}>
-      <div className="contract-card-heading">
-        <span className={`contract-icon contract-${capability.modality}`}>
-          <Icon size={18} />
-        </span>
-        <span className="contract-source">{capability.category}</span>
-      </div>
-      <h3>{capability.title}</h3>
-      <p>{capability.description}</p>
-      {capability.packageId && <code>{capability.packageId}</code>}
-      {editable && (
-        <button
-          type="button"
-          className="contract-edit-button"
-          onClick={onEdit}
-        >
-          <SquarePen size={13} /> 编辑选项
-        </button>
-      )}
-      <div className="contract-schema">
-        <span>{capability.parameterHint}</span>
-        <span>v{capability.packageVersion}</span>
-      </div>
-    </article>
-  );
-}
-
 function RuntimeCard({
   icon: Icon,
   title,
@@ -872,28 +1325,176 @@ function RegistryLoading({ label }: { label: string }) {
   );
 }
 
+type PackageInstallRequest =
+  | {
+      kind: "manifest";
+      raw: string;
+      accessScope: "personal" | "marketplace";
+    }
+  | {
+      kind: "archive";
+      file: File;
+      accessScope: "personal" | "marketplace";
+    }
+  | {
+      kind: "github";
+      url: string;
+      ref?: string;
+      accessScope: "personal" | "marketplace";
+    };
+
 function PackageDialog({
+  initial,
+  packages,
   onClose,
   onInstall,
 }: {
+  initial?: InstalledPackage;
+  packages: InstalledPackage[];
   onClose: () => void;
-  onInstall: (raw: string) => Promise<void>;
+  onInstall: (
+    input: PackageInstallRequest,
+  ) => Promise<GithubPackageImportResult>;
 }) {
-  const [raw, setRaw] = useState("");
+  const [mode, setMode] = useState<"archive" | "github" | "manifest">(
+    initial ? "manifest" : "archive",
+  );
+  const [raw, setRaw] = useState(() => {
+    if (!initial?.manifest) return "";
+    return JSON.stringify(
+      {
+        ...initial.manifest,
+        version: incrementPatchVersion(initial.version),
+      },
+      null,
+      2,
+    );
+  });
+  const [accessScope, setAccessScope] = useState<
+    "personal" | "marketplace"
+  >(
+    initial?.accessScope === "marketplace"
+      ? "marketplace"
+      : "personal",
+  );
+  const [archiveFile, setArchiveFile] = useState<File | null>(null);
+  const [githubUrl, setGithubUrl] = useState("");
+  const [githubRef, setGithubRef] = useState("");
+  const [compatibility, setCompatibility] = useState<
+    Extract<
+      GithubPackageImportResult,
+      { status: "needs_adaptation" }
+    >["compatibility"] | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
+  const [installPhase, setInstallPhase] = useState<
+    "idle" | "analyzing" | "downloading" | "verifying" | "building" | "complete" | "build_pending" | "failed"
+  >("idle");
+  const [installMessage, setInstallMessage] = useState("");
   async function submit() {
     setBusy(true);
     setError("");
+    setCompatibility(null);
+    setInstallMessage("");
+    setInstallPhase("analyzing");
+    const progressTimers = [
+      window.setTimeout(() => setInstallPhase("downloading"), 450),
+      window.setTimeout(() => setInstallPhase("verifying"), 1100),
+      window.setTimeout(() => setInstallPhase("building"), 1900),
+    ];
     try {
-      await onInstall(raw);
+      let result: GithubPackageImportResult;
+      if (mode === "archive") {
+        if (!archiveFile) throw new Error("请先选择 .xlpkg 或 .zip 插件包");
+        result = await onInstall({
+          kind: "archive",
+          file: archiveFile,
+          accessScope,
+        });
+      } else if (mode === "github") {
+        if (!githubUrl.trim()) throw new Error("请输入 GitHub 仓库地址");
+        result = await onInstall({
+          kind: "github",
+          url: githubUrl.trim(),
+          accessScope,
+          ...(githubRef.trim() ? { ref: githubRef.trim() } : {}),
+        });
+      } else {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        parsed.access = { scope: accessScope };
+        result = await onInstall({
+          kind: "manifest",
+          raw: JSON.stringify(parsed, null, 2),
+          accessScope,
+        });
+      }
+      if (result.status === "needs_adaptation") {
+        setCompatibility(result.compatibility);
+        setInstallPhase("failed");
+        setInstallMessage("仓库需要完成插件适配后才能安装");
+      } else if (result.source?.executionReady === false) {
+        setInstallPhase("build_pending");
+        setInstallMessage(
+          result.source.runtimePreparation?.reason
+            ? `构建未完成：${result.source.runtimePreparation.reason}`
+            : "源码已安全导入，运行环境仍需继续构建",
+        );
+      } else {
+        setInstallPhase("complete");
+        setInstallMessage(`${result.package.name} 已安装完成，可以添加到画布`);
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "安装失败");
+      const message = reason instanceof Error ? reason.message : "安装失败";
+      setError(message);
+      setInstallPhase("failed");
+      setInstallMessage(message);
     } finally {
+      progressTimers.forEach(window.clearTimeout);
       setBusy(false);
     }
   }
+
+  async function chooseManifestFile(file: File) {
+    if (/\.(xlpkg|zip)$/i.test(file.name)) {
+      const header = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+      if (
+        header[0] === 0x50 &&
+        header[1] === 0x4b &&
+        [0x03, 0x05, 0x07].includes(header[2])
+      ) {
+        setArchiveFile(file);
+        setMode("archive");
+        setError("");
+        return;
+      }
+    }
+    const content = await file.text();
+    if (/\.md$/i.test(file.name)) {
+      const manifest = skillManifestFromMarkdown(content, file.name);
+      const installed = packages.find(
+        (item) => item.packageKey === manifest.id,
+      );
+      if (installed) {
+        manifest.version = incrementPatchVersion(installed.version);
+      }
+      manifest.access = {
+        scope: accessScope,
+      };
+      setRaw(JSON.stringify(manifest, null, 2));
+    } else {
+      setRaw(content);
+    }
+    setMode("manifest");
+    setError("");
+  }
+
+  const canSubmit =
+    mode === "archive"
+      ? Boolean(archiveFile)
+      : mode === "github"
+        ? Boolean(githubUrl.trim())
+        : Boolean(raw.trim());
 
   return (
     <div className="extension-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -904,79 +1505,320 @@ function PackageDialog({
         aria-labelledby="package-dialog-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
+        {installPhase !== "idle" && (
+          <div className="package-progress-backdrop" role="status" aria-live="polite">
+            <section className={`package-progress-dialog is-${installPhase}`}>
+              <div className="package-progress-icon">
+                {installPhase === "complete" ? <Check size={26} /> :
+                  installPhase === "failed" || installPhase === "build_pending" ? <CircleAlert size={26} /> :
+                    <LoaderCircle size={26} className="spin" />}
+              </div>
+              <span className="eyebrow">PACKAGE INSTALLER</span>
+              <h3>{
+                installPhase === "analyzing" ? "正在分析插件" :
+                  installPhase === "downloading" ? "正在下载插件" :
+                    installPhase === "verifying" ? "正在安全校验" :
+                      installPhase === "building" ? "正在构建运行环境" :
+                        installPhase === "complete" ? "安装完成" :
+                          installPhase === "build_pending" ? "等待构建完成" : "安装失败"
+              }</h3>
+              <div className="package-progress-steps">
+                {[
+                  ["analyzing", "分析仓库"], ["downloading", "下载文件"],
+                  ["verifying", "安全校验"], ["building", "构建环境"],
+                  ["complete", "安装完成"],
+                ].map(([phase, label], index) => {
+                  const order = ["analyzing", "downloading", "verifying", "building", "complete"];
+                  const current = installPhase === "build_pending" ? 3 : order.indexOf(installPhase);
+                  const done = installPhase === "complete" || index < current;
+                  const active = index === current && installPhase !== "failed";
+                  return (
+                    <div className={`${done ? "is-done" : ""} ${active ? "is-active" : ""}`} key={phase}>
+                      <i>{done ? <Check size={12} /> : index + 1}</i><span>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p>{installMessage || "请保持当前窗口打开，安装完成后即可使用插件。"}</p>
+              {!busy && (
+                <button
+                  type="button"
+                  className={installPhase === "failed" ? "secondary-button" : "primary-button"}
+                  onClick={() => {
+                    if (installPhase === "complete" || installPhase === "build_pending") onClose();
+                    else setInstallPhase("idle");
+                  }}
+                >
+                  {installPhase === "complete" || installPhase === "build_pending" ? "完成" : "返回修改"}
+                </button>
+              )}
+            </section>
+          </div>
+        )}
         <div className="modal-heading">
           <div>
             <span className="eyebrow">PACKAGE INSTALLER</span>
-            <h2 id="package-dialog-title">导入 XiaoLuo Package</h2>
-            <p>支持 JSON 格式的 .xlpkg 与 manifest.json。</p>
+            <h2 id="package-dialog-title">
+              {initial ? `修改 ${initial.name}` : "导入 XiaoLuo Package"}
+            </h2>
+            <p>
+              可上传标准压缩包，或从 GitHub Release / 仓库按 Commit 锁定导入。
+            </p>
           </div>
           <button type="button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="package-drop-row">
-          <label className="package-file-button">
-            <Upload size={17} />
-            <span><b>选择 Package 文件</b><small>.xlpkg 或 .json</small></span>
-            <input
-              type="file"
-              accept=".xlpkg,.json,application/json"
-              onChange={async (event) => {
-                const file = event.target.files?.[0];
-                if (file) setRaw(await file.text());
+        {!initial && (
+          <div className="package-install-tabs" role="tablist" aria-label="安装来源">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "archive"}
+              className={mode === "archive" ? "is-active" : ""}
+              onClick={() => {
+                setMode("archive");
+                setError("");
+                setCompatibility(null);
               }}
+            >
+              <FileArchive size={18} />
+              <span>
+                <b>压缩包</b>
+                <small>上传 .xlpkg 或 .zip</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "github"}
+              className={mode === "github" ? "is-active" : ""}
+              onClick={() => {
+                setMode("github");
+                setError("");
+                setCompatibility(null);
+              }}
+            >
+              <Github size={18} />
+              <span>
+                <b>GitHub 仓库</b>
+                <small>从仓库或 Release 导入</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "manifest"}
+              className={mode === "manifest" ? "is-active" : ""}
+              onClick={() => {
+                setMode("manifest");
+                setError("");
+                setCompatibility(null);
+              }}
+            >
+              <FileJson size={18} />
+              <span>
+                <b>Manifest / Skill</b>
+                <small>导入 .json 或 .md</small>
+              </span>
+            </button>
+          </div>
+        )}
+
+        <div className="package-install-body">
+        <section className="package-access-picker">
+          <label className="package-access-select">
+            <span>可见范围</span>
+            <select
+              value={accessScope}
+              onChange={(event) =>
+                setAccessScope(
+                  event.target.value as "personal" | "marketplace",
+                )
+              }
+            >
+              <option value="personal">私有（仅自己可见和使用）</option>
+              <option value="marketplace">
+                共享（审核通过后供所有用户添加）
+              </option>
+            </select>
+          </label>
+        </section>
+        {mode === "archive" && (
+          <div className="package-source-panel package-archive-panel">
+            <div className="package-source-heading">
+              <span>本地文件</span>
+              <div>
+                <h3>上传插件压缩包</h3>
+                <p>系统会先完成完整性与安全校验，再添加到当前账号。</p>
+              </div>
+            </div>
+            <label className="package-file-button is-large">
+              <Upload size={20} />
+              <span>
+                <b>{archiveFile ? archiveFile.name : "选择插件压缩包"}</b>
+                <small>
+                  {archiveFile
+                    ? `${(archiveFile.size / 1024 / 1024).toFixed(2)} MB · 等待安全校验`
+                    : ".xlpkg 或 .zip，最大 50 MB"}
+                </small>
+              </span>
+              <input
+                type="file"
+                accept=".xlpkg,.zip,application/zip,application/x-zip-compressed"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setArchiveFile(file);
+                  setError("");
+                  setCompatibility(null);
+                }}
+              />
+            </label>
+            <div className="package-format-guide">
+              <b>标准包结构</b>
+              <code>xiaoluo.plugin.json</code>
+              <span>可包含 dist、runtime、schemas、assets、checksums.json 和签名文件。</span>
+            </div>
+          </div>
+        )}
+
+        {mode === "github" && (
+          <div className="package-source-panel">
+            <label className="package-source-field">
+              <span>GitHub 仓库地址</span>
+              <input
+                value={githubUrl}
+                onChange={(event) => setGithubUrl(event.target.value)}
+                placeholder="https://github.com/owner/repository"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label className="package-source-field">
+              <span>分支、标签或 Commit（可选）</span>
+              <input
+                value={githubRef}
+                onChange={(event) => setGithubRef(event.target.value)}
+                placeholder="留空使用最新 .xlpkg Release 或默认分支"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <p className="package-source-help">
+              安装器优先读取 Release 中的 .xlpkg；否则锁定仓库 Commit 并查找
+              xiaoluo.plugin.json。没有清单时会自动生成适配包装；需要构建的项目
+              会进入隔离构建准备状态，不会放进主服务进程执行。
+            </p>
+          </div>
+        )}
+
+        {mode === "manifest" && (
+          <div className="package-source-panel package-manifest-upload">
+            <div className="package-drop-row">
+              <label className="package-file-button">
+                <Upload size={17} />
+                <span>
+                  <b>选择 Manifest 或 Skill 文件</b>
+                  <small>.md、.json，也兼容旧版 JSON .xlpkg</small>
+                </span>
+                <input
+                  type="file"
+                  accept=".md,.xlpkg,.json,.zip,text/markdown,text/plain,application/json,application/zip"
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      await chooseManifestFile(file);
+                    } catch (reason) {
+                      setError(
+                        reason instanceof Error
+                          ? reason.message
+                          : "文件解析失败",
+                      );
+                    }
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setRaw(starterManifest)}
+              >
+                填入插件清单模板
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === "manifest" && (
+          <label className="manifest-editor-label">
+            <span>{initial ? "Package Manifest（已自动提升补丁版本）" : "Package Manifest"}</span>
+            <textarea
+              className="manifest-editor"
+              value={raw}
+              onChange={(event) => setRaw(event.target.value)}
+              placeholder="将 manifest JSON 粘贴到这里…"
+              spellCheck={false}
             />
           </label>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => setRaw(starterManifest)}
-          >
-            填入插件清单模板
-          </button>
-        </div>
-        <label className="manifest-editor-label">
-          <span>Package Manifest</span>
-          <textarea
-            className="manifest-editor"
-            value={raw}
-            onChange={(event) => setRaw(event.target.value)}
-            placeholder="将 manifest JSON 粘贴到这里…"
-            spellCheck={false}
-          />
-        </label>
-        <div className="security-note">
-          <ShieldCheck size={16} />
-          <p>
-            安装前会校验版本、ID、Schema、运行时与权限。Skill 不允许执行任意代码；
-            远程 API 必须声明精确 HTTPS Origin。
-          </p>
-        </div>
+        )}
+
+        {compatibility && (
+          <div className="package-compatibility-report" role="status">
+            <header>
+              <CircleAlert size={17} />
+              <div>
+                <b>仓库已分析，需要适配后才能安装</b>
+                <small>
+                  {compatibility.repository} · {compatibility.commit.slice(0, 12)}
+                </small>
+              </div>
+            </header>
+            <div className="package-detection-tags">
+              {(compatibility.detectedStack.length
+                ? compatibility.detectedStack
+                : ["未识别前端框架"]
+              ).map((item) => <span key={item}>{item}</span>)}
+            </div>
+            <ul>
+              {compatibility.issues.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+            <p>
+              补充 <code>xiaoluo.plugin.json</code>，或在 GitHub Release
+              上传标准 <code>.xlpkg</code> 后可直接重试。
+            </p>
+          </div>
+        )}
         {error && <div className="modal-error"><CircleAlert size={14} /> {error}</div>}
-        <div className="modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={!raw.trim() || busy}
-            onClick={() => void submit()}
-          >
-            {busy ? <LoaderCircle size={15} className="spin" /> : <PackagePlus size={15} />}
-            校验并安装
-          </button>
+        </div>
+        <div className="package-modal-footer">
+          <div className="security-note">
+            <ShieldCheck size={17} />
+            <p>
+              自动检查压缩包、敏感文件、Manifest 与权限；GitHub 来源固定到具体 Commit。
+            </p>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="secondary-button" onClick={onClose}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!canSubmit || busy}
+              onClick={() => void submit()}
+            >
+              {busy ? <LoaderCircle size={15} className="spin" /> : <PackagePlus size={15} />}
+              {initial
+                ? "校验并更新"
+                : mode === "github"
+                  ? "分析并安装"
+                  : "校验并安装"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
-const skillProtocols: Array<{ value: ModelProtocol; label: string }> = [
-  { value: "openai-compatible", label: "OpenAI 兼容" },
-  { value: "anthropic-compatible", label: "Anthropic 兼容" },
-  { value: "gemini", label: "Gemini" },
-  { value: "ark", label: "火山方舟" },
-  { value: "async-video", label: "异步视频" },
-];
 
 function skillPorts(modality: NodeKind) {
   const output = {
@@ -1036,24 +1878,33 @@ function incrementPatchVersion(version: string) {
 function SkillBuilderDialog({
   initial,
   packages,
+  isSystemAdmin,
   onClose,
   onInstall,
 }: {
   initial?: Capability;
   packages: InstalledPackage[];
+  isSystemAdmin: boolean;
   onClose: () => void;
   onInstall: (raw: string) => Promise<void>;
 }) {
+  const initialOwner = initial?.packageId
+    ? packages.find((item) => item.id === initial.packageId)
+    : undefined;
   const [name, setName] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [modality, setModality] = useState<NodeKind>(
     initial?.modality ?? "text",
   );
-  const [protocols, setProtocols] = useState<ModelProtocol[]>(
-    initial?.modelRequirements?.protocols ?? [],
+  const [instructions, setInstructions] = useState(
+    initial?.instructions ?? "",
   );
-  const [tags, setTags] = useState(
-    initial?.modelRequirements?.capabilityTags?.join(", ") ?? "",
+  const [accessScope, setAccessScope] = useState<
+    "personal" | "marketplace"
+  >(
+    isSystemAdmin || initialOwner?.accessScope === "marketplace"
+      ? "marketplace"
+      : "personal",
   );
   const [inputSchema, setInputSchema] = useState<Record<string, unknown>>(
     initial?.inputSchema ?? {
@@ -1095,6 +1946,7 @@ function SkillBuilderDialog({
       version: nextVersion,
       description: description.trim(),
       type: "skill",
+      access: { scope: accessScope },
       runtime: { type: "declarative" },
       permissions: ["models:list", "models:invoke"],
       contributes: {
@@ -1106,7 +1958,12 @@ function SkillBuilderDialog({
             modality,
             executionMode: "model",
             ports: skillPorts(modality),
-            inputSchema,
+            inputSchema: {
+              ...inputSchema,
+              ...(instructions.trim()
+                ? { "x-xiaoluo-instructions": instructions.trim() }
+                : {}),
+            },
             outputSchema: {
               type: "object",
               properties:
@@ -1123,11 +1980,6 @@ function SkillBuilderDialog({
             uiSchema,
             modelRequirements: {
               required: true,
-              ...(protocols.length ? { protocols } : {}),
-              capabilityTags: tags
-                .split(/[,，]/)
-                .map((item) => item.trim().toLowerCase())
-                .filter(Boolean),
             },
           },
         ],
@@ -1195,6 +2047,22 @@ function SkillBuilderDialog({
               <option value="document">文档</option>
             </select>
           </label>
+          <label className="skill-access-scope">
+            使用权限
+            <select
+              value={accessScope}
+              onChange={(event) =>
+                setAccessScope(
+                  event.target.value as "personal" | "marketplace",
+                )
+              }
+            >
+              <option value="personal">私有 Skill（仅自己可见）</option>
+              <option value="marketplace">
+                共享 Skill（所有用户可见并可添加）
+              </option>
+            </select>
+          </label>
           <label className="skill-builder-span">
             说明
             <textarea
@@ -1204,33 +2072,15 @@ function SkillBuilderDialog({
             />
           </label>
           <label className="skill-builder-span">
-            要求的模型能力标签
-            <input
-              value={tags}
-              onChange={(event) => setTags(event.target.value)}
-              placeholder="例如：vision, image-edit；留空表示不限制"
+            执行规则 / Prompt
+            <textarea
+              className="skill-instructions-editor"
+              value={instructions}
+              onChange={(event) => setInstructions(event.target.value)}
+              placeholder="写入 Skill 的完整执行规则；从 .md 安装时会自动使用 Markdown 正文。"
             />
           </label>
         </div>
-        <fieldset className="modality-picker skill-protocol-picker">
-          <legend>兼容模型协议（不选择表示全部兼容）</legend>
-          {skillProtocols.map((protocol) => (
-            <label key={protocol.value}>
-              <input
-                type="checkbox"
-                checked={protocols.includes(protocol.value)}
-                onChange={() =>
-                  setProtocols((current) =>
-                    current.includes(protocol.value)
-                      ? current.filter((item) => item !== protocol.value)
-                      : [...current, protocol.value],
-                  )
-                }
-              />
-              {protocol.label}
-            </label>
-          ))}
-        </fieldset>
         <SchemaOptionBuilder
           title="Skill 节点选项"
           schema={inputSchema}

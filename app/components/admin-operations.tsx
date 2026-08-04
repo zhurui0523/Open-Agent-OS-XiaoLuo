@@ -11,19 +11,21 @@ import {
   TimerReset,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { PackageTrustAdmin } from "./package-trust-admin";
 
 interface Overview {
   metrics: {
     users: number;
-    workspaces: number;
     canvases: number;
     assets: number;
     assetBytes: number;
     runningTasks: number;
     failedTasks: number;
   };
-  dependencies: { mysql: boolean; oss: boolean };
+  dependencies: {
+    mysql: boolean;
+    storage: boolean;
+    storageDriver: "local" | "oss";
+  };
   services: {
     sms: { provider: string; configured: boolean; missing: string[] };
     scheduler: { configured: boolean };
@@ -102,8 +104,21 @@ export function AdminOperations() {
             </article>
             <article>
               <HardDrive size={18} />
-              <span><b>阿里云 OSS</b><small>{overview.dependencies.oss ? "连接正常" : "不可用"}</small></span>
-              <i className={overview.dependencies.oss ? "healthy" : "failed"} />
+              <span>
+                <b>
+                  {overview.dependencies.storageDriver === "local"
+                    ? "本地文件存储"
+                    : "阿里云 OSS"}
+                </b>
+                <small>
+                  {overview.dependencies.storage ? "连接正常" : "不可用"}
+                </small>
+              </span>
+              <i
+                className={
+                  overview.dependencies.storage ? "healthy" : "failed"
+                }
+              />
             </article>
             <article>
               <MessageSquareText size={18} />
@@ -156,7 +171,6 @@ export function AdminOperations() {
           </div>
           <div className="admin-metric-grid">
             <div><b>{overview.metrics.users}</b><span>用户</span></div>
-            <div><b>{overview.metrics.workspaces}</b><span>工作空间</span></div>
             <div><b>{overview.metrics.canvases}</b><span>画布</span></div>
             <div><b>{overview.metrics.assets}</b><span>资产</span></div>
             <div><b>{bytes(overview.metrics.assetBytes)}</b><span>存储量</span></div>
@@ -176,7 +190,6 @@ export function AdminOperations() {
           </section>
         </>
       )}
-      <PackageTrustAdmin />
     </section>
   );
 }

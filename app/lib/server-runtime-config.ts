@@ -16,6 +16,10 @@ export interface OssRuntimeConfig {
   endpoint: string | null;
 }
 
+export interface LocalStorageRuntimeConfig {
+  root: string;
+}
+
 export interface RuntimeServiceReadiness {
   sms: {
     provider: string;
@@ -87,6 +91,17 @@ function mysqlSslCa(value: string | undefined) {
   }
 }
 
+function storageDriver() {
+  const driver = process.env.STORAGE_DRIVER?.trim().toLowerCase() || "oss";
+  if (driver !== "oss" && driver !== "local") {
+    throw new Error("STORAGE_DRIVER 只能是 oss 或 local");
+  }
+  if (process.env.NODE_ENV === "production" && driver === "local") {
+    throw new Error("生产环境不允许使用本地文件存储");
+  }
+  return driver;
+}
+
 export function packageSignaturesRequired() {
   return (
     process.env.NODE_ENV === "production" ||
@@ -95,24 +110,41 @@ export function packageSignaturesRequired() {
 }
 
 /**
- * XiaoLuo AI OS is a connected web service. Local development still talks to
- * the remote MySQL and OSS services; there is intentionally no local business
- * data fallback.
+ * The database remains MySQL-compatible in both modes. Local development uses
+ * a project-scoped MySQL process and a project-scoped file directory; cloud
+ * deployments switch only the environment values to managed MySQL and OSS.
  */
 export function serverRuntimeConfig() {
+  const driver = storageDriver();
+  const database = {
+    driver: "mysql" as const,
+    mysql: {
+      host: required("DB_HOST"),
+      port: port(process.env.DB_PORT),
+      user: required("DB_USER"),
+      password: required("DB_PASSWORD"),
+      database: required("DB_NAME"),
+      sslMode: sslMode(process.env.DB_SSL_MODE),
+      sslCa: mysqlSslCa(process.env.DB_SSL_CA_BASE64),
+    } satisfies MysqlRuntimeConfig,
+  };
+
+  if (driver === "local") {
+    return {
+      database,
+      storage: {
+        driver: "local" as const,
+        local: {
+          root:
+            process.env.LOCAL_STORAGE_ROOT?.trim() ||
+            ".local-data/storage",
+        } satisfies LocalStorageRuntimeConfig,
+      },
+    };
+  }
+
   return {
-    database: {
-      driver: "mysql" as const,
-      mysql: {
-        host: required("DB_HOST"),
-        port: port(process.env.DB_PORT),
-        user: required("DB_USER"),
-        password: required("DB_PASSWORD"),
-        database: required("DB_NAME"),
-        sslMode: sslMode(process.env.DB_SSL_MODE),
-        sslCa: mysqlSslCa(process.env.DB_SSL_CA_BASE64),
-      } satisfies MysqlRuntimeConfig,
-    },
+    database,
     storage: {
       driver: "oss" as const,
       oss: {
@@ -123,7 +155,7 @@ export function serverRuntimeConfig() {
         endpoint: process.env.OSS_ENDPOINT?.trim() || null,
       } satisfies OssRuntimeConfig,
     },
-  } as const;
+  };
 }
 
 export function redactedRuntimeSummary() {
@@ -132,11 +164,18 @@ export function redactedRuntimeSummary() {
     databaseDriver: config.database.driver,
     storageDriver: config.storage.driver,
     mysqlConfigured: true,
-    ossConfigured: true,
+    ossConfigured: config.storage.driver === "oss",
+    localStorageConfigured: config.storage.driver === "local",
     mysqlHost: config.database.mysql.host,
     mysqlDatabase: config.database.mysql.database,
-    ossRegion: config.storage.oss.region,
-    ossBucket: config.storage.oss.bucket,
+    ...(config.storage.driver === "oss"
+      ? {
+          ossRegion: config.storage.oss.region,
+          ossBucket: config.storage.oss.bucket,
+        }
+      : {
+          localStorageRoot: config.storage.local.root,
+        }),
   };
 }
 

@@ -7,11 +7,13 @@ import {
 import { mysqlExecute, mysqlRows } from "../../../lib/mysql";
 import {
   listCanvases,
+  listUserCanvases,
   readCanvasGraph,
   replaceCanvasGraph,
 } from "../../../lib/workspace-store";
-import type { CanvasEdge, CanvasNode } from "../../../types";
+import type { CanvasEdge, CanvasGroup, CanvasNode } from "../../../types";
 import {
+  sanitizeCanvasEdges,
   validateEdgePorts,
   validatePortCardinality,
 } from "../../../lib/node-ports";
@@ -89,6 +91,38 @@ function validEdges(value: unknown, nodeIds: Set<string>): value is CanvasEdge[]
   );
 }
 
+function validGroups(value: unknown): value is CanvasGroup[] {
+  const colors = new Set(["indigo", "emerald", "amber", "rose"]);
+  return (
+    Array.isArray(value) &&
+    value.length <= 200 &&
+    value.every(
+      (group) =>
+        group &&
+        typeof group === "object" &&
+        typeof group.id === "string" &&
+        group.id.length > 0 &&
+        group.id.length <= 120 &&
+        typeof group.title === "string" &&
+        group.title.trim().length > 0 &&
+        group.title.length <= 120 &&
+        typeof group.x === "number" &&
+        Number.isFinite(group.x) &&
+        typeof group.y === "number" &&
+        Number.isFinite(group.y) &&
+        typeof group.width === "number" &&
+        Number.isFinite(group.width) &&
+        group.width >= 240 &&
+        group.width <= 4_000 &&
+        typeof group.height === "number" &&
+        Number.isFinite(group.height) &&
+        group.height >= 160 &&
+        group.height <= 4_000 &&
+        colors.has(group.color),
+    )
+  );
+}
+
 export async function GET(request: Request) {
   try {
     const user = await requireUser(request);
@@ -102,16 +136,18 @@ export async function GET(request: Request) {
         : Response.json({ error: "画布不存在" }, { status: 404 });
     }
     const projectId = url.searchParams.get("projectId");
-    if (!projectId) {
-      return Response.json({ error: "缺少 projectId" }, { status: 400 });
-    }
-    await requireProjectAccess(user.id, projectId, "view");
     const requestedState = url.searchParams.get("state");
     const state =
       requestedState === "archived" || requestedState === "deleted"
         ? requestedState
         : "active";
-    return Response.json({ canvases: await listCanvases(projectId, state) });
+    if (!projectId) {
+      return Response.json({
+        canvases: await listUserCanvases(user.id, state),
+      });
+    }
+    await requireProjectAccess(user.id, projectId, "view");
+    return Response.json({ canvases: await listCanvases(projectId, state, user.id) });
   } catch (error) {
     return jsonError(error, "读取画布失败");
   }
@@ -139,9 +175,9 @@ export async function POST(request: Request) {
     if (body.sourceCanvasId) {
       await requireCanvasAccess(user.id, body.sourceCanvasId, "view");
       sourceGraph = await readCanvasGraph(body.sourceCanvasId);
-      if (!sourceGraph || sourceGraph.projectId !== projectId) {
+      if (!sourceGraph) {
         return Response.json(
-          { error: "只能复制当前项目中可访问的画布" },
+          { error: "源画布不存在或无权访问" },
           { status: 400 },
         );
       }
@@ -155,7 +191,7 @@ export async function POST(request: Request) {
         id,
         projectId,
         title,
-        JSON.stringify(sourceGraph?.viewport ?? { x: 0, y: 0, zoom: 92 }),
+        JSON.stringify(sourceGraph?.viewport ?? { x: 0, y: 0, zoom: 100 }),
         user.id,
       ],
     );
@@ -169,6 +205,7 @@ export async function POST(request: Request) {
           revision: 1,
           arrangeMode: sourceGraph.arrangeMode,
           viewport: sourceGraph.viewport,
+          groups: sourceGraph.groups.map((group) => ({ ...group })),
           nodes: sourceGraph.nodes.map((node) => ({ ...node })),
           edges: sourceGraph.edges.map((edge) => ({ ...edge })),
         })) ?? 1;
@@ -183,7 +220,7 @@ export async function POST(request: Request) {
           updatedAt: new Date().toISOString(),
           revision,
           arrangeMode: sourceGraph?.arrangeMode ?? "free",
-          viewport: sourceGraph?.viewport ?? { x: 0, y: 0, zoom: 92 },
+          viewport: sourceGraph?.viewport ?? { x: 0, y: 0, zoom: 100 },
         },
       },
       { status: 201 },
@@ -201,6 +238,7 @@ export async function PUT(request: Request) {
       revision?: number;
       arrangeMode?: unknown;
       viewport?: { x?: unknown; y?: unknown; zoom?: unknown };
+      groups?: unknown;
       nodes?: unknown;
       edges?: unknown;
     };
@@ -211,12 +249,16 @@ export async function PUT(request: Request) {
     if (!validNodes(body.nodes)) {
       return Response.json({ error: "节点数据无效" }, { status: 400 });
     }
+    if (!validGroups(body.groups)) {
+      return Response.json({ error: "节点群区域数据无效" }, { status: 400 });
+    }
     const nodeIds = new Set(body.nodes.map((node) => node.id));
     if (!validEdges(body.edges, nodeIds)) {
       return Response.json({ error: "连线数据无效" }, { status: 400 });
     }
+    const sanitizedEdges = sanitizeCanvasEdges(body.nodes, body.edges);
     const nodesById = new Map(body.nodes.map((node) => [node.id, node]));
-    for (const edge of body.edges) {
+    for (const edge of sanitizedEdges) {
       const source = nodesById.get(edge.source);
       const target = nodesById.get(edge.target);
       if (!source || !target) continue;
@@ -232,7 +274,7 @@ export async function PUT(request: Request) {
       }
       const cardinality = validatePortCardinality(
         edge,
-        body.edges.filter((candidate) => candidate.id !== edge.id),
+        sanitizedEdges.filter((candidate) => candidate.id !== edge.id),
         target,
       );
       if (cardinality) {
@@ -247,7 +289,7 @@ export async function PUT(request: Request) {
     }
     if (body.nodes.length) {
       try {
-        compileWorkflow(body.nodes, body.edges);
+        compileWorkflow(body.nodes, sanitizedEdges);
       } catch (error) {
         if (error instanceof WorkflowCompileError) {
           return Response.json(
@@ -273,8 +315,9 @@ export async function PUT(request: Request) {
       revision: body.revision as number,
       arrangeMode: body.arrangeMode,
       viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
+      groups: body.groups,
       nodes: body.nodes,
-      edges: body.edges,
+      edges: sanitizedEdges,
     });
     if (revision === null) {
       return Response.json(
@@ -290,7 +333,8 @@ export async function PUT(request: Request) {
       eventType: "canvas.updated",
       payload: {
         nodeCount: body.nodes.length,
-        edgeCount: body.edges.length,
+        edgeCount: sanitizedEdges.length,
+        groupCount: body.groups.length,
       },
       canvasRevision: revision,
     });
@@ -318,17 +362,14 @@ export async function PATCH(request: Request) {
       return Response.json({ error: "画布参数无效" }, { status: 400 });
     }
     if (body.action === "restore") {
-      if (!body.projectId) {
-        return Response.json({ error: "恢复画布需要 projectId" }, { status: 400 });
-      }
-      await requireProjectAccess(user.id, body.projectId, "manage");
+      await requireCanvasAccess(user.id, body.id, "manage", true);
       await mysqlExecute(
         `UPDATE xiaoluo_v2_canvases
          SET deleted_at = NULL,
              archived_at = NULL,
              updated_at = CURRENT_TIMESTAMP(3)
-         WHERE id = ? AND project_id = ?`,
-        [body.id, body.projectId],
+         WHERE id = ?`,
+        [body.id],
       );
       return Response.json({ ok: true });
     }

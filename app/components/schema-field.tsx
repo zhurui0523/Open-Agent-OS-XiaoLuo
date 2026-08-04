@@ -3,6 +3,7 @@
 import { Plus, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import type { JsonSchema } from "../lib/json-schema";
+import { assetUploadRequestInit } from "../lib/asset-upload";
 
 interface SchemaFieldProps {
   fieldKey: string;
@@ -253,12 +254,11 @@ export function SchemaField({
               if (!file || !workspaceId) return;
               setUploading(true);
               try {
-                const form = new FormData();
-                form.set("file", file);
-                form.set("sourceType", "schema-field-upload");
                 const response = await fetch(
                   `/api/v2/files?workspaceId=${encodeURIComponent(workspaceId)}`,
-                  { method: "POST", body: form },
+                  assetUploadRequestInit(file, {
+                    sourceType: "schema-field-upload",
+                  }),
                 );
                 const payload = (await response.json()) as {
                   asset?: { uri?: string };

@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../db";
-import { secretRefs } from "../../db/schema";
-import { serverRuntimeConfig } from "./server-runtime-config";
+import { modelConnections, secretRefs } from "../../db/schema";
 import { mysqlNow } from "./mysql";
+
+export type SecretPurpose = "generic" | "model_api_key";
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
@@ -19,15 +20,14 @@ function base64ToBytes(value: string) {
 
 async function encryptionKey() {
   const configured = process.env.SECRET_ENCRYPTION_KEY?.trim();
-  if (!configured && process.env.NODE_ENV === "production") {
-    throw new Error("生产环境必须配置独立的 SECRET_ENCRYPTION_KEY");
+  if (!configured) {
+    throw new Error(
+      "服务端未配置 SECRET_ENCRYPTION_KEY；模型密钥不能使用数据库密码代替加密",
+    );
   }
-  const developmentKey =
-    configured || serverRuntimeConfig().database.mysql.password;
-  if (!developmentKey) throw new Error("服务端未配置 Secret 加密密钥");
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(developmentKey),
+    new TextEncoder().encode(configured),
   );
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, [
     "encrypt",
@@ -62,9 +62,11 @@ export async function saveSecret(input: {
   userId: string;
   name: string;
   value: string;
+  purpose?: SecretPurpose;
 }) {
   const name = input.name.trim().slice(0, 120);
   const value = input.value.trim();
+  const purpose = input.purpose ?? "generic";
   if (!name || !value) throw new Error("Secret 名称和值不能为空");
   const encrypted = await encrypt(value);
   const db = await getDb();
@@ -74,6 +76,8 @@ export async function saveSecret(input: {
     .where(
       and(
         eq(secretRefs.workspaceId, input.workspaceId),
+        eq(secretRefs.createdBy, input.userId),
+        eq(secretRefs.purpose, purpose),
         eq(secretRefs.name, name),
       ),
     )
@@ -90,6 +94,7 @@ export async function saveSecret(input: {
       id,
       workspaceId: input.workspaceId,
       name,
+      purpose,
       ...encrypted,
       createdBy: input.userId,
       createdAt: now,
@@ -97,6 +102,81 @@ export async function saveSecret(input: {
     });
   }
   return { id, name };
+}
+
+export async function assertOwnedSecretReference(input: {
+  secretRefId: string;
+  workspaceId: string;
+  userId: string;
+  purpose?: SecretPurpose;
+}) {
+  const db = await getDb();
+  const [secret] = await db
+    .select({ id: secretRefs.id, purpose: secretRefs.purpose })
+    .from(secretRefs)
+    .where(
+      and(
+        eq(secretRefs.id, input.secretRefId),
+        eq(secretRefs.workspaceId, input.workspaceId),
+        eq(secretRefs.createdBy, input.userId),
+        ...(input.purpose
+          ? [eq(secretRefs.purpose, input.purpose)]
+          : []),
+      ),
+    )
+    .limit(1);
+  if (!secret) throw new Error("密钥不存在，或不属于当前用户");
+  return secret;
+}
+
+export async function isSecretReferencedByModel(
+  secretRefId: string,
+  workspaceId: string,
+) {
+  const db = await getDb();
+  const [reference] = await db
+    .select({ id: modelConnections.id })
+    .from(modelConnections)
+    .where(
+      and(
+        eq(modelConnections.workspaceId, workspaceId),
+        eq(modelConnections.secretRefId, secretRefId),
+      ),
+    )
+    .limit(1);
+  return Boolean(reference);
+}
+
+export async function deleteModelSecretIfUnreferenced(input: {
+  secretRefId: string;
+  workspaceId: string;
+}) {
+  const db = await getDb();
+  const [ownedModelSecret] = await db
+    .select({ id: secretRefs.id })
+    .from(secretRefs)
+    .where(
+      and(
+        eq(secretRefs.id, input.secretRefId),
+        eq(secretRefs.workspaceId, input.workspaceId),
+        eq(secretRefs.purpose, "model_api_key"),
+      ),
+    )
+    .limit(1);
+  if (!ownedModelSecret) return false;
+  if (await isSecretReferencedByModel(input.secretRefId, input.workspaceId)) {
+    return false;
+  }
+  await db
+    .delete(secretRefs)
+    .where(
+      and(
+        eq(secretRefs.id, input.secretRefId),
+        eq(secretRefs.workspaceId, input.workspaceId),
+        eq(secretRefs.purpose, "model_api_key"),
+      ),
+    );
+  return true;
 }
 
 export async function resolveSecret(
@@ -114,7 +194,7 @@ export async function resolveSecret(
       ),
     )
     .limit(1);
-  if (!secret) throw new Error("Secret 不存在或不属于当前工作区");
+  if (!secret) throw new Error("Secret 不存在或当前账号无权访问");
   await db
     .update(secretRefs)
     .set({ lastUsedAt: mysqlNow() })

@@ -52,6 +52,9 @@ export interface XiaoLuoPackageManifest {
   version: string;
   description?: string;
   type: PackageType;
+  access?: {
+    scope: "personal" | "workspace" | "marketplace";
+  };
   runtime: {
     type: PluginRuntimeType;
     entry?: string;
@@ -92,8 +95,15 @@ const allowedModalities = new Set([
 ]);
 const allowedProtocols = new Set([
   "openai-compatible",
+  "openai-responses",
   "anthropic-compatible",
   "gemini",
+  "dall-e-3",
+  "runninghub-sparkvideo-mini",
+  "runninghub-sparkvideo-mini-multimodal",
+  "runninghub-sparkvideo",
+  "runninghub-sparkvideo-multimodal",
+  "runninghub-minimax-h3",
   "ark",
   "async-video",
   "generic-rest",
@@ -283,6 +293,8 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
   const name = safeString(maybeEnvelope.name);
   const version = safeString(maybeEnvelope.version);
   const type = safeString(maybeEnvelope.type) as PackageType;
+  const access = isRecord(maybeEnvelope.access) ? maybeEnvelope.access : {};
+  const accessScope = safeString(access.scope) || "personal";
   const runtime = isRecord(maybeEnvelope.runtime) ? maybeEnvelope.runtime : {};
   const runtimeType = safeString(runtime.type) as PluginRuntimeType;
   const runtimeEntry = safeString(runtime.entry);
@@ -308,6 +320,9 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     issues.push(
       "type 只支持 skill、agent、workflow、plugin、model-provider 或 adapter",
     );
+  }
+  if (!["personal", "workspace", "marketplace"].includes(accessScope)) {
+    issues.push("access.scope 只支持 personal、workspace 或 marketplace");
   }
   if (
     ![
@@ -506,6 +521,9 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     version,
     description: safeString(maybeEnvelope.description),
     type,
+    access: {
+      scope: accessScope as "personal" | "workspace" | "marketplace",
+    },
     runtime: {
       type: runtimeType,
       ...(runtimeEntry ? { entry: runtimeEntry } : {}),

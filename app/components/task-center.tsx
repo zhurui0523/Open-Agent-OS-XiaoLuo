@@ -1,12 +1,12 @@
 "use client";
 
 import {
-  ArrowLeft,
   Clapperboard,
   LoaderCircle,
   RefreshCcw,
   RotateCcw,
   Square,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -79,10 +79,10 @@ const statusLabels: Record<string, string> = {
 
 export function TaskCenter({
   workspaceId,
-  onBack,
+  onClose,
 }: {
   workspaceId: string;
-  onBack: () => void;
+  onClose: () => void;
 }) {
   const [payload, setPayload] = useState<TaskPayload>({
     runs: [],
@@ -95,6 +95,14 @@ export function TaskCenter({
   const [error, setError] = useState("");
   const [selectedRunId, setSelectedRunId] = useState("");
   const [runDetail, setRunDetail] = useState<RunDetailPayload | null>(null);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
 
   useEffect(() => {
     if (!selectedRunId) return;
@@ -226,19 +234,37 @@ export function TaskCenter({
   }
 
   return (
-    <section className="content-view task-center" aria-label="任务中心">
+    <div
+      className="task-center-backdrop"
+      role="presentation"
+      onMouseDown={onClose}
+    >
+    <section
+      className="content-view task-center task-center-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="任务中心"
+      onMouseDown={(event) => event.stopPropagation()}
+    >
       <header className="content-header">
         <div>
-          <button type="button" className="task-back" onClick={onBack}>
-            <ArrowLeft size={15} /> 返回文件系统
-          </button>
           <span className="eyebrow">RUNTIME · GENERATION JOBS</span>
           <h1>任务中心</h1>
           <p>异步视频和工作流在关闭页面后继续运行，状态完全来自服务端。</p>
         </div>
-        <button type="button" className="secondary-button" onClick={() => void load()}>
-          <RefreshCcw size={15} /> 刷新
-        </button>
+        <div className="task-center-header-actions">
+          <button type="button" className="secondary-button" onClick={() => void load()}>
+            <RefreshCcw size={15} /> 刷新
+          </button>
+          <button
+            type="button"
+            className="task-center-close"
+            aria-label="关闭任务中心"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </button>
+        </div>
       </header>
 
       <div className="task-summary">
@@ -421,5 +447,6 @@ export function TaskCenter({
         {!tasks.length && <div className="empty-state"><h2>暂无任务</h2><p>画布运行和异步视频任务会出现在这里。</p></div>}
       </div>
     </section>
+    </div>
   );
 }

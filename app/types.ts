@@ -1,4 +1,4 @@
-export type AppView = "canvas" | "assets" | "capabilities" | "runs";
+export type AppView = "canvas" | "assets" | "capabilities";
 
 export interface AccountUser {
   id: string;
@@ -18,15 +18,6 @@ export interface OrganizationSummary {
   workspaceId: string | null;
   applicationStatus: "pending" | "approved" | "rejected" | null;
   createdAt: string;
-}
-
-export interface WorkspaceOption {
-  id: string;
-  name: string;
-  role: "owner" | "admin" | "editor" | "viewer";
-  kind: "personal" | "enterprise";
-  organizationName: string | null;
-  organizationRole: "admin" | "member" | null;
 }
 
 export type NodeKind = "text" | "image" | "video" | "audio" | "document";
@@ -118,6 +109,19 @@ export interface CanvasEdge {
   dataType: PortDataType;
 }
 
+export type CanvasGroupColor = "indigo" | "emerald" | "amber" | "rose";
+
+export interface CanvasGroup {
+  id: string;
+  title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: CanvasGroupColor;
+  createdAt?: number;
+}
+
 export interface CanvasSummary {
   id: string;
   title: string;
@@ -125,6 +129,8 @@ export interface CanvasSummary {
   nodes: number;
   updatedAt: string;
   starred?: boolean;
+  enterpriseShared?: boolean;
+  canManage?: boolean;
 }
 
 export interface ProjectSummary {
@@ -160,12 +166,14 @@ export interface Capability {
     capabilityTags?: string[];
     modelIds?: string[];
   };
+  instructions?: string;
 }
 
 export interface ModelConnection {
   id: string;
   name: string;
   provider: string;
+  createdAt?: string;
   modalities: NodeKind[];
   state: "healthy" | "checking" | "attention";
   latency: string;
@@ -187,7 +195,33 @@ export interface ModelConnection {
   lastCheckedAt?: string | null;
   parameterSchema?: Record<string, unknown>;
   uiSchema?: Record<string, unknown>;
+  inputConstraints?: ModelInputConstraints;
   capabilityTags?: string[];
+  createdBy?: string;
+  ownerScope?: "personal" | "administrator";
+  accessScope?: "personal" | "workspace";
+  canManage?: boolean;
+}
+
+export type ModelInputAssetKind = "image" | "video" | "audio" | "document";
+
+export interface ModelInputConstraints {
+  maxTotal: number;
+  maxByType: Record<ModelInputAssetKind, number>;
+}
+
+export interface CanvasAssetReference {
+  sourceNodeId: string;
+  assetId?: string;
+  title: string;
+  kind: ModelInputAssetKind;
+  url?: string;
+  mimeType?: string;
+  status: NodeStatus;
+}
+
+export interface NodeInputAssetReference extends CanvasAssetReference {
+  edgeId: string;
 }
 
 export type PackageType =
@@ -204,8 +238,15 @@ export type PluginRuntimeType =
   | "isolated-worker";
 export type ModelProtocol =
   | "openai-compatible"
+  | "openai-responses"
   | "anthropic-compatible"
   | "gemini"
+  | "dall-e-3"
+  | "runninghub-sparkvideo-mini"
+  | "runninghub-sparkvideo-mini-multimodal"
+  | "runninghub-sparkvideo"
+  | "runninghub-sparkvideo-multimodal"
+  | "runninghub-minimax-h3"
   | "ark"
   | "async-video"
   | "generic-rest";
@@ -239,6 +280,80 @@ export interface InstalledPackage {
     ports: NodePort[];
   }>;
   runtimeLanguage?: "node" | "python" | "cli";
+  createdBy?: string;
+  ownerScope?: "personal" | "administrator";
+  accessScope?: "personal" | "workspace" | "marketplace";
+  canManage?: boolean;
+  manifest?: Record<string, unknown>;
+}
+
+export interface PackageInstallResult {
+  status?: "installed";
+  package: InstalledPackage;
+  action: "installed" | "updated";
+  review?: {
+    id: string;
+    status: string;
+    trustState: string;
+    signatureVerified: boolean;
+  };
+  source?: {
+    kind: "archive" | "github";
+    archiveSha256: string;
+    fileCount: number;
+    checksumsVerified: boolean;
+    fileName?: string;
+    repository?: string;
+    commit?: string;
+    sourceKind?: "release" | "repository";
+    runtimePreparation?: {
+      prepared: boolean;
+      reason: string;
+    };
+    generatedManifest?: boolean;
+    executionReady?: boolean;
+    compatibility?: GithubCompatibilityReport;
+  };
+}
+
+export interface GithubCompatibilityReport {
+  repository: string;
+  commit: string;
+  detectedStack: string[];
+  packageName: string | null;
+  scripts: string[];
+  hasServer: boolean;
+  hasBuildOutput: boolean;
+  issues: string[];
+  requiredFiles: string[];
+}
+
+export type GithubPackageImportResult =
+  | PackageInstallResult
+  | {
+      status: "needs_adaptation";
+      compatibility: GithubCompatibilityReport;
+      message: string;
+    };
+
+export interface MarketplacePackage {
+  id: string;
+  packageKey: string;
+  name: string;
+  version: string;
+  description: string;
+  packageType: "skill" | "plugin";
+  runtimeType: PluginRuntimeType;
+  permissions: string[];
+  manifest: Record<string, unknown>;
+  installed: boolean;
+  publisher: {
+    id: string;
+    username: string;
+    displayName: string;
+    platformRole: "system_admin" | "user";
+  };
+  updatedAt: string;
 }
 
 export interface RegistryEvent {
@@ -305,6 +420,7 @@ export interface ModelProviderTemplate {
   modalities: NodeKind[];
   parameterSchema?: Record<string, unknown>;
   uiSchema?: Record<string, unknown>;
+  inputConstraints?: ModelInputConstraints;
   capabilityTags?: string[];
 }
 
@@ -326,7 +442,9 @@ export interface ModelConnectionDraft {
   circuitCooldownSeconds?: number;
   parameterSchema?: Record<string, unknown>;
   uiSchema?: Record<string, unknown>;
+  inputConstraints?: ModelInputConstraints;
   capabilityTags?: string[];
+  accessScope?: "personal" | "workspace";
 }
 
 export interface ModelUsageSummary {
@@ -350,8 +468,10 @@ export interface ModelUsageSummary {
 }
 
 export type GesturePreset = "figma" | "trackpad" | "zoom-wheel";
+export type CanvasBackground = "day" | "night";
 
 export interface UserPreferences {
+  canvasBackground: CanvasBackground;
   gesturePreset: GesturePreset;
   invertZoom: boolean;
   zoomSensitivity: "slow" | "normal" | "fast";
@@ -386,7 +506,6 @@ export interface FileSystemAsset {
   kind: AssetKind;
   mimeType: string;
   size: number;
-  folderId: string | null;
   tags: string[];
   description: string;
   sourceType: string;
@@ -403,14 +522,6 @@ export interface FileSystemAsset {
   downloadUrl: string;
 }
 
-export interface FileSystemFolder {
-  id: string;
-  name: string;
-  parentId: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -425,6 +536,8 @@ export interface ChatAttachment {
   name: string;
   kind: AssetKind;
   mimeType: string;
+  previewUrl?: string;
+  sourceNodeId?: string;
 }
 
 export interface PlanTask {

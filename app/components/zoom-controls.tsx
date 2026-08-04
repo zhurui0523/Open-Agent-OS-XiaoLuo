@@ -1,6 +1,6 @@
 "use client";
 
-import { Focus, Minus, Plus } from "lucide-react";
+import { Focus, Map as MapIcon, Minus, Plus } from "lucide-react";
 import { IconButton } from "./icon-button";
 
 interface ZoomControlsProps {
@@ -9,6 +9,8 @@ interface ZoomControlsProps {
   onZoomOut: () => void;
   onFit: () => void;
   onReset: () => void;
+  minimapOpen: boolean;
+  onToggleMinimap: () => void;
 }
 
 export function ZoomControls({
@@ -17,9 +19,19 @@ export function ZoomControls({
   onZoomOut,
   onFit,
   onReset,
+  minimapOpen,
+  onToggleMinimap,
 }: ZoomControlsProps) {
   return (
     <div className="zoom-controls" aria-label="无限画布缩放控制">
+      <IconButton
+        label={minimapOpen ? "收起地图导航" : "展开地图导航"}
+        active={minimapOpen}
+        onClick={onToggleMinimap}
+      >
+        <MapIcon size={16} />
+      </IconButton>
+      <span className="tool-separator" />
       <IconButton label="适配所有节点" onClick={onFit}>
         <Focus size={16} />
       </IconButton>

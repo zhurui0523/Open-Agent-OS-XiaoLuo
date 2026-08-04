@@ -13,12 +13,18 @@ import {
   serializePackage,
 } from "../../../lib/registry-serialization";
 import { requireUser } from "../../../lib/auth";
+import { requireWorkspaceAccess } from "../../../lib/authorization";
 import { requireRequestedWorkspace } from "../../../lib/workspace-context";
 import type {
   ModelProviderTemplate,
   NodeKind,
 } from "../../../types";
 import type { XiaoLuoPackageManifest } from "../../../lib/package-contract";
+import {
+  canAccessRegistryResource,
+  modelAccessScope,
+  packageAccessScope,
+} from "../../../lib/registry-access";
 
 function routeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Registry unavailable";
@@ -61,6 +67,12 @@ export async function GET(request: Request) {
       user.id,
       "view",
     );
+    const access = await requireWorkspaceAccess(user.id, workspaceId, "view");
+    const ownershipContext = {
+      userId: user.id,
+      platformRole: user.platformRole,
+      canManage: access.role === "owner" || access.role === "admin",
+    };
     const db = await getDb();
     const [packageRows, capabilityRows, modelRows, eventRows] =
       await Promise.all([
@@ -102,15 +114,11 @@ export async function GET(request: Request) {
         db
           .select()
           .from(modelConnections)
-          .where(
-            and(
-              eq(modelConnections.workspaceId, workspaceId),
-              eq(modelConnections.enabled, true),
-            ),
-          )
+          .where(eq(modelConnections.workspaceId, workspaceId))
           .orderBy(
             asc(modelConnections.priority),
-            desc(modelConnections.updatedAt),
+            asc(modelConnections.createdAt),
+            asc(modelConnections.id),
           ),
         db
           .select()
@@ -119,12 +127,44 @@ export async function GET(request: Request) {
           .orderBy(desc(registryEvents.createdAt))
           .limit(20),
       ]);
-    const packageMap = new Map(packageRows.map((row) => [row.id, row]));
+    const visiblePackageRows = packageRows.filter((row) => {
+      let manifest: XiaoLuoPackageManifest | null = null;
+      try {
+        manifest = JSON.parse(row.manifestJson) as XiaoLuoPackageManifest;
+      } catch {
+        return false;
+      }
+      return canAccessRegistryResource({
+        scope: packageAccessScope(manifest),
+        createdBy: row.createdBy,
+        userId: user.id,
+        platformRole: user.platformRole,
+      });
+    });
+    const visiblePackageMap = new Map(
+      visiblePackageRows.map((row) => [row.id, row]),
+    );
+    const visibleModelRows = modelRows.filter((row) => {
+      let uiSchema: Record<string, unknown> = {};
+      try {
+        uiSchema = JSON.parse(row.uiSchemaJson) as Record<string, unknown>;
+      } catch {
+        uiSchema = {};
+      }
+      return canAccessRegistryResource({
+        scope: modelAccessScope(uiSchema),
+        createdBy: row.createdBy,
+        userId: user.id,
+        platformRole: user.platformRole,
+      });
+    });
 
     return Response.json({
-      packages: packageRows.map(serializePackage),
+      packages: visiblePackageRows.map((row) =>
+        serializePackage(row, ownershipContext),
+      ),
       capabilities: capabilityRows.flatMap((row) => {
-        const owner = packageMap.get(row.packageId);
+        const owner = visiblePackageMap.get(row.packageId);
         return owner
           ? [
               serializeCapability(
@@ -136,8 +176,10 @@ export async function GET(request: Request) {
             ]
           : [];
       }),
-      models: modelRows.map(serializeModel),
-      modelProviders: modelProviderTemplates(packageRows),
+      models: visibleModelRows.map((row) =>
+        serializeModel(row, ownershipContext),
+      ),
+      modelProviders: modelProviderTemplates(visiblePackageRows),
       events: eventRows.map(serializeEvent),
     });
   } catch (error) {

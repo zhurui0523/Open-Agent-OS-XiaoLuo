@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   modelCatalogEntries,
@@ -6,6 +6,10 @@ import {
 } from "../../../../../db/schema";
 import { jsonError, requireUser } from "../../../../lib/auth";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
+import {
+  canAccessRegistryResource,
+  modelAccessScope,
+} from "../../../../lib/registry-access";
 
 function parseJson<T>(value: string, fallback: T) {
   try {
@@ -27,20 +31,36 @@ export async function GET(request: Request) {
       .get("connectionId")
       ?.trim();
     const db = await getDb();
-    if (connectionId) {
-      const [connection] = await db
-        .select({ id: modelConnections.id })
-        .from(modelConnections)
-        .where(
-          and(
-            eq(modelConnections.id, connectionId),
-            eq(modelConnections.workspaceId, workspaceId),
+    const connections = await db
+      .select({
+        id: modelConnections.id,
+        createdBy: modelConnections.createdBy,
+        uiSchemaJson: modelConnections.uiSchemaJson,
+      })
+      .from(modelConnections)
+      .where(eq(modelConnections.workspaceId, workspaceId));
+    const visibleConnectionIds = connections
+      .filter((connection) =>
+        canAccessRegistryResource({
+          scope: modelAccessScope(
+            parseJson<Record<string, unknown>>(
+              connection.uiSchemaJson,
+              {},
+            ),
           ),
-        )
-        .limit(1);
-      if (!connection) {
+          createdBy: connection.createdBy,
+          userId: user.id,
+          platformRole: user.platformRole,
+        }),
+      )
+      .map((connection) => connection.id);
+    if (connectionId) {
+      if (!visibleConnectionIds.includes(connectionId)) {
         return Response.json({ error: "模型连接不存在" }, { status: 404 });
       }
+    }
+    if (!visibleConnectionIds.length) {
+      return Response.json({ models: [] });
     }
     const rows = await db
       .select()
@@ -55,6 +75,10 @@ export async function GET(request: Request) {
           : and(
               eq(modelCatalogEntries.workspaceId, workspaceId),
               eq(modelCatalogEntries.available, true),
+              inArray(
+                modelCatalogEntries.connectionId,
+                visibleConnectionIds,
+              ),
             ),
       )
       .orderBy(desc(modelCatalogEntries.lastSeenAt))

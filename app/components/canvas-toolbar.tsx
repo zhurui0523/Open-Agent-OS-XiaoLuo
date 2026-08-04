@@ -7,20 +7,20 @@ import {
   ListTree,
   MousePointer2,
   PanelsTopLeft,
-  Play,
   Settings,
   WandSparkles,
 } from "lucide-react";
-import type { AppView, RunState } from "../types";
+import type { AppView } from "../types";
 import { IconButton } from "./icon-button";
 
 interface CanvasToolbarProps {
   currentView: AppView;
   activeTool: string;
-  runState: RunState;
+  drawerOpen: boolean;
+  taskCenterOpen: boolean;
   onToolChange: (tool: string) => void;
-  onRun: () => void;
-  onOpenDrawer: () => void;
+  onToggleDrawer: () => void;
+  onOpenTaskCenter: () => void;
   onOpenSettings: () => void;
   onNavigate: (view: AppView) => void;
 }
@@ -28,10 +28,11 @@ interface CanvasToolbarProps {
 export function CanvasToolbar({
   currentView,
   activeTool,
-  runState,
+  drawerOpen,
+  taskCenterOpen,
   onToolChange,
-  onRun,
-  onOpenDrawer,
+  onToggleDrawer,
+  onOpenTaskCenter,
   onOpenSettings,
   onNavigate,
 }: CanvasToolbarProps) {
@@ -40,17 +41,8 @@ export function CanvasToolbar({
     onNavigate("canvas");
   }
 
-  function runCanvas() {
-    onNavigate("canvas");
-    onRun();
-  }
-
   return (
     <nav className="canvas-toolbar" aria-label="主导航">
-      <IconButton label="打开画布管理" onClick={onOpenDrawer}>
-        <PanelsTopLeft size={18} />
-      </IconButton>
-      <span className="tool-separator" />
       <IconButton
         label="选择工具"
         active={currentView === "canvas" && activeTool === "select"}
@@ -74,6 +66,13 @@ export function CanvasToolbar({
         <WandSparkles size={18} />
       </IconButton>
       <IconButton
+        label={drawerOpen ? "收起画布管理" : "打开画布管理"}
+        active={currentView === "canvas" && drawerOpen}
+        onClick={onToggleDrawer}
+      >
+        <PanelsTopLeft size={18} />
+      </IconButton>
+      <IconButton
         label="打开资产中心"
         active={currentView === "assets"}
         onClick={() => onNavigate("assets")}
@@ -89,31 +88,10 @@ export function CanvasToolbar({
       </IconButton>
       <IconButton
         label="运行详情"
-        active={currentView === "runs"}
-        onClick={() => onNavigate("runs")}
+        active={taskCenterOpen}
+        onClick={onOpenTaskCenter}
       >
         <ListTree size={18} />
-      </IconButton>
-      <span className="tool-separator" />
-      <IconButton
-        label={
-          runState === "waiting"
-            ? "等待第三方模型结果"
-            : runState === "running"
-              ? "工作流执行中"
-              : "运行工作流"
-        }
-        active={runState === "running" || runState === "waiting"}
-        onClick={runCanvas}
-      >
-        <Play
-          size={18}
-          fill={
-            runState === "running" || runState === "waiting"
-              ? "currentColor"
-              : "none"
-          }
-        />
       </IconButton>
       <span className="tool-separator" />
       <IconButton label="设置" onClick={onOpenSettings}>

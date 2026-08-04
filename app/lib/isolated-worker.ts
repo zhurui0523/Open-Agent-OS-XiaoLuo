@@ -98,6 +98,26 @@ function workerConfig() {
   };
 }
 
+export async function probeIsolatedWorker() {
+  const config = workerConfig();
+  const startedAt = Date.now();
+  const response = await fetch(`${config.endpoint}/healthz`, {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(Math.min(config.timeoutMs, 8_000)),
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    ok?: boolean;
+    running?: number;
+  };
+  return {
+    ok: response.ok && payload.ok === true,
+    endpointOrigin: new URL(config.endpoint).origin,
+    running: Number(payload.running) || 0,
+    latencyMs: Date.now() - startedAt,
+  };
+}
+
 export function isolatedExecutionPolicy(
   networkOrigins: string[],
 ): IsolatedExecutionPolicy {

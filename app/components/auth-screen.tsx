@@ -310,7 +310,7 @@ export function AuthScreen({
                 ) : (
                   <>
                     {mode === "login"
-                      ? "进入工作空间"
+                      ? "进入灵境画布"
                       : mode === "register"
                         ? "验证并创建账号"
                         : recoveryStep === "verify"

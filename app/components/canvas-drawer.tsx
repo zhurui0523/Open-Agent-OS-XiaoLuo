@@ -1,103 +1,51 @@
 "use client";
 
 import {
-  Archive,
-  Copy,
-  FolderOpen,
   Pencil,
   PanelLeftClose,
   Plus,
-  RotateCcw,
   Search,
-  Star,
+  Share2,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { CanvasSummary, ProjectSummary } from "../types";
-import { CanvasVersionPanel } from "./canvas-version-panel";
+import { useMemo, useState } from "react";
+import type { CanvasSummary } from "../types";
+import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
 
 interface CanvasDrawerProps {
   open: boolean;
   activeCanvasId: string;
-  projectId: string;
   canvases: CanvasSummary[];
-  workspaceName: string;
-  projectName: string;
-  projects: ProjectSummary[];
   onClose: () => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string, title: string) => Promise<void>;
-  onArchive: (id: string) => Promise<void>;
+  onShare: (id: string, title: string) => void;
   onDelete: (id: string) => Promise<void>;
-  onDuplicate: (id: string, title: string) => Promise<void>;
-  onRestore: (id: string) => Promise<void>;
-  onStar: (id: string, starred: boolean) => Promise<void>;
-  onCreateSnapshot: (label?: string) => Promise<void>;
-  onRestoreSnapshot: (snapshotId: string) => Promise<void>;
-  onSwitchProject: (id: string) => Promise<void>;
-  onCreateProject: () => Promise<void>;
-  onRenameProject: (id: string) => Promise<void>;
-  onArchiveProject: (id: string) => Promise<void>;
 }
 
 export function CanvasDrawer({
   open,
   activeCanvasId,
-  projectId,
   canvases,
-  workspaceName,
-  projectName,
-  projects,
   onClose,
   onSelect,
   onCreate,
   onRename,
-  onArchive,
+  onShare,
   onDelete,
-  onDuplicate,
-  onRestore,
-  onStar,
-  onCreateSnapshot,
-  onRestoreSnapshot,
-  onSwitchProject,
-  onCreateProject,
-  onRenameProject,
-  onArchiveProject,
 }: CanvasDrawerProps) {
+  const dialog = useAppDialog();
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"recent" | "name" | "nodes">("recent");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [state, setState] = useState<"active" | "archived" | "deleted">("active");
-  const [inactiveCanvases, setInactiveCanvases] = useState<CanvasSummary[]>([]);
-  const sourceCanvases = state === "active" ? canvases : inactiveCanvases;
-  useEffect(() => {
-    if (!open || state === "active" || !projectId) return;
-    let active = true;
-    void fetch(
-      `/api/v2/canvases?projectId=${encodeURIComponent(projectId)}&state=${state}`,
-    )
-      .then(async (response) => {
-        const payload = (await response.json()) as {
-          canvases?: CanvasSummary[];
-          error?: string;
-        };
-        if (!response.ok) throw new Error(payload.error ?? "读取画布失败");
-        if (active) setInactiveCanvases(payload.canvases ?? []);
-      })
-      .catch((cause) => {
-        if (active) {
-          setError(cause instanceof Error ? cause.message : "读取画布失败");
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [open, projectId, state]);
+  const manageableCanvasCount = canvases.filter(
+    (canvas) => canvas.canManage !== false,
+  ).length;
   const visibleCanvases = useMemo(() => {
-    const filtered = sourceCanvases.filter((canvas) =>
+    const filtered = canvases.filter((canvas) =>
       canvas.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
     );
     if (sort === "name") {
@@ -110,12 +58,9 @@ export function CanvasDrawer({
     }
     return [...filtered].sort(
       (first, second) =>
-        Number(second.starred) - Number(first.starred) ||
         Date.parse(second.updatedAt) - Date.parse(first.updatedAt),
     );
-  }, [query, sort, sourceCanvases]);
-  if (!open) return null;
-
+  }, [canvases, query, sort]);
   async function act(id: string, task: () => Promise<void>) {
     setBusy(id);
     setError("");
@@ -129,37 +74,17 @@ export function CanvasDrawer({
   }
 
   return (
-    <aside className="canvas-drawer" aria-label="画布管理">
+    <aside
+      className={`canvas-drawer ${open ? "is-open" : "is-closed"}`}
+      aria-label="画布管理"
+      aria-hidden={!open}
+      inert={open ? undefined : true}
+    >
       <div className="drawer-heading">
-        <div>
-          <span className="eyebrow">工作空间</span>
-          <strong>{workspaceName || "云端工作空间"}</strong>
-        </div>
+        <strong>画布管理</strong>
         <IconButton label="收起画布管理" onClick={onClose}>
           <PanelLeftClose size={17} />
         </IconButton>
-      </div>
-
-      <div className="project-switcher">
-        <span className="project-icon">
-          <FolderOpen size={16} />
-        </span>
-        <label>
-          <small>当前项目 · {projectName || "正在加载"}</small>
-          <select
-            value={projectId}
-            onChange={(event) => void onSwitchProject(event.target.value)}
-          >
-            {projects
-              .filter((project) => project.status === "active")
-              .map((project) => (
-                <option key={project.id} value={project.id}>{project.name}</option>
-              ))}
-          </select>
-        </label>
-        <button type="button" title="新建项目" onClick={() => void onCreateProject()}><Plus size={14} /></button>
-        <button type="button" title="重命名项目" onClick={() => void onRenameProject(projectId)}><Pencil size={14} /></button>
-        <button type="button" title="归档项目" onClick={() => void onArchiveProject(projectId)}><Archive size={14} /></button>
       </div>
 
       <label className="drawer-search">
@@ -184,7 +109,7 @@ export function CanvasDrawer({
       </label>
 
       <div className="drawer-section-heading">
-        <span>{state === "active" ? "最近画布" : state === "archived" ? "已归档" : "回收站"}</span>
+        <span>画布</span>
         <button
           type="button"
           aria-label="新建画布"
@@ -193,24 +118,6 @@ export function CanvasDrawer({
         >
           <Plus size={16} />
         </button>
-      </div>
-      <div className="canvas-state-tabs" role="tablist" aria-label="画布状态">
-        {([
-          ["active", "使用中"],
-          ["archived", "已归档"],
-          ["deleted", "回收站"],
-        ] as const).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={state === id}
-            className={state === id ? "is-active" : ""}
-            onClick={() => setState(id)}
-          >
-            {label}
-          </button>
-        ))}
       </div>
       {error && <div className="drawer-inline-error">{error}</div>}
 
@@ -223,7 +130,6 @@ export function CanvasDrawer({
             <button
               type="button"
               className="canvas-list-main"
-              disabled={state !== "active"}
               onClick={() => onSelect(canvas.id)}
             >
               <span className="canvas-thumbnail" aria-hidden="true">
@@ -234,50 +140,30 @@ export function CanvasDrawer({
               <span className="canvas-list-copy">
                 <span>
                   <b>{canvas.title}</b>
-                  {canvas.starred && <Star size={12} fill="currentColor" />}
+                  {canvas.enterpriseShared && <em>企业协作</em>}
                 </span>
                 <small>
-                  {canvas.nodes} 个节点 · {new Date(canvas.updatedAt).toLocaleString("zh-CN")}
+                  {canvas.nodes} 个节点 ·{" "}
+                  {new Date(canvas.updatedAt).toLocaleString("zh-CN")}
                 </small>
               </span>
             </button>
-            <div className="canvas-item-actions">
-              {state !== "active" ? (
-                <button
-                  type="button"
-                  aria-label="恢复画布"
-                  disabled={busy === canvas.id}
-                  onClick={() =>
-                    void act(canvas.id, async () => {
-                      await onRestore(canvas.id);
-                      setInactiveCanvases((current) =>
-                        current.filter((item) => item.id !== canvas.id),
-                      );
+            {canvas.canManage !== false && (
+              <div className="canvas-item-actions">
+              <button
+                type="button"
+                aria-label="修改画布名称"
+                title="修改名称"
+                disabled={busy === canvas.id}
+                onClick={async () => {
+                  const title = (
+                    await dialog.prompt("修改画布的显示名称。", {
+                      title: "修改画布名称",
+                      inputLabel: "画布名称",
+                      defaultValue: canvas.title,
+                      confirmText: "保存名称",
                     })
-                  }
-                >
-                  <RotateCcw size={13} />
-                </button>
-              ) : (
-                <>
-              <button
-                type="button"
-                aria-label={canvas.starred ? "取消收藏" : "收藏画布"}
-                disabled={busy === canvas.id}
-                onClick={() =>
-                  void act(canvas.id, () =>
-                    onStar(canvas.id, !canvas.starred),
-                  )
-                }
-              >
-                <Star size={13} fill={canvas.starred ? "currentColor" : "none"} />
-              </button>
-              <button
-                type="button"
-                aria-label="重命名画布"
-                disabled={busy === canvas.id}
-                onClick={() => {
-                  const title = window.prompt("画布名称", canvas.title)?.trim();
+                  )?.trim();
                   if (title && title !== canvas.title) {
                     void act(canvas.id, () => onRename(canvas.id, title));
                   }
@@ -287,53 +173,43 @@ export function CanvasDrawer({
               </button>
               <button
                 type="button"
-                aria-label="复制画布"
+                aria-label="共享画布"
+                title="共享"
                 disabled={busy === canvas.id}
-                onClick={() =>
-                  void act(canvas.id, () =>
-                    onDuplicate(canvas.id, `${canvas.title} 副本`),
-                  )
-                }
+                onClick={() => onShare(canvas.id, canvas.title)}
               >
-                <Copy size={13} />
-              </button>
-              <button
-                type="button"
-                aria-label="归档画布"
-                disabled={busy === canvas.id}
-                onClick={() =>
-                  void act(canvas.id, () => onArchive(canvas.id))
-                }
-              >
-                <Archive size={13} />
+                <Share2 size={13} />
               </button>
               <button
                 type="button"
                 aria-label="删除画布"
-                disabled={busy === canvas.id || canvases.length <= 1}
-                onClick={() => {
-                  if (window.confirm(`删除“${canvas.title}”？30 天内可恢复。`)) {
+                title={
+                  manageableCanvasCount <= 1 ? "至少保留一张画布" : "删除画布"
+                }
+                disabled={busy === canvas.id || manageableCanvasCount <= 1}
+                onClick={async () => {
+                  if (await dialog.confirm(
+                    `画布“${canvas.title}”将从当前列表中移除。`,
+                    {
+                      title: "删除画布",
+                      confirmText: "删除画布",
+                      tone: "danger",
+                    },
+                  )) {
                     void act(canvas.id, () => onDelete(canvas.id));
                   }
                 }}
               >
                 <Trash2 size={13} />
               </button>
-                </>
-              )}
-            </div>
+              </div>
+            )}
           </article>
         ))}
-        {!visibleCanvases.length && <div className="drawer-empty">没有匹配的画布</div>}
+        {!visibleCanvases.length && (
+          <div className="drawer-empty">没有匹配的画布</div>
+        )}
       </div>
-
-      {state === "active" && activeCanvasId && (
-        <CanvasVersionPanel
-          canvasId={activeCanvasId}
-          onCreate={onCreateSnapshot}
-          onRestore={onRestoreSnapshot}
-        />
-      )}
     </aside>
   );
 }

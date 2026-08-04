@@ -5,6 +5,7 @@ import {
   intentMessages,
   intentPlans,
   assets,
+  modelConnections,
   packageCapabilities,
   packages,
 } from "../../../../../db/schema";
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
         mimeType?: string;
       }>;
       preferredCapabilityId?: string;
+      preferredModelId?: string;
     };
     const canvasId = payload.canvasId?.trim();
     const content = payload.content?.trim().slice(0, 20_000);
@@ -101,7 +103,7 @@ export async function POST(request: Request) {
       : [];
     if (validAttachments.length !== attachmentIds.length) {
       return Response.json(
-        { error: "附件不存在、已删除或不属于当前工作空间" },
+        { error: "附件不存在、已删除或当前账号无权访问" },
         { status: 400 },
       );
     }
@@ -131,7 +133,29 @@ export async function POST(request: Request) {
       }
       if (!preferredCapabilityTitle) {
         return Response.json(
-          { error: "首选能力不存在、已禁用或不属于当前工作空间" },
+          { error: "首选能力不存在、已禁用或当前账号无权访问" },
+          { status: 400 },
+        );
+      }
+    }
+    const preferredModelId = payload.preferredModelId?.trim();
+    let preferredModelName = "";
+    if (preferredModelId) {
+      const [preferredModel] = await (await getDb())
+        .select({ name: modelConnections.name })
+        .from(modelConnections)
+        .where(
+          and(
+            eq(modelConnections.id, preferredModelId),
+            eq(modelConnections.workspaceId, access.workspaceId),
+            eq(modelConnections.enabled, true),
+          ),
+        )
+        .limit(1);
+      preferredModelName = preferredModel?.name ?? "";
+      if (!preferredModelName) {
+        return Response.json(
+          { error: "首选模型不存在、已禁用或当前账号无权访问" },
           { status: 400 },
         );
       }
@@ -177,6 +201,7 @@ export async function POST(request: Request) {
         ...(preferredCapabilityId
           ? { preferredCapabilityId, preferredCapabilityTitle }
           : {}),
+        ...(preferredModelId ? { preferredModelId, preferredModelName } : {}),
       }),
       createdAt: now,
     };
@@ -226,10 +251,18 @@ export async function POST(request: Request) {
                   .map((attachment) => `${attachment.name} (${attachment.uri})`)
                   .join("；")}`
               : originalIntent;
+            const preferenceInstructions = [
+              preferredCapabilityTitle
+                ? `用户明确指定首选能力：${preferredCapabilityTitle}。计划中优先使用该能力；只有模态确实不适配时才选择其他能力。`
+                : "",
+              preferredModelName
+                ? `用户明确指定首选模型：${preferredModelName}。计划节点中优先使用该模型；只有模态确实不适配时才自动选择其他模型。`
+                : "",
+            ].filter(Boolean);
             const planned = await planIntent(
               access.workspaceId,
-              preferredCapabilityTitle
-                ? `${planningInput}\n\n用户明确指定首选能力：${preferredCapabilityTitle}。计划中优先使用该能力；只有模态确实不适配时才选择其他能力。`
+              preferenceInstructions.length
+                ? `${planningInput}\n\n${preferenceInstructions.join("\n")}`
                 : planningInput,
             );
             const assistantContent =

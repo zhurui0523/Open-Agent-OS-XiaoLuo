@@ -87,6 +87,37 @@ function originOf(value: string | undefined) {
   }
 }
 
+function isLoopbackHostname(hostname: string) {
+  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname);
+}
+
+export function normalizeRuntimeEntryForTrustScan(
+  runtimeEntry: string | undefined,
+  requestUrl: string,
+) {
+  if (!runtimeEntry) return runtimeEntry;
+  try {
+    const request = new URL(requestUrl);
+    const runtime = new URL(runtimeEntry, request.origin);
+    const sameService =
+      runtime.origin === request.origin ||
+      (isLoopbackHostname(runtime.hostname) &&
+        isLoopbackHostname(request.hostname) &&
+        runtime.port === request.port);
+    if (
+      sameService &&
+      runtime.pathname.startsWith("/api/v2/packages/runtime/static/")
+    ) {
+      return runtime.pathname;
+    }
+  } catch {
+    if (runtimeEntry.startsWith("/api/v2/packages/runtime/static/")) {
+      return runtimeEntry;
+    }
+  }
+  return runtimeEntry;
+}
+
 export function scanPackageManifest(
   manifest: XiaoLuoPackageManifest,
 ): PackageScanResult {

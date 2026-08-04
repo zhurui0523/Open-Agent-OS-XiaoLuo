@@ -88,7 +88,7 @@ export async function POST(request: Request) {
         [
           canvasId,
           projectId,
-          JSON.stringify({ x: 0, y: 0, zoom: 92 }),
+          JSON.stringify({ x: 0, y: 0, zoom: 100 }),
           user.id,
         ],
       );

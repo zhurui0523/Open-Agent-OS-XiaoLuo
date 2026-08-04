@@ -163,12 +163,28 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     if (error instanceof Response) return error;
+    const cause =
+      error instanceof Error
+        ? (error as Error & { cause?: unknown }).cause
+        : undefined;
+    const causeMessage =
+      cause instanceof Error
+        ? cause.message
+        : cause && typeof cause === "object" && "message" in cause
+          ? String((cause as { message?: unknown }).message ?? "")
+          : "";
     await recordHeartbeat("degraded", {
       checkedAt: new Date().toISOString(),
       error: error instanceof Error ? error.message.slice(0, 500) : "unknown",
+      ...(causeMessage ? { cause: causeMessage.slice(0, 500) } : {}),
     }).catch(() => undefined);
     return Response.json(
-      { error: error instanceof Error ? error.message : "Worker tick failed" },
+      {
+        error: error instanceof Error ? error.message : "Worker tick failed",
+        ...(process.env.NODE_ENV !== "production" && causeMessage
+          ? { cause: causeMessage }
+          : {}),
+      },
       { status: 500 },
     );
   }

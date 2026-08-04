@@ -22,6 +22,7 @@ import {
   validateEdgePorts,
   validatePortCardinality,
 } from "../../../../lib/node-ports";
+import { hasSelectedSkillCapability } from "../../../../lib/runtime-capability";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -120,7 +121,7 @@ export async function POST(request: Request) {
         graph.nodes
           .filter((node) => roleForNode(node) === "execution")
           .map((node) => node.capabilityId)
-          .filter((id) => id && !id.startsWith("core.")),
+          .filter(hasSelectedSkillCapability),
       ),
     ];
     const capabilityRows = capabilityIds.length
@@ -173,16 +174,19 @@ export async function POST(request: Request) {
     for (const node of graph.nodes) {
       const role = roleForNode(node);
       if (role === "execution") {
-        const row = capabilityById.get(node.capabilityId);
-        if (
-          !row ||
-          !row.packageEnabled ||
-          row.packageType !== "skill" ||
-          row.capability.contributionType !== "skill"
-        ) {
-          throw new Error(
-            `执行节点“${node.title}”必须选择已安装且启用的 Skill`,
-          );
+        const capabilityId = node.capabilityId?.trim();
+        if (hasSelectedSkillCapability(capabilityId) && capabilityId) {
+          const row = capabilityById.get(capabilityId);
+          if (
+            !row ||
+            !row.packageEnabled ||
+            row.packageType !== "skill" ||
+            row.capability.contributionType !== "skill"
+          ) {
+            throw new Error(
+              `执行节点“${node.title}”选择的 Skill 未安装或已停用`,
+            );
+          }
         }
       }
       if (role === "plugin") {
@@ -193,7 +197,7 @@ export async function POST(request: Request) {
         const plugin = pluginById.get(packageId);
         if (!plugin || plugin.packageType !== "plugin") {
           throw new Error(
-            `插件运行器“${node.title}”必须绑定当前工作区已启用的 Plugin Package`,
+            `插件运行器“${node.title}”必须绑定当前账号可用的 Plugin Package`,
           );
         }
       }

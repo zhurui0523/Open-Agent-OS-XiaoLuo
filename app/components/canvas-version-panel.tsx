@@ -2,6 +2,7 @@
 
 import { History, RotateCcw, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useAppDialog } from "./app-dialog";
 
 interface Snapshot {
   id: string;
@@ -21,6 +22,7 @@ export function CanvasVersionPanel({
   onCreate,
   onRestore,
 }: CanvasVersionPanelProps) {
+  const dialog = useAppDialog();
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -55,8 +57,15 @@ export function CanvasVersionPanel({
           type="button"
           disabled={Boolean(busy)}
           onClick={async () => {
-            const label = window.prompt("快照名称", "手动快照")?.trim();
-            if (label === undefined) return;
+            const label = (
+              await dialog.prompt("为这个画布快照设置名称。", {
+                title: "创建版本快照",
+                inputLabel: "快照名称",
+                defaultValue: "手动快照",
+                confirmText: "创建快照",
+              })
+            )?.trim();
+            if (label === undefined || label === null) return;
             setBusy("create");
             setError("");
             try {
@@ -89,7 +98,16 @@ export function CanvasVersionPanel({
               title={`恢复 ${snapshot.label}`}
               disabled={Boolean(busy)}
               onClick={async () => {
-                if (!window.confirm(`恢复到“${snapshot.label}”？`)) return;
+                if (
+                  !(await dialog.confirm(
+                    `当前画布将恢复到“${snapshot.label}”。`,
+                    {
+                      title: "恢复版本快照",
+                      confirmText: "恢复快照",
+                      tone: "warning",
+                    },
+                  ))
+                ) return;
                 setBusy(snapshot.id);
                 try {
                   await onRestore(snapshot.id);

@@ -11,8 +11,7 @@ export async function PATCH(request: Request) {
     const payload = (await request.json()) as {
       workspaceId?: string;
       ids?: string[];
-      action?: "trash" | "restore" | "move" | "favorite" | "tags";
-      folderId?: string | null;
+      action?: "trash" | "restore" | "favorite" | "tags";
       favorite?: boolean;
       tags?: string[];
     };
@@ -41,9 +40,6 @@ export async function PATCH(request: Request) {
       .set({
         ...(payload.action === "trash" ? { trashedAt: now } : {}),
         ...(payload.action === "restore" ? { trashedAt: null } : {}),
-        ...(payload.action === "move"
-          ? { folderId: payload.folderId || null }
-          : {}),
         ...(payload.action === "favorite"
           ? { favorite: Boolean(payload.favorite) }
           : {}),

@@ -1,5 +1,6 @@
 import type {
   CanvasEdge,
+  CanvasGroup,
   CanvasNode,
   ModelProtocol,
   NodeKind,
@@ -12,6 +13,7 @@ export interface WorkflowGraphSnapshot {
   title?: string;
   arrangeMode?: "free" | "time" | "type";
   viewport?: { x: number; y: number; zoom: number };
+  groups?: CanvasGroup[];
   nodes: CanvasNode[];
   edges: CanvasEdge[];
 }
@@ -89,8 +91,15 @@ export function workflowRequirements(
         (item): item is ModelProtocol =>
           [
             "openai-compatible",
+            "openai-responses",
             "anthropic-compatible",
             "gemini",
+            "dall-e-3",
+            "runninghub-sparkvideo-mini",
+            "runninghub-sparkvideo-mini-multimodal",
+            "runninghub-sparkvideo",
+            "runninghub-sparkvideo-multimodal",
+            "runninghub-minimax-h3",
             "ark",
             "async-video",
             "generic-rest",
@@ -218,7 +227,11 @@ export function sanitizeWorkflowGraph(
   const sanitized: WorkflowGraphSnapshot = {
     title: graph.title,
     arrangeMode: graph.arrangeMode ?? "free",
-    viewport: graph.viewport ?? { x: 0, y: 0, zoom: 92 },
+    viewport: graph.viewport ?? { x: 0, y: 0, zoom: 100 },
+    groups: (graph.groups ?? []).map((group) => ({
+      ...group,
+      title: group.title.trim().slice(0, 120) || "节点群",
+    })),
     nodes,
     edges: graph.edges.map((edge) => ({ ...edge })),
   };

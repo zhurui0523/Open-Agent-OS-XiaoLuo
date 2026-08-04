@@ -335,6 +335,7 @@ export const canvases = mysqlTable(
       .notNull()
       .default("free"),
     viewportJson: json("viewport_json").notNull(),
+    groupsJson: json("groups_json").notNull(),
     createdBy: id("created_by", 36)
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -456,6 +457,34 @@ export const canvasShareLinks = mysqlTable(
   (table) => [
     index("canvas_share_canvas_idx").on(table.canvasId),
     index("canvas_share_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export const canvasEnterpriseShares = mysqlTable(
+  "xiaoluo_v2_canvas_enterprise_shares",
+  {
+    canvasId: id("canvas_id", 36)
+      .notNull()
+      .references(() => canvases.id, { onDelete: "cascade" }),
+    sourceCanvasId: id("source_canvas_id", 36).references(() => canvases.id, {
+      onDelete: "set null",
+    }),
+    organizationId: id("organization_id", 36)
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    createdBy: id("created_by", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at"),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.canvasId, table.organizationId] }),
+    index("canvas_enterprise_shares_org_idx").on(table.organizationId),
+    uniqueIndex("canvas_enterprise_shares_source_org_unique").on(
+      table.sourceCanvasId,
+      table.organizationId,
+    ),
   ],
 );
 
@@ -1006,6 +1035,7 @@ export const secretRefs = mysqlTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 120 }).notNull(),
+    purpose: varchar("purpose", { length: 32 }).notNull().default("generic"),
     ciphertext: longtext("ciphertext").notNull(),
     iv: varchar("iv", { length: 64 }).notNull(),
     createdBy: id("created_by", 36)
@@ -1016,9 +1046,15 @@ export const secretRefs = mysqlTable(
     updatedAt: timestamp("updated_at"),
   },
   (table) => [
-    uniqueIndex("secret_refs_workspace_name_unique").on(
+    uniqueIndex("secret_refs_owner_purpose_name_unique").on(
       table.workspaceId,
+      table.createdBy,
+      table.purpose,
       table.name,
+    ),
+    index("secret_refs_workspace_owner_idx").on(
+      table.workspaceId,
+      table.createdBy,
     ),
   ],
 );
@@ -1040,6 +1076,7 @@ export const modelConnections = mysqlTable(
     modalitiesJson: text("modalities_json").notNull(),
     parameterSchemaJson: longtext("parameter_schema_json").notNull(),
     uiSchemaJson: longtext("ui_schema_json").notNull(),
+    inputConstraintsJson: longtext("input_constraints_json").notNull(),
     capabilityTagsJson: text("capability_tags_json").notNull(),
     credentialRef: varchar("credential_ref", { length: 80 }),
     secretRefId: id("secret_ref_id", 120).references(() => secretRefs.id, {
@@ -1439,24 +1476,6 @@ export const systemHeartbeats = mysqlTable(
   (table) => [index("system_heartbeats_seen_idx").on(table.lastSeenAt)],
 );
 
-export const assetFolders = mysqlTable(
-  "xiaoluo_v2_asset_folders",
-  {
-    id: id("id", 120).primaryKey(),
-    workspaceId: id("workspace_id", 36)
-      .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
-    name: varchar("name", { length: 180 }).notNull(),
-    parentId: id("parent_id", 120),
-    createdAt: timestamp("created_at"),
-    updatedAt: timestamp("updated_at"),
-  },
-  (table) => [
-    index("asset_folders_workspace_idx").on(table.workspaceId),
-    index("asset_folders_parent_idx").on(table.parentId),
-  ],
-);
-
 export const assets = mysqlTable(
   "xiaoluo_v2_assets",
   {
@@ -1469,7 +1488,6 @@ export const assets = mysqlTable(
     kind: varchar("kind", { length: 40 }).notNull(),
     mimeType: varchar("mime_type", { length: 180 }).notNull(),
     size: bigint("size", { mode: "number", unsigned: true }).notNull(),
-    folderId: id("folder_id", 120),
     currentVersionId: id("current_version_id", 120),
     currentVersion: int("current_version", { unsigned: true })
       .notNull()
@@ -1494,44 +1512,7 @@ export const assets = mysqlTable(
   },
   (table) => [
     index("assets_workspace_idx").on(table.workspaceId),
-    index("assets_folder_idx").on(table.folderId),
     index("assets_hash_idx").on(table.contentHash),
-  ],
-);
-
-export const assetCollections = mysqlTable(
-  "xiaoluo_v2_asset_collections",
-  {
-    id: id("id", 120).primaryKey(),
-    workspaceId: id("workspace_id", 36)
-      .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
-    name: varchar("name", { length: 180 }).notNull(),
-    description: text("description").notNull(),
-    createdBy: id("created_by", 36)
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
-    createdAt: timestamp("created_at"),
-    updatedAt: timestamp("updated_at"),
-  },
-  (table) => [
-    index("asset_collections_workspace_idx").on(table.workspaceId),
-  ],
-);
-
-export const assetCollectionItems = mysqlTable(
-  "xiaoluo_v2_asset_collection_items",
-  {
-    collectionId: id("collection_id", 120)
-      .notNull()
-      .references(() => assetCollections.id, { onDelete: "cascade" }),
-    assetId: id("asset_id", 120)
-      .notNull()
-      .references(() => assets.id, { onDelete: "cascade" }),
-    createdAt: timestamp("created_at"),
-  },
-  (table) => [
-    primaryKey({ columns: [table.collectionId, table.assetId] }),
   ],
 );
 

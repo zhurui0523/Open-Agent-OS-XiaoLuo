@@ -18,6 +18,10 @@ function createMysqlPool() {
     charset: "utf8mb4",
     dateStrings: true,
     connectionLimit: 10,
+    // Cloudflare Workers bind network I/O to the request that created it.
+    // Never retain idle MySQL sockets for reuse by a later request.
+    maxIdle: 0,
+    idleTimeout: 1_000,
     enableKeepAlive: true,
     waitForConnections: true,
     queueLimit: 0,
@@ -33,16 +37,11 @@ function createMysqlPool() {
   });
 }
 
-const poolKey = Symbol.for("xiaoluo.mysql.pool");
-
-type MysqlGlobal = typeof globalThis & {
-  [poolKey]?: Pool;
-};
-
 export async function getMysqlPool() {
-  const runtime = globalThis as MysqlGlobal;
-  runtime[poolKey] ??= createMysqlPool();
-  return runtime[poolKey];
+  // A process-global pool is unsafe in the Workers runtime: its sockets are
+  // created in one request context and throw when reused by another request.
+  // A fresh pool with maxIdle=0 keeps all I/O scoped to the current request.
+  return createMysqlPool();
 }
 
 async function withMysqlPool<T>(operation: (database: Pool) => Promise<T>) {

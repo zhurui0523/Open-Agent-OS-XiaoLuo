@@ -5,6 +5,7 @@ import type {
   NodeKind,
   RegistryEvent,
 } from "../types";
+import { parseModelInputConstraints } from "./model-input-constraints";
 import type {
   modelConnections,
   packageCapabilities,
@@ -15,6 +16,12 @@ import {
   packageContributionCount,
   type XiaoLuoPackageManifest,
 } from "./package-contract";
+import { skillInstructionsFromSchema } from "./skill-markdown";
+import {
+  canManageRegistryResource,
+  modelAccessScope,
+  packageAccessScope,
+} from "./registry-access";
 
 type PackageRow = typeof packages.$inferSelect;
 type CapabilityRow = typeof packageCapabilities.$inferSelect;
@@ -29,11 +36,27 @@ function parseJson<T>(value: string, fallback: T): T {
   }
 }
 
-export function serializePackage(row: PackageRow): InstalledPackage {
+interface OwnershipContext {
+  userId?: string;
+  platformRole?: "system_admin" | "user";
+  canManage?: boolean;
+}
+
+function ownerScope(rowCreatedBy: string, context?: OwnershipContext) {
+  return rowCreatedBy === context?.userId
+    ? ("personal" as const)
+    : ("administrator" as const);
+}
+
+export function serializePackage(
+  row: PackageRow,
+  context?: OwnershipContext,
+): InstalledPackage {
   const manifest = parseJson<XiaoLuoPackageManifest | null>(
     row.manifestJson,
     null,
   );
+  const accessScope = packageAccessScope(manifest);
   return {
     id: row.id,
     packageKey: row.packageKey,
@@ -53,6 +76,19 @@ export function serializePackage(row: PackageRow): InstalledPackage {
     updatedAt: row.updatedAt,
     contributionCount: manifest ? packageContributionCount(manifest) : 0,
     runtimeLanguage: manifest?.runtime.language,
+    createdBy: row.createdBy,
+    ownerScope: ownerScope(row.createdBy, context),
+    accessScope,
+    canManage: canManageRegistryResource({
+      scope: accessScope,
+      createdBy: row.createdBy,
+      userId: context?.userId,
+      platformRole: context?.platformRole,
+      canManageWorkspace: context?.canManage,
+    }),
+    manifest: manifest
+      ? (manifest as unknown as Record<string, unknown>)
+      : undefined,
     nodeContributions: (manifest?.contributes?.nodes ?? []).map((item) => ({
       id: item.id,
       title: item.title,
@@ -105,15 +141,26 @@ export function serializeCapability(
       row.modelRequirementsJson,
       {},
     ),
+    instructions: skillInstructionsFromSchema(inputSchema),
   };
 }
 
-export function serializeModel(row: ModelRow): ModelConnection {
+export function serializeModel(
+  row: ModelRow,
+  context?: OwnershipContext,
+): ModelConnection {
+  const uiSchema = parseJson<Record<string, unknown>>(row.uiSchemaJson, {});
+  const accessScope = modelAccessScope(uiSchema);
+  const modalities = parseJson<NodeKind[]>(row.modalitiesJson, []);
+  const protocol = row.protocol as ModelConnection["protocol"];
   return {
     id: row.id,
     name: row.name,
     provider: row.protocol,
-    protocol: row.protocol as ModelConnection["protocol"],
+    createdAt: row.createdAt
+      ? new Date(row.createdAt).toISOString()
+      : undefined,
+    protocol,
     baseUrl: row.baseUrl,
     modelName: row.modelName,
     credentialRef: row.credentialRef ?? undefined,
@@ -127,7 +174,7 @@ export function serializeModel(row: ModelRow): ModelConnection {
     circuitState: row.circuitState as ModelConnection["circuitState"],
     activeRequests: row.activeRequests,
     catalogSyncedAt: row.catalogSyncedAt,
-    modalities: parseJson<NodeKind[]>(row.modalitiesJson, []),
+    modalities,
     state: row.state as ModelConnection["state"],
     latency:
       typeof row.latencyMs === "number" ? `${row.latencyMs} ms` : "尚未检测",
@@ -137,8 +184,24 @@ export function serializeModel(row: ModelRow): ModelConnection {
       row.parameterSchemaJson,
       {},
     ),
-    uiSchema: parseJson<Record<string, unknown>>(row.uiSchemaJson, {}),
+    uiSchema,
+    inputConstraints: parseModelInputConstraints(
+      row.inputConstraintsJson,
+      modalities[0] ?? "text",
+      protocol,
+    ),
     capabilityTags: parseJson<string[]>(row.capabilityTagsJson, []),
+    createdBy: row.createdBy,
+    ownerScope: ownerScope(row.createdBy, context),
+    accessScope:
+      accessScope === "personal" ? "personal" : "workspace",
+    canManage: canManageRegistryResource({
+      scope: accessScope,
+      createdBy: row.createdBy,
+      userId: context?.userId,
+      platformRole: context?.platformRole,
+      canManageWorkspace: context?.canManage,
+    }),
   };
 }
 

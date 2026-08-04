@@ -89,7 +89,11 @@ async function execute(job) {
   running += 1;
   try {
     const command =
-      job.runtime === "node" ? "node" : job.runtime === "python" ? "python3" : location.entry;
+      job.runtime === "node"
+        ? process.execPath
+        : job.runtime === "python"
+          ? process.env.PYTHON_EXECUTABLE ?? "python3"
+          : location.entry;
     const args = job.runtime === "cli" ? job.args ?? [] : [location.entry, ...(job.args ?? [])];
     const child = spawn(command, args, {
       cwd,

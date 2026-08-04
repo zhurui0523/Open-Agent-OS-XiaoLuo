@@ -81,6 +81,7 @@ test("scheduler heartbeats and redacted service readiness are observable", async
   assert.match(workerEntry, /runRuntimeScheduler/);
   assert.match(workerEntry, /authorization: `Bearer \$\{token\}`/);
   assert.match(viteConfig, /crons: \["\* \* \* \* \*"\]/);
+  assert.match(viteConfig, /hmr: \{ overlay: false \}/);
   assert.match(asyncJobs, /generation-poller:/);
   assert.match(asyncJobs, /lease_expires_at/);
   assert.match(readiness, /runtimeServiceReadiness/);
