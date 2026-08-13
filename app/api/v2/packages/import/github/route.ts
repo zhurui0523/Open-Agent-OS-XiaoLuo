@@ -20,9 +20,11 @@ import {
   parsePackagePayload,
 } from "../../../../../lib/package-contract";
 import {
+  needsHostedSandboxRuntime,
   needsDefaultSandboxPanel,
   packageManifestRecord,
   withDefaultSandboxPanel,
+  withHostedSandboxRuntime,
 } from "../../../../../lib/package-manifest-adapter";
 import {
   canonicalPackageManifest,
@@ -88,7 +90,7 @@ export async function POST(request: Request) {
     let generatedBuild:
       | Awaited<ReturnType<typeof buildGithubStaticPackage>>
       | null = null;
-    let defaultPanelAdapted = false;
+    let manifestAdapted = false;
     try {
       inspection = await inspectPackageArchive(download.bytes);
       sourceInspection = inspection;
@@ -104,10 +106,12 @@ export async function POST(request: Request) {
           repository: reference.repository,
           repositoryUrl: download.repositoryUrl,
           commit: download.commit,
-          runtimeOrigin: new URL(request.url).origin,
           workspaceId,
         });
-        if (!generated.executionReady) {
+        if (
+          !generated.executionReady &&
+          generated.compatibility.projectType === "frontend"
+        ) {
           const build = await buildGithubStaticPackage({
             inspection: sourceInspection,
             archiveSha256: sourceInspection.archiveSha256,
@@ -118,7 +122,7 @@ export async function POST(request: Request) {
             generated.staticRoot = "";
             generated.manifest.runtime = {
               type: "sandbox-ui",
-              entry: `${new URL(request.url).origin}/api/v2/packages/runtime/static/${encodeURIComponent(workspaceId)}/${encodeURIComponent(generated.manifest.id)}/${encodeURIComponent(generated.manifest.version)}/${sourceInspection.archiveSha256}/_root/`,
+              entry: `/api/v2/packages/runtime/static/${encodeURIComponent(workspaceId)}/${encodeURIComponent(generated.manifest.id)}/${encodeURIComponent(generated.manifest.version)}/${sourceInspection.archiveSha256}/_root/`,
             };
             generated.manifest.description = `从 ${download.repositoryUrl} 自动构建的静态沙箱插件，固定 Commit ${download.commit.slice(0, 12)}。`;
           } else {
@@ -133,7 +137,8 @@ export async function POST(request: Request) {
       throw new Error("GitHub 源码包分析失败");
     }
     let manifestPayload: unknown = generated?.manifest ?? inspection!.manifest;
-    if (needsDefaultSandboxPanel(manifestPayload)) {
+    const addDefaultPanel = needsDefaultSandboxPanel(manifestPayload);
+    if (addDefaultPanel || needsHostedSandboxRuntime(manifestPayload)) {
       if (!generatedBuild?.prepared) {
         generatedBuild = await buildGithubStaticPackage({
           inspection: sourceInspection,
@@ -155,12 +160,11 @@ export async function POST(request: Request) {
         candidate && typeof candidate.version === "string"
           ? candidate.version.trim()
           : "";
-      const runtimeEntry = `${new URL(request.url).origin}/api/v2/packages/runtime/static/${encodeURIComponent(workspaceId)}/${encodeURIComponent(packageId)}/${encodeURIComponent(packageVersion)}/${sourceInspection.archiveSha256}/_root/`;
-      manifestPayload = withDefaultSandboxPanel({
-        payload: manifestPayload,
-        runtimeEntry,
-      });
-      defaultPanelAdapted = true;
+      const runtimeEntry = `/api/v2/packages/runtime/static/${encodeURIComponent(workspaceId)}/${encodeURIComponent(packageId)}/${encodeURIComponent(packageVersion)}/${sourceInspection.archiveSha256}/_root/`;
+      manifestPayload = addDefaultPanel
+        ? withDefaultSandboxPanel({ payload: manifestPayload, runtimeEntry })
+        : withHostedSandboxRuntime({ payload: manifestPayload, runtimeEntry });
+      manifestAdapted = true;
       if (generated) {
         generated.executionReady = true;
         generated.manifest = parsePackagePayload(manifestPayload);
@@ -201,7 +205,7 @@ export async function POST(request: Request) {
       runtimePreparation = generatedBuild?.prepared
         ? {
             prepared: true,
-            reason: defaultPanelAdapted
+            reason: manifestAdapted
               ? "vite-build-complete-default-panel-adapted"
               : generatedBuild.reason,
           }
@@ -229,10 +233,10 @@ export async function POST(request: Request) {
     const installed = await forwardImportedPackageInstall(request, {
       workspaceId,
       manifest,
-      ...(inspection?.signature && !defaultPanelAdapted
+      ...(inspection?.signature && !manifestAdapted
         ? { signature: inspection.signature }
         : {}),
-      ...(inspection?.publisherKeyId && !defaultPanelAdapted
+      ...(inspection?.publisherKeyId && !manifestAdapted
         ? { publisherKeyId: inspection.publisherKeyId }
         : {}),
       source: {
@@ -241,7 +245,7 @@ export async function POST(request: Request) {
         archiveSha256: sourceInspection.archiveSha256,
         repository: download.repositoryUrl,
         commit: download.commit,
-        generatedManifest: Boolean(generated) || defaultPanelAdapted,
+        generatedManifest: Boolean(generated) || manifestAdapted,
         executionReady: generated?.executionReady ?? true,
       },
       authenticatedUser: user,
@@ -265,7 +269,7 @@ export async function POST(request: Request) {
           fileCount: sourceInspection.files.length,
           checksumsVerified: inspection?.checksumsVerified ?? false,
           runtimePreparation,
-          generatedManifest: Boolean(generated) || defaultPanelAdapted,
+          generatedManifest: Boolean(generated) || manifestAdapted,
           executionReady: generated?.executionReady ?? true,
           ...(generated
             ? { compatibility: generated.compatibility }

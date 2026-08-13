@@ -1,3 +1,6 @@
+import { and, eq, inArray, isNull } from "drizzle-orm";
+import type { getDb } from "../../db";
+import { assets, assetVersions } from "../../db/schema";
 import type {
   CanvasEdge,
   CanvasGroup,
@@ -6,8 +9,16 @@ import type {
   NodeKind,
   WorkflowMarketplaceItem,
 } from "../types";
+import {
+  getFileBucket,
+  MAX_FILE_BYTES,
+  sha256Hex,
+  storeAsset,
+} from "./asset-kernel";
 import { roleForNode } from "./node-role.ts";
 import { compileWorkflow } from "./workflow-kernel.ts";
+
+type Database = Awaited<ReturnType<typeof getDb>>;
 
 export interface WorkflowGraphSnapshot {
   title?: string;
@@ -95,11 +106,13 @@ export function workflowRequirements(
             "anthropic-compatible",
             "gemini",
             "dall-e-3",
-            "runninghub-sparkvideo-mini",
             "runninghub-sparkvideo-mini-multimodal",
-            "runninghub-sparkvideo",
             "runninghub-sparkvideo-multimodal",
             "runninghub-minimax-h3",
+            "runninghub-seedance",
+            "runninghub-suno-v5",
+            "runninghub-rh-image-2",
+            "runninghub-nano-banana-2",
             "ark",
             "async-video",
             "generic-rest",
@@ -217,11 +230,15 @@ export function sanitizeWorkflowGraph(
               : "none",
       progress: undefined,
       result: undefined,
-      parameters: {
-        ...materialParameters,
-        nodeRole: role,
-        ...(role === "result" ? { resultSlot: true } : {}),
-      },
+      parameters: (() => {
+        const next: Record<string, unknown> = {
+          ...materialParameters,
+          nodeRole: role,
+          ...(role === "result" ? { resultSlot: true } : {}),
+        };
+        delete next.kernelRunId;
+        return next;
+      })(),
     };
   });
   const sanitized: WorkflowGraphSnapshot = {
@@ -277,4 +294,320 @@ export function workflowCounts(nodes: CanvasNode[]) {
     executionCount: roles.filter((role) => role === "execution").length,
     resultCount: roles.filter((role) => role === "result").length,
   };
+}
+
+
+export interface WorkflowAssetBundle {
+  nodeId: string;
+  title?: string;
+  prompt?: string;
+  kind?: "material" | "result";
+  text?: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  contentHash: string;
+  blobKey: string;
+}
+
+const MAX_BUNDLED_ASSETS = 64;
+const MAX_RESULT_TEXT_CHARS = 40_000;
+const MAX_REMOTE_RESULT_BYTES = 40 * 1024 * 1024;
+
+function bundleTextResult(node: CanvasNode): string {
+  const kernelOutput =
+    node.parameters?.kernelOutput &&
+    typeof node.parameters.kernelOutput === "object"
+      ? (node.parameters.kernelOutput as {
+          text?: unknown;
+          data?: unknown;
+        })
+      : null;
+  const kernelText =
+    typeof kernelOutput?.text === "string" ? kernelOutput.text.trim() : "";
+  const nodeText = typeof node.result === "string" ? node.result.trim() : "";
+  if (kernelText) return kernelText.slice(0, MAX_RESULT_TEXT_CHARS);
+  if (nodeText) return nodeText.slice(0, MAX_RESULT_TEXT_CHARS);
+  if (kernelOutput && kernelOutput.data !== undefined && kernelOutput.data !== null) {
+    if (typeof kernelOutput.data === "string") {
+      return kernelOutput.data.slice(0, MAX_RESULT_TEXT_CHARS);
+    }
+    try {
+      return JSON.stringify(kernelOutput.data, null, 2).slice(
+        0,
+        MAX_RESULT_TEXT_CHARS,
+      );
+    } catch {
+      return String(kernelOutput.data).slice(0, MAX_RESULT_TEXT_CHARS);
+    }
+  }
+  return "";
+}
+
+async function downloadRemoteResultAsset(url: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    if (!bytes.byteLength || bytes.byteLength > MAX_REMOTE_RESULT_BYTES) {
+      return null;
+    }
+    const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim();
+    return {
+      bytes,
+      mimeType: mimeType || "application/octet-stream",
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function collectWorkflowAssetBundles(
+  db: Database,
+  workspaceId: string,
+  nodes: CanvasNode[],
+): Promise<WorkflowAssetBundle[]> {
+  const bundles: WorkflowAssetBundle[] = [];
+  const materialNodes = nodes.filter(
+    (node) =>
+      roleForNode(node) === "material" &&
+      typeof node.parameters?.assetId === "string" &&
+      Boolean(node.parameters.assetId),
+  );
+  const assetIds = [
+    ...new Set(
+      materialNodes
+        .map((node) => String(node.parameters?.assetId))
+        .filter(Boolean),
+    ),
+  ].slice(0, MAX_BUNDLED_ASSETS);
+  if (assetIds.length) {
+    const rows = await db
+      .select({ asset: assets, version: assetVersions })
+      .from(assets)
+      .innerJoin(
+        assetVersions,
+        eq(assetVersions.id, assets.currentVersionId ?? ""),
+      )
+      .where(
+        and(
+          inArray(assets.id, assetIds),
+          eq(assets.workspaceId, workspaceId),
+          eq(assets.status, "ready"),
+          isNull(assets.trashedAt),
+        ),
+      );
+    const rowByAssetId = new Map(rows.map((row) => [row.asset.id, row]));
+    for (const node of materialNodes.slice(0, MAX_BUNDLED_ASSETS)) {
+      const row = rowByAssetId.get(String(node.parameters?.assetId));
+      if (!row || row.version.size > MAX_FILE_BYTES) continue;
+      bundles.push({
+        nodeId: node.id,
+        title: node.title,
+        prompt: node.prompt,
+        kind: "material",
+        name: row.asset.name,
+        mimeType: row.asset.mimeType,
+        size: row.version.size,
+        contentHash: row.version.contentHash,
+        blobKey: row.version.blobKey,
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    if (bundles.length >= MAX_BUNDLED_ASSETS) break;
+    if (roleForNode(node) !== "result" || node.status !== "succeeded") continue;
+    if (node.kind === "text") {
+      const text = bundleTextResult(node);
+      if (!text) continue;
+      bundles.push({
+        nodeId: node.id,
+        title: node.title,
+        prompt: node.prompt,
+        kind: "result",
+        text,
+        name: "",
+        mimeType: "text/plain",
+        size: 0,
+        contentHash: "",
+        blobKey: "",
+      });
+      continue;
+    }
+    if (!["image", "video", "audio", "document"].includes(node.kind)) continue;
+    const kernelOutput =
+      node.parameters?.kernelOutput &&
+      typeof node.parameters.kernelOutput === "object"
+        ? (node.parameters.kernelOutput as {
+            assetUrl?: unknown;
+            data?: unknown;
+          })
+        : null;
+    const outputData =
+      kernelOutput?.data && typeof kernelOutput.data === "object"
+        ? (kernelOutput.data as Record<string, unknown>)
+        : null;
+    const mediaUrl =
+      (typeof kernelOutput?.assetUrl === "string" && kernelOutput.assetUrl) ||
+      (typeof node.parameters?.assetContentUrl === "string" &&
+        node.parameters.assetContentUrl) ||
+      "";
+    const urlAssetIdMatch = mediaUrl.match(/[?&]assetId=([^&]+)/);
+    const resultAssetId =
+      (typeof outputData?.assetId === "string" && outputData.assetId) ||
+      (urlAssetIdMatch ? decodeURIComponent(urlAssetIdMatch[1]) : "");
+    if (resultAssetId) {
+      const [row] = await db
+        .select({ asset: assets, version: assetVersions })
+        .from(assets)
+        .innerJoin(
+          assetVersions,
+          eq(assetVersions.id, assets.currentVersionId ?? ""),
+        )
+        .where(
+          and(
+            eq(assets.id, resultAssetId),
+            eq(assets.workspaceId, workspaceId),
+            eq(assets.status, "ready"),
+            isNull(assets.trashedAt),
+          ),
+        )
+        .limit(1);
+      if (!row || row.version.size > MAX_FILE_BYTES) continue;
+      bundles.push({
+        nodeId: node.id,
+        title: node.title,
+        prompt: node.prompt,
+        kind: "result",
+        name: row.asset.name,
+        mimeType: row.asset.mimeType,
+        size: row.version.size,
+        contentHash: row.version.contentHash,
+        blobKey: row.version.blobKey,
+      });
+      continue;
+    }
+    if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) continue;
+    const downloaded = await downloadRemoteResultAsset(mediaUrl);
+    if (!downloaded) continue;
+    const hash = await sha256Hex(downloaded.bytes);
+    const blobKey = `blobs/sha256/${hash}`;
+    const bucket = await getFileBucket();
+    try {
+      const existing = await bucket.get(blobKey);
+      if (!existing) {
+        await bucket.put(blobKey, downloaded.bytes, {
+          httpMetadata: { contentType: downloaded.mimeType },
+          customMetadata: {
+            sha256: hash,
+            originalName: `${node.title || "生成结果"}.${downloaded.mimeType.split("/")[1] ?? "bin"}`,
+          },
+        });
+      }
+    } catch {
+      continue;
+    }
+    bundles.push({
+      nodeId: node.id,
+      title: node.title,
+      prompt: node.prompt,
+      kind: "result",
+      name: `${node.title || "生成结果"}.${downloaded.mimeType.split("/")[1] ?? "bin"}`,
+      mimeType: downloaded.mimeType,
+      size: downloaded.bytes.byteLength,
+      contentHash: hash,
+      blobKey,
+    });
+  }
+  return bundles;
+}
+
+export async function applyWorkflowAssetBundles(options: {
+  db: Database;
+  workspaceId: string;
+  nodes: CanvasNode[];
+  bundles: WorkflowAssetBundle[];
+  sourceRef?: string | null;
+}): Promise<number> {
+  const { db, workspaceId, nodes, bundles } = options;
+  if (!bundles.length || !nodes.length) return 0;
+  const bundleByNodeId = new Map(
+    bundles.map((bundle) => [bundle.nodeId, bundle]),
+  );
+  const targetNodes = nodes.filter((node) => bundleByNodeId.has(node.id));
+  if (!targetNodes.length) return 0;
+  const bucket = await getFileBucket();
+  let restored = 0;
+  for (const node of targetNodes) {
+    const bundle = bundleByNodeId.get(node.id);
+    if (!bundle) continue;
+    if (bundle.kind === "result" && bundle.text && !bundle.blobKey) {
+      node.title = bundle.title || node.title;
+      node.prompt = bundle.prompt ?? node.prompt;
+      node.status = "succeeded";
+      node.result = bundle.text;
+      if (node.parameters && typeof node.parameters === "object") {
+        const params = node.parameters as Record<string, unknown>;
+        delete params.kernelRunId;
+      }
+      restored += 1;
+      continue;
+    }
+    try {
+      const object = await bucket.get(bundle.blobKey);
+      if (!object?.body) continue;
+      const bytes = await new Response(
+        object.body as ReadableStream,
+      ).arrayBuffer();
+      if (!bytes.byteLength || bytes.byteLength !== bundle.size) continue;
+      const asset = await storeAsset(db, bucket, {
+        workspaceId,
+        name: bundle.name,
+        mimeType: bundle.mimeType,
+        bytes,
+        sourceType: "workflow-install",
+        sourceRef: options.sourceRef ?? null,
+      });
+      const isResult = bundle.kind === "result";
+      node.title = bundle.title || node.title;
+      node.prompt = bundle.prompt ?? node.prompt;
+      node.status = "succeeded";
+      node.result = isResult ? "已从共享画布还原生成结果" : "已从共享画布还原素材";
+      node.parameters = {
+        ...(node.parameters ?? {}),
+        nodeRole: isResult ? "result" : "material",
+        source: isResult ? "asset-kernel" : "workflow-install",
+        assetId: asset.id,
+        assetUri: asset.uri,
+        assetContentUrl: asset.contentUrl,
+        fileName: asset.name,
+        mimeType: asset.mimeType,
+      };
+      if (isResult) {
+        node.parameters.kernelOutput = {
+          type: node.kind,
+          assetUrl: asset.contentUrl,
+          data: {
+            assetId: asset.id,
+            assetUri: asset.uri,
+            source: "workflow-install",
+          },
+        };
+      }
+      if (node.parameters && typeof node.parameters === "object") {
+        const params = node.parameters as Record<string, unknown>;
+        delete params.placeholder;
+        delete params.kernelRunId;
+      }
+      restored += 1;
+    } catch {
+      continue;
+    }
+  }
+  return restored;
 }

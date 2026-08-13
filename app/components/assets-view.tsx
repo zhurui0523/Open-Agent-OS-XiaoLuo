@@ -3,6 +3,7 @@
 import {
   Archive,
   AudioLines,
+  Clock3,
   ChevronRight,
   Download,
   File as FileIcon,
@@ -35,6 +36,11 @@ import {
 import { AssetContentPreview } from "./asset-content-preview";
 import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
+import {
+  ASSET_TRASH_RETENTION_HOURS,
+  assetTrashExpiresAt,
+  assetTrashRemainingLabel,
+} from "../lib/asset-trash-policy";
 
 const filters: Array<{ id: "all" | AssetKind; label: string }> = [
   { id: "all", label: "全部" },
@@ -398,6 +404,19 @@ export function AssetsView({
         </div>
       </div>
 
+      {trash && (
+        <div className="file-trash-retention-notice" role="status">
+          <Clock3 size={18} aria-hidden="true" />
+          <div>
+            <strong>回收站文件保留 {ASSET_TRASH_RETENTION_HOURS} 小时</strong>
+            <span>
+              文件进入回收站满 {ASSET_TRASH_RETENTION_HOURS} 小时后会自动永久删除，
+              同时清理对应的本地或 OSS 文件；永久删除后无法恢复。
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="file-secondary-toolbar">
         <label>
           状态
@@ -525,6 +544,12 @@ export function AssetsView({
                 ))}
               </div>
               <small>{formatDate(asset.updatedAt)}</small>
+              {trash && asset.trashedAt && (
+                <small className="file-trash-countdown">
+                  <Clock3 size={12} aria-hidden="true" />
+                  {assetTrashRemainingLabel(asset.trashedAt)}
+                </small>
+              )}
             </div>
           </article>
         ))}
@@ -614,6 +639,14 @@ export function AssetsView({
               <div><dt>大小</dt><dd>{formatBytes(selected.size)}</dd></div>
               <div><dt>当前版本</dt><dd>v{selected.currentVersion} / 共 {selected.versionCount} 个版本</dd></div>
               <div><dt>更新时间</dt><dd>{formatDate(selected.updatedAt)}</dd></div>
+              {trash && selected.trashedAt && (
+                <div>
+                  <dt>自动删除时间</dt>
+                  <dd>
+                    {assetTrashExpiresAt(selected.trashedAt)?.toLocaleString("zh-CN") ?? "--"}
+                  </dd>
+                </div>
+              )}
             </dl>
             <div className="preview-actions file-preview-actions">
               {trash ? (

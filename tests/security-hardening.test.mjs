@@ -49,7 +49,7 @@ test("fails closed for production database TLS secrets and package signatures", 
   assert.match(tls, /BEGIN CERTIFICATE/);
   assert.match(migration, /mysqlSslOptions/);
   assert.match(verifier, /mysqlSslOptions/);
-  assert.match(vault, /生产环境必须配置独立的 SECRET_ENCRYPTION_KEY/);
+  assert.match(vault, /服务端未配置 SECRET_ENCRYPTION_KEY/);
   assert.match(packages, /packageSignaturesRequired\(\)/);
   assert.match(executors, /allowedTrustStates/);
 });

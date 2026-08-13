@@ -200,6 +200,22 @@ function executionPrompt(
   ].join("\n\n");
 }
 
+function sunoLyricsPrompt(
+  node: KernelNodeRequest,
+  inputs: KernelUpstreamInput[],
+) {
+  const upstreamLyrics = inputs
+    .filter((input) => !input.kind || input.kind === "text")
+    .map((input) => modelResponseText(input.output)?.trim())
+    .filter((value): value is string => Boolean(value));
+
+  if (upstreamLyrics.length) {
+    return upstreamLyrics.join("\n\n");
+  }
+
+  return node.prompt.trim();
+}
+
 async function fetchJson(
   url: string,
   init: RequestInit,
@@ -374,8 +390,14 @@ export function assertRunningHubBusinessSuccess(payload: unknown) {
   ].includes(providerStatus);
   const failedCode = Boolean(errorCode && errorCode !== "0");
   if (!failedStatus && !failedCode) return;
+  const credentialRejected = /APIKEY_USER_NOT_FOUND|APIKEY_NOT_FOUND|APIKEY_INVALID|AUTHENTICATION/i.test(
+    (errorCode || "") + " " + (errorMessage || ""),
+  );
+  const failureMessage = credentialRejected
+    ? "RunningHub API Key 无效或不存在（" + (errorMessage || errorCode) + "）：请在模型连接中检查密钥是否填写正确，标准模型 API 仅支持企业级-共享 API Key"
+    : errorMessage || `RunningHub 任务失败${errorCode ? `（${errorCode}）` : ""}`;
   throw new ModelExecutionError(
-    errorMessage || `RunningHub 任务失败${errorCode ? `（${errorCode}）` : ""}`,
+    failureMessage,
     {
       status: 502,
       code: errorCode ? `RUNNINGHUB_${errorCode}` : "RUNNINGHUB_TASK_FAILED",
@@ -426,12 +448,37 @@ function asyncDescriptor(
 
 function isRunningHubVideoProtocol(protocol: ModelRow["protocol"]) {
   return (
-    protocol === "runninghub-sparkvideo-mini" ||
     protocol === "runninghub-sparkvideo-mini-multimodal" ||
-    protocol === "runninghub-sparkvideo" ||
     protocol === "runninghub-sparkvideo-multimodal" ||
-    protocol === "runninghub-minimax-h3"
+    protocol === "runninghub-minimax-h3" ||
+    protocol === "runninghub-seedance"
   );
+}
+
+function isRunningHubImageProtocol(protocol: ModelRow["protocol"]) {
+  return (
+    protocol === "runninghub-rh-image-2" ||
+    protocol === "runninghub-nano-banana-2"
+  );
+}
+
+function isRunningHubAudioProtocol(protocol: ModelRow["protocol"]) {
+  return protocol === "runninghub-suno-v5";
+}
+
+function isRunningHubProtocol(protocol: ModelRow["protocol"]) {
+  return (
+    isRunningHubVideoProtocol(protocol) ||
+    isRunningHubImageProtocol(protocol) ||
+    isRunningHubAudioProtocol(protocol)
+  );
+}
+
+function runningHubQueryEndpoint(protocol: ModelRow["protocol"]) {
+  return isRunningHubImageProtocol(protocol) ||
+    isRunningHubAudioProtocol(protocol)
+    ? "https://www.runninghub.ai/openapi/v2/query"
+    : "https://www.runninghub.cn/openapi/v2/query";
 }
 
 function booleanParameter(value: unknown, fallback: boolean) {
@@ -668,6 +715,70 @@ function runningHubSparkVideoMultimodalBody(
   };
 }
 
+function runningHubSeedanceBody(
+  node: KernelNodeRequest,
+  inputs: KernelUpstreamInput[],
+  modelParameters: Record<string, unknown>,
+  prompt: string,
+  constraints: ModelInputConstraints,
+) {
+  if (node.kind !== "video") {
+    throw new Error("RunningHub Seedance 仅支持视频节点");
+  }
+  const conversionSlot = stringParameter(
+    modelParameters.conversionSlots,
+    "all",
+  );
+  return {
+    prompt,
+    resolution: stringParameter(modelParameters.resolution, "720p"),
+    duration: stringParameter(modelParameters.duration, "5"),
+    ...runningHubMultimodalReferences(inputs, modelParameters, constraints),
+    generateAudio: booleanParameter(modelParameters.generateAudio, true),
+    ratio: stringParameter(modelParameters.ratio, "adaptive"),
+    bitrateMode: stringParameter(modelParameters.bitrateMode, "standard"),
+    realPersonMode: booleanParameter(modelParameters.realPersonMode, true),
+    conversionSlots: [conversionSlot],
+    returnLastFrame: booleanParameter(modelParameters.returnLastFrame, false),
+    seed:
+      typeof modelParameters.seed === "number" &&
+      Number.isInteger(modelParameters.seed)
+        ? modelParameters.seed
+        : -1,
+  };
+}
+
+function runningHubSunoBody(
+  node: KernelNodeRequest,
+  modelParameters: Record<string, unknown>,
+  prompt: string,
+) {
+  if (node.kind !== "audio") {
+    throw new Error("RunningHub Suno 仅支持音频节点");
+  }
+  if (!prompt.trim()) {
+    throw new ModelExecutionError(
+      "Suno 需要歌词作为提示词，请先在节点中输入完整歌词",
+      { status: 400, code: "MODEL_INPUT_MISSING" },
+    );
+  }
+  const tags = stringParameter(modelParameters.tags, "").trim();
+  if (!tags) {
+    throw new ModelExecutionError(
+      "Suno 需要在模型参数中填写风格标签（tags），例如：流行,民谣,女声",
+      { status: 400, code: "MODEL_INPUT_MISSING" },
+    );
+  }
+  return {
+    title: stringParameter(
+      modelParameters.title,
+      stringParameter(node.title, "未命名歌曲"),
+    ).slice(0, 80),
+    prompt: prompt.slice(0, 5000),
+    tags: tags.slice(0, 1000),
+  };
+}
+
 function runningHubVideoBody(
   node: KernelNodeRequest,
   inputs: KernelUpstreamInput[],
@@ -714,8 +825,49 @@ function runningHubVideoBody(
   };
 }
 
+function runningHubImageEditBody(
+  label: string,
+  node: KernelNodeRequest,
+  inputs: KernelUpstreamInput[],
+  modelParameters: Record<string, unknown>,
+  prompt: string,
+  includeQuality: boolean,
+  requireReferenceImages: boolean,
+) {
+  if (node.kind !== "image") {
+    throw new Error(`${label} 仅支持图片节点`);
+  }
+  const references = onlyImageReferences(inputs, label);
+  if (requireReferenceImages && !references.length) {
+    throw new Error(`${label} 需要至少连接一张参考图片（支持 1-10 张）`);
+  }
+  if (!prompt.trim()) {
+    throw new Error(`${label} 需要填写提示词（prompt）`);
+  }
+  return {
+    prompt,
+    // 无参考图时不携带 imageUrls，由调用方切换到文生图端点
+    ...(references.length
+      ? { imageUrls: references.slice(0, 10).map((reference) => reference.url) }
+      : {}),
+    aspectRatio: stringParameter(modelParameters.aspectRatio, "16:9"),
+    resolution: stringParameter(modelParameters.resolution, "2k"),
+    ...(includeQuality
+      ? { quality: stringParameter(modelParameters.quality, "medium") }
+      : {}),
+  };
+}
+
+// 无参考图时，由图生图连接地址推导文生图端点
+function runningHubTextToImageEndpoint(imageToImageEndpoint: string) {
+  return imageToImageEndpoint
+    .replace(/\/image-to-image\/?$/, "/text-to-image")
+    .replace("rhart-image-g-2-official", "rhart-image-g-2");
+}
+
 function runningHubAsyncDescriptor(
   payload: unknown,
+  queryEndpoint: string,
 ): AsyncJobDescriptor | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const record = payload as Record<string, unknown>;
@@ -731,7 +883,7 @@ function runningHubAsyncDescriptor(
   if (["succeeded", "success", "completed", "done"].includes(providerStatus)) {
     return undefined;
   }
-  const pollUrl = `https://www.runninghub.cn/openapi/v2/query?taskId=${encodeURIComponent(externalJobId)}`;
+  const pollUrl = `${queryEndpoint}?taskId=${encodeURIComponent(externalJobId)}`;
   validateExternalEndpoint(pollUrl);
   return {
     externalJobId,
@@ -876,7 +1028,35 @@ export async function executeModel(
   let url = base;
   let body: Record<string, unknown>;
 
-  if (isRunningHubVideoProtocol(model.protocol)) {
+  if (model.protocol === "runninghub-rh-image-2") {
+    body = runningHubImageEditBody(
+      "RH-image-2",
+      node,
+      providerInputs,
+      modelParameters,
+      prompt,
+      true,
+      false,
+    );
+    // 未连接参考图时自动从图生图切换为文生图
+    if (!("imageUrls" in body)) {
+      url = runningHubTextToImageEndpoint(base);
+    }
+  } else if (model.protocol === "runninghub-nano-banana-2") {
+    body = runningHubImageEditBody(
+      "RH-banana-2",
+      node,
+      providerInputs,
+      modelParameters,
+      prompt,
+      false,
+      false,
+    );
+    // 未连接参考图时自动从图生图切换为文生图
+    if (!("imageUrls" in body)) {
+      url = runningHubTextToImageEndpoint(base);
+    }
+  } else if (isRunningHubVideoProtocol(model.protocol)) {
     body =
       model.protocol === "runninghub-minimax-h3"
         ? runningHubMinimaxH3Body(
@@ -886,6 +1066,14 @@ export async function executeModel(
             prompt,
             inputConstraints,
           )
+        : model.protocol === "runninghub-seedance"
+          ? runningHubSeedanceBody(
+              node,
+              providerInputs,
+              modelParameters,
+              prompt,
+              inputConstraints,
+            )
         : model.protocol === "runninghub-sparkvideo-mini-multimodal" ||
             model.protocol === "runninghub-sparkvideo-multimodal"
           ? runningHubSparkVideoMultimodalBody(
@@ -896,6 +1084,12 @@ export async function executeModel(
               inputConstraints,
             )
         : runningHubVideoBody(node, providerInputs, modelParameters, prompt);
+  } else if (model.protocol === "runninghub-suno-v5") {
+    body = runningHubSunoBody(
+      node,
+      modelParameters,
+      sunoLyricsPrompt(node, inputs),
+    );
   } else if (model.protocol === "generic-rest" || model.protocol === "async-video") {
     body = {
       ...modelParameters,
@@ -1026,12 +1220,12 @@ export async function executeModel(
       ? 25 * 1024 * 1024
       : 2 * 1024 * 1024,
   );
-  if (isRunningHubVideoProtocol(model.protocol)) {
+  if (isRunningHubProtocol(model.protocol)) {
     assertRunningHubBusinessSuccess(payload);
   }
   const execution = normalizeRemoteOutput(payload, node, `model:${model.id}`);
-  const asyncJob = isRunningHubVideoProtocol(model.protocol)
-    ? runningHubAsyncDescriptor(payload)
+  const asyncJob = isRunningHubProtocol(model.protocol)
+    ? runningHubAsyncDescriptor(payload, runningHubQueryEndpoint(model.protocol))
     : model.protocol === "async-video"
       ? asyncDescriptor(payload, base)
       : undefined;
@@ -1046,7 +1240,7 @@ export async function pollModelJob(
 ) {
   validateExternalEndpoint(pollUrl);
   const credential = await modelCredential(model);
-  const runningHub = isRunningHubVideoProtocol(model.protocol);
+  const runningHub = isRunningHubProtocol(model.protocol);
   const pollEndpoint = new URL(pollUrl);
   const taskId = pollEndpoint.searchParams.get("taskId");
   if (runningHub) pollEndpoint.search = "";

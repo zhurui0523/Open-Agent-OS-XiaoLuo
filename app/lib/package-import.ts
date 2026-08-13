@@ -6,6 +6,7 @@ import type {
 import type { XiaoLuoPackageManifest } from "./package-contract";
 import { serverRuntimeConfig } from "./server-runtime-config";
 import { resolveAdvertisedGithubCommit } from "./github-smart-http";
+import { skillManifestFromMarkdown } from "./skill-markdown";
 
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const GITHUB_API_ORIGIN = "https://api.github.com";
@@ -50,6 +51,24 @@ export interface GithubDownload {
 export interface GithubCompatibilityReport {
   repository: string;
   commit: string;
+  projectType:
+    | "skill"
+    | "static-web"
+    | "frontend"
+    | "node"
+    | "python"
+    | "mcp"
+    | "openapi"
+    | "docker"
+    | "unknown";
+  projectTypeLabel: string;
+  adapterMode:
+    | "declarative-skill"
+    | "static-sandbox"
+    | "isolated-build"
+    | "remote-api"
+    | "source-only";
+  detectedEntrypoints: string[];
   detectedStack: string[];
   packageName: string | null;
   scripts: string[];
@@ -65,6 +84,8 @@ export interface GeneratedGithubManifest {
   executionReady: boolean;
   staticRoot: string | null;
 }
+
+export type GeneratedSourceManifest = GeneratedGithubManifest;
 
 function safeSegment(value: string, label: string) {
   if (!/^[A-Za-z0-9._-]{1,160}$/.test(value)) {
@@ -517,6 +538,28 @@ export async function analyzeGithubCompatibility(
   const fileNames = new Set(
     inspection.files.map((file) => file.relativePath.toLowerCase()),
   );
+  const findFiles = (pattern: RegExp) =>
+    [...fileNames].filter((name) => pattern.test(name)).slice(0, 12);
+  const skillFiles = findFiles(/(^|\/)skill\.md$/i);
+  const openApiFiles = findFiles(
+    /(^|\/)(?:openapi|swagger)(?:\.[a-z0-9_-]+)?\.(?:ya?ml|json)$/i,
+  );
+  const pythonFiles = findFiles(
+    /(^|\/)(?:pyproject\.toml|requirements(?:-[^/]+)?\.txt|setup\.py|main\.py|app\.py)$/i,
+  );
+  const dockerFiles = findFiles(/(^|\/)(?:dockerfile|compose\.ya?ml|docker-compose\.ya?ml)$/i);
+  const nodeEntrypoints = findFiles(
+    /(^|\/)(?:index|main|server|cli)\.(?:js|mjs|cjs|ts)$/i,
+  );
+  const staticFiles = findFiles(/^(?:dist|build|out|public)\/index\.html$|^index\.html$/i);
+  const packageName =
+    typeof packageJson.name === "string" ? packageJson.name : null;
+  const dependencyNames = Object.keys(dependencies);
+  const looksLikeMcp =
+    dependencyNames.some((name) =>
+      /(?:^|\/)(?:mcp|modelcontextprotocol)(?:$|[-_/])/i.test(name),
+    ) ||
+    [...fileNames].some((name) => /(^|\/)mcp(?:-server)?\.(?:json|ya?ml)$/i.test(name));
   const hasServer =
     "express" in dependencies ||
     [...fileNames].some((name) =>
@@ -525,28 +568,76 @@ export async function analyzeGithubCompatibility(
   const hasBuildOutput = [...fileNames].some((name) =>
     /^(dist|build|out)\//.test(name),
   );
+  const projectType = skillFiles.length
+    ? "skill"
+    : openApiFiles.length
+      ? "openapi"
+      : looksLikeMcp
+        ? "mcp"
+        : dockerFiles.length
+          ? "docker"
+          : staticFiles.length && (!packageJsonPath || hasBuildOutput)
+            ? "static-web"
+            : stack.some((name) => ["react", "vite", "next", "vue", "svelte"].includes(name))
+              ? "frontend"
+              : pythonFiles.length
+                ? "python"
+                : packageJsonPath
+                  ? "node"
+                  : "unknown";
+  const projectTypeLabel = {
+    skill: "Skill / Markdown",
+    "static-web": "静态网页",
+    frontend: "前端应用",
+    node: "Node.js 工具",
+    python: "Python 工具",
+    mcp: "MCP 服务",
+    openapi: "OpenAPI 接口",
+    docker: "容器化应用",
+    unknown: "通用源码",
+  }[projectType];
+  const adapterMode = projectType === "skill"
+    ? "declarative-skill"
+    : projectType === "static-web" || projectType === "frontend"
+      ? "static-sandbox"
+      : projectType === "openapi"
+        ? "remote-api"
+        : ["node", "python", "mcp", "docker"].includes(projectType)
+          ? "isolated-build"
+          : "source-only";
+  const detectedEntrypoints = [
+    ...skillFiles,
+    ...openApiFiles,
+    ...staticFiles,
+    ...nodeEntrypoints,
+    ...pythonFiles,
+    ...dockerFiles,
+  ].filter((value, index, values) => values.indexOf(value) === index).slice(0, 12);
   return {
     repository: input.repository,
     commit: input.commit,
+    projectType,
+    projectTypeLabel,
+    adapterMode,
+    detectedEntrypoints,
     detectedStack: stack,
-    packageName:
-      typeof packageJson.name === "string" ? packageJson.name : null,
+    packageName,
     scripts,
     hasServer,
     hasBuildOutput,
     issues: [
-      "仓库中没有 xiaoluo.plugin.json，当前不能确定运行时、权限和节点 Schema",
+      `未提供 XiaoLuo Manifest，安装器已按“${projectTypeLabel}”自动生成内部清单`,
       ...(hasServer
         ? ["检测到服务端代码；XiaoLuo 不会在主服务进程中直接执行第三方服务器"]
         : []),
-      ...(!hasBuildOutput && scripts.includes("build")
-        ? ["仓库需要构建，但安全策略禁止在安装请求中直接运行第三方构建脚本"]
+      ...(!hasBuildOutput && scripts.includes("build") && projectType !== "frontend"
+        ? ["项目需要构建；源码会先保存，再由隔离运行适配器完成构建"]
         : []),
     ],
     requiredFiles: [
-      "xiaoluo.plugin.json",
+      "xiaoluo.plugin.json（可选，用于精确声明运行方式）",
       "checksums.json（推荐）",
-      "xiaoluo.signature.json（公开发布或隔离 Worker 必需）",
+      "xiaoluo.signature.json（公开发布或启用隔离 Worker 时推荐）",
     ],
   };
 }
@@ -557,7 +648,13 @@ function packageNamespacePart(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[._-]+|[._-]+$/g, "");
-  return (normalized || "repository").slice(0, 60);
+  if (normalized) return normalized.slice(0, 60);
+  let hash = 2166136261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `source-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 async function staticRootOf(inspection: SourceArchiveInspection) {
@@ -585,27 +682,51 @@ async function staticRootOf(inspection: SourceArchiveInspection) {
   return "";
 }
 
-export async function generateGithubPackageManifest(input: {
+export async function generateSourcePackageManifest(input: {
   inspection: SourceArchiveInspection;
   owner: string;
   repository: string;
-  repositoryUrl: string;
+  sourceUrl: string;
   commit: string;
-  runtimeOrigin: string;
   workspaceId: string;
-}): Promise<GeneratedGithubManifest> {
+  packageNamespace?: "github" | "source";
+  versionTag?: "git" | "src";
+}): Promise<GeneratedSourceManifest> {
   const compatibility = await analyzeGithubCompatibility(input.inspection, {
-    repository: input.repositoryUrl,
+    repository: input.sourceUrl,
     commit: input.commit,
   });
-  const packageId = `github.${packageNamespacePart(input.owner)}.${packageNamespacePart(input.repository)}`;
+  const packageId = `${input.packageNamespace ?? "source"}.${packageNamespacePart(input.owner)}.${packageNamespacePart(input.repository)}`;
   const staticRoot = await staticRootOf(input.inspection);
-  const version = `0.0.0-git.${input.commit.slice(0, 12).toLowerCase()}`;
+  const version = `0.0.0-${input.versionTag ?? "src"}.${input.commit.slice(0, 12).toLowerCase()}`;
   const staticRuntimeUrl =
     staticRoot !== null
-      ? `${input.runtimeOrigin}/api/v2/packages/runtime/static/${encodeURIComponent(input.workspaceId)}/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/${input.inspection.archiveSha256}/${staticRoot || "_root"}/`
+      ? `/api/v2/packages/runtime/static/${encodeURIComponent(input.workspaceId)}/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/${input.inspection.archiveSha256}/${staticRoot || "_root"}/`
       : null;
   const name = compatibility.packageName || input.repository;
+  if (compatibility.projectType === "skill") {
+    const skillFile = input.inspection.files
+      .filter((file) => /(^|\/)skill\.md$/i.test(file.relativePath))
+      .sort((left, right) => left.relativePath.length - right.relativePath.length)[0];
+    if (skillFile) {
+      const markdown = new TextDecoder("utf-8", { fatal: true }).decode(
+        await input.inspection.readFile(skillFile.path),
+      );
+      const manifest = skillManifestFromMarkdown(markdown, input.repository, version);
+      manifest.id = packageId;
+      manifest.version = version;
+      manifest.description = `${manifest.description ?? "从 Markdown 导入的 Skill"}（来源：${input.sourceUrl}）`;
+      if (manifest.contributes?.skills?.[0]) {
+        manifest.contributes.skills[0].id = `${packageId}.main`;
+      }
+      return {
+        compatibility,
+        executionReady: true,
+        staticRoot: null,
+        manifest,
+      };
+    }
+  }
   return {
     compatibility,
     executionReady: Boolean(staticRuntimeUrl),
@@ -616,8 +737,8 @@ export async function generateGithubPackageManifest(input: {
       name,
       version,
       description: staticRuntimeUrl
-        ? `从 ${input.repositoryUrl} 自动适配的静态沙盒插件，固定 Commit ${input.commit.slice(0, 12)}。`
-        : `从 ${input.repositoryUrl} 导入的源码插件，固定 Commit ${input.commit.slice(0, 12)}；等待隔离构建后启用。`,
+        ? `从 ${input.sourceUrl} 自动适配的静态沙盒插件，源码版本 ${input.commit.slice(0, 12)}。`
+        : `从 ${input.sourceUrl} 导入的${compatibility.projectTypeLabel}，源码已保存；完成隔离运行配置后启用。`,
       type: "plugin",
       access: { scope: "personal" },
       runtime: staticRuntimeUrl
@@ -636,6 +757,26 @@ export async function generateGithubPackageManifest(input: {
         : {},
     },
   };
+}
+
+export async function generateGithubPackageManifest(input: {
+  inspection: SourceArchiveInspection;
+  owner: string;
+  repository: string;
+  repositoryUrl: string;
+  commit: string;
+  workspaceId: string;
+}): Promise<GeneratedGithubManifest> {
+  return generateSourcePackageManifest({
+    inspection: input.inspection,
+    owner: input.owner,
+    repository: input.repository,
+    sourceUrl: input.repositoryUrl,
+    commit: input.commit,
+    workspaceId: input.workspaceId,
+    packageNamespace: "github",
+    versionTag: "git",
+  });
 }
 
 export function packageArtifactKey(input: {

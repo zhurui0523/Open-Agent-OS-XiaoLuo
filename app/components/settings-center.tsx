@@ -38,12 +38,18 @@ import {
   GEMINI_IMAGE_MODEL,
   RUNNINGHUB_MINIMAX_H3_ENDPOINT,
   RUNNINGHUB_MINIMAX_H3_MODEL,
-  RUNNINGHUB_SPARKVIDEO_ENDPOINT,
-  RUNNINGHUB_SPARKVIDEO_MINI_ENDPOINT,
+  RUNNINGHUB_NANO_BANANA_2_ENDPOINT,
+  RUNNINGHUB_NANO_BANANA_2_MODEL,
+  RUNNINGHUB_RH_IMAGE_2_ENDPOINT,
+  RUNNINGHUB_RH_IMAGE_2_MODEL,
+  RUNNINGHUB_SEEDANCE_ENDPOINT,
+  RUNNINGHUB_SEEDANCE_MODEL,
   RUNNINGHUB_SPARKVIDEO_MINI_MULTIMODAL_ENDPOINT,
   RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
   RUNNINGHUB_SPARKVIDEO_MODEL,
   RUNNINGHUB_SPARKVIDEO_MULTIMODAL_ENDPOINT,
+  RUNNINGHUB_SUNO_V5_ENDPOINT,
+  RUNNINGHUB_SUNO_V5_MODEL,
   defaultProtocolForModelType,
   modelProtocolOptions,
   modelProtocolOptionsForType,
@@ -95,25 +101,11 @@ function protocolPreset(
   modelType: NodeKind,
 ): Partial<ModelConnectionDraft> {
   if (modelType === "video") {
-    if (protocol === "runninghub-sparkvideo-mini") {
-      return {
-        name: RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
-        modelName: RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
-        baseUrl: RUNNINGHUB_SPARKVIDEO_MINI_ENDPOINT,
-      };
-    }
     if (protocol === "runninghub-sparkvideo-mini-multimodal") {
       return {
         name: `${RUNNINGHUB_SPARKVIDEO_MINI_MODEL} 多模态`,
         modelName: RUNNINGHUB_SPARKVIDEO_MINI_MODEL,
         baseUrl: RUNNINGHUB_SPARKVIDEO_MINI_MULTIMODAL_ENDPOINT,
-      };
-    }
-    if (protocol === "runninghub-sparkvideo") {
-      return {
-        name: RUNNINGHUB_SPARKVIDEO_MODEL,
-        modelName: RUNNINGHUB_SPARKVIDEO_MODEL,
-        baseUrl: RUNNINGHUB_SPARKVIDEO_ENDPOINT,
       };
     }
     if (protocol === "runninghub-sparkvideo-multimodal") {
@@ -130,9 +122,40 @@ function protocolPreset(
         baseUrl: RUNNINGHUB_MINIMAX_H3_ENDPOINT,
       };
     }
+    if (protocol === "runninghub-seedance") {
+      return {
+        name: "Seedance-2.5",
+        modelName: RUNNINGHUB_SEEDANCE_MODEL,
+        baseUrl: RUNNINGHUB_SEEDANCE_ENDPOINT,
+      };
+    }
+    return {};
+  }
+  if (modelType === "audio") {
+    if (protocol === "runninghub-suno-v5") {
+      return {
+        name: "Suno v5.5",
+        modelName: RUNNINGHUB_SUNO_V5_MODEL,
+        baseUrl: RUNNINGHUB_SUNO_V5_ENDPOINT,
+      };
+    }
     return {};
   }
   if (modelType !== "image") return {};
+  if (protocol === "runninghub-rh-image-2") {
+    return {
+      name: "RH-image-2",
+      modelName: RUNNINGHUB_RH_IMAGE_2_MODEL,
+      baseUrl: RUNNINGHUB_RH_IMAGE_2_ENDPOINT,
+    };
+  }
+  if (protocol === "runninghub-nano-banana-2") {
+    return {
+      name: "RH-banana-2",
+      modelName: RUNNINGHUB_NANO_BANANA_2_MODEL,
+      baseUrl: RUNNINGHUB_NANO_BANANA_2_ENDPOINT,
+    };
+  }
   if (protocol === "dall-e-3") {
     return {
       name: DALL_E_3_MODEL,
@@ -320,6 +343,7 @@ const shortcuts = [
   ["显示 / 隐藏小地图", "H"],
   ["放大 / 缩小", "+ / −"],
   ["关闭菜单或取消连线", "Escape"],
+  ["进入 / 退出多选", "Ctrl / ⌘ + M"],
 ];
 
 function draftFromModel(model: ModelConnection): ModelConnectionDraft {
@@ -1055,6 +1079,7 @@ export function SettingsCenter({
                       <option value="text">文本 (Text)</option>
                       <option value="image">图片 (Image)</option>
                       <option value="video">视频 (Video)</option>
+                      <option value="audio">音乐 (Audio)</option>
                     </select>
                   </div>
                   <label>
@@ -1089,7 +1114,7 @@ export function SettingsCenter({
                       }
                     >
                       {!compatibleProtocols.length && (
-                        <option value="">暂无可用视频模型</option>
+                        <option value="">暂无可用模型</option>
                       )}
                       {compatibleProtocols.map((item) => (
                         <option key={item.value} value={item.value}>

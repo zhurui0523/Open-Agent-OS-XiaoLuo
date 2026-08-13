@@ -1,21 +1,15 @@
 import type { RowDataPacket } from "mysql2/promise";
 import { jsonError, requireUser } from "../../../../lib/auth";
 import { mysqlRows } from "../../../../lib/mysql";
-
-const DEFAULT_STORAGE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024;
+import { resolveStorageQuotaBytes } from "../../../../lib/storage-quota";
 
 interface UsageRow extends RowDataPacket {
   textCount: number | string;
   imageCount: number | string;
   videoCount: number | string;
+  audioCount: number | string;
   storageBytes: number | string;
-}
-
-function storageQuotaBytes() {
-  const parsed = Number(process.env.USER_STORAGE_QUOTA_BYTES);
-  return Number.isSafeInteger(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_STORAGE_QUOTA_BYTES;
+  storageQuotaBytes: number | string | null;
 }
 
 export async function GET(request: Request) {
@@ -39,21 +33,33 @@ export async function GET(request: Request) {
            WHERE mea.user_id = ? AND mea.modality = 'video'
          ) AS videoCount,
          (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_model_execution_audits mea
+           WHERE mea.user_id = ? AND mea.modality = 'audio'
+         ) AS audioCount,
+         (
            SELECT COALESCE(SUM(a.size), 0)
            FROM xiaoluo_v2_assets a
            INNER JOIN xiaoluo_v2_workspaces w ON w.id = a.workspace_id
            WHERE w.owner_id = ? AND a.trashed_at IS NULL
-         ) AS storageBytes`,
-      [user.id, user.id, user.id, user.id],
+         ) AS storageBytes,
+         (
+           SELECT storage_quota_bytes
+           FROM xiaoluo_v2_users quota_user
+           WHERE quota_user.id = ?
+           LIMIT 1
+         ) AS storageQuotaBytes`,
+      [user.id, user.id, user.id, user.id, user.id, user.id],
     );
     const row = rows[0];
     const usedBytes = Number(row?.storageBytes ?? 0);
-    const quotaBytes = storageQuotaBytes();
+    const quotaBytes = resolveStorageQuotaBytes(row?.storageQuotaBytes);
     return Response.json({
       usage: {
         text: Number(row?.textCount ?? 0),
         image: Number(row?.imageCount ?? 0),
         video: Number(row?.videoCount ?? 0),
+        audio: Number(row?.audioCount ?? 0),
       },
       storage: {
         usedBytes,

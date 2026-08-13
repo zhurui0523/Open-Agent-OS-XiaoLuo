@@ -4,18 +4,30 @@ import test from "node:test";
 
 import {
   inspectPackageArchive,
+  inspectSourceArchive,
   PackageArchiveError,
 } from "../app/lib/package-archive.ts";
 import {
   needsDefaultSandboxPanel,
+  needsHostedSandboxRuntime,
   withDefaultSandboxPanel,
+  withHostedSandboxRuntime,
 } from "../app/lib/package-manifest-adapter.ts";
 import { parsePackagePayload } from "../app/lib/package-contract.ts";
 import {
   canRefreshGeneratedGithubManifest,
+  canRefreshGeneratedSourceManifest,
   packageInstallSourceFromDetailJson,
 } from "../app/lib/package-version-policy.ts";
 import { resolveAdvertisedGithubCommit } from "../app/lib/github-smart-http.ts";
+import {
+  normalizeInternalPluginRuntimeUrl,
+  scorePluginRuntimeCandidate,
+} from "../app/lib/plugin-runtime-launch.ts";
+import {
+  isRetryablePluginLaunchStatus,
+  launchPluginRuntime,
+} from "../app/lib/plugin-runtime-client.ts";
 
 const encoder = new TextEncoder();
 
@@ -164,6 +176,65 @@ test("GitHub import supports arbitrary repositories and generates an adapter", a
   assert.match(source, /application\/x-git-upload-pack-advertisement/);
 });
 
+test("manifest-less ZIP Skill remains safely inspectable for automatic adaptation", async () => {
+  const archive = storedZip([
+    [
+      "community-tool/SKILL.md",
+      "---\nname: Community Tool\ndescription: A reusable community skill\n---\n# Community Tool\n\nFollow the user request and return a concise result.",
+    ],
+    ["community-tool/README.md", "# Community Tool"],
+  ]);
+  const inspection = await inspectSourceArchive(archive);
+  const source = await readFile(
+    new URL("../app/lib/package-import.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(inspection.files.some((file) => /SKILL\.md$/i.test(file.relativePath)), true);
+  assert.match(source, /projectType === "skill"/);
+  assert.match(source, /skillManifestFromMarkdown/);
+  assert.match(source, /executionReady: true/);
+});
+
+test("manifest-less frontend ZIP is preserved for static sandbox adaptation", async () => {
+  const archive = storedZip([
+    [
+      "community-ui/package.json",
+      JSON.stringify({
+        name: "community-ui",
+        scripts: { build: "vite build" },
+        dependencies: { react: "latest", vite: "latest" },
+      }),
+    ],
+    ["community-ui/index.html", '<div id="root"></div><script type="module" src="/src/main.tsx"></script>'],
+    ["community-ui/src/main.tsx", "export default null"],
+  ]);
+  const inspection = await inspectSourceArchive(archive);
+  const source = await readFile(
+    new URL("../app/lib/package-import.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(inspection.files.some((file) => file.relativePath === "package.json"), true);
+  assert.match(source, /"static-sandbox"/);
+  assert.match(source, /generateSourcePackageManifest/);
+});
+
+test("archive import falls back to source inspection when Manifest is absent", async () => {
+  const route = await readFile(
+    new URL(
+      "../app/api/v2/packages/import/archive/route.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(route, /PACKAGE_MANIFEST_MISSING/);
+  assert.match(route, /inspectSourceArchive/);
+  assert.match(route, /generateSourcePackageManifest/);
+  assert.match(route, /generatedManifest/);
+});
+
 test("GitHub import resolves immutable commits without the GitHub API", () => {
   const advertisement = [
     "001e# service=git-upload-pack\n0000",
@@ -244,6 +315,124 @@ test("GitHub import preserves plugin-provided panel configuration", () => {
   assert.equal(needsDefaultSandboxPanel(payload), false);
 });
 
+test("GitHub import self-hosts a sandbox UI whose runtime entry is missing", () => {
+  const payload = {
+    schemaVersion: "2.0",
+    id: "com.example.hosted",
+    name: "Hosted plugin",
+    version: "1.0.0",
+    type: "plugin",
+    runtime: { type: "sandbox-ui" },
+    contributes: {
+      panels: [{ id: "com.example.hosted.panel", title: "Hosted" }],
+    },
+  };
+
+  assert.equal(needsDefaultSandboxPanel(payload), false);
+  assert.equal(needsHostedSandboxRuntime(payload), true);
+  const adapted = withHostedSandboxRuntime({
+    payload,
+    runtimeEntry:
+      "/api/v2/packages/runtime/static/workspace/com.example.hosted/1.0.0/abc/_root/",
+  });
+  const manifest = parsePackagePayload(adapted);
+  assert.equal(
+    manifest.runtime.entry,
+    "/api/v2/packages/runtime/static/workspace/com.example.hosted/1.0.0/abc/_root/",
+  );
+  assert.deepEqual(manifest.contributes?.panels, payload.contributes.panels);
+});
+
+test("internal plugin runtime follows the current LAN or server origin", () => {
+  const target = normalizeInternalPluginRuntimeUrl(
+    "http://localhost:3001/api/v2/packages/runtime/static/workspace/demo/1.0.0/sha/_root/",
+    "http://192.168.3.9:3001/api/v2/packages/runtime/launch",
+  );
+  assert.equal(
+    target?.href,
+    "http://192.168.3.9:3001/api/v2/packages/runtime/static/workspace/demo/1.0.0/sha/_root/",
+  );
+  const hostedTarget = normalizeInternalPluginRuntimeUrl(
+    "http://127.0.0.1:3001/api/v2/packages/runtime/static/workspace/demo/1.0.0/sha/_root/?mode=preview",
+    "https://xiaoluo.example.com/api/v2/packages/runtime/launch",
+  );
+  assert.equal(
+    hostedTarget?.href,
+    "https://xiaoluo.example.com/api/v2/packages/runtime/static/workspace/demo/1.0.0/sha/_root/?mode=preview",
+  );
+  assert.equal(
+    normalizeInternalPluginRuntimeUrl(
+      "https://example.com/plugin/",
+      "http://192.168.3.9:3001/api/v2/packages/runtime/launch",
+    ),
+    null,
+  );
+});
+
+test("stale canvas plugin resolves to the current installation by name", () => {
+  const candidate = {
+    id: "package-current",
+    packageKey: "github.example-user.xiaoluo-panorama",
+    name: "xiaoluo-vr-panorama",
+    version: "0.0.0-git.current",
+  };
+
+  assert.equal(
+    scorePluginRuntimeCandidate(candidate, {
+      packageId: "package-removed",
+      packageKey: "source.upload.xiaoluo-panorama-main",
+      packageName: "xiaoluo-vr-panorama",
+      savedPackageKey: "source.upload.xiaoluo-panorama-main",
+      savedVersion: "0.0.0-src.old",
+    }),
+    250,
+  );
+  assert.equal(
+    scorePluginRuntimeCandidate(candidate, {
+      packageName: "unrelated-plugin",
+      savedPackageKey: "source.upload.unrelated",
+      savedVersion: candidate.version,
+    }),
+    0,
+  );
+});
+
+test("plugin runtime launch retries a temporary not-ready response", async () => {
+  let calls = 0;
+  const runtimeUrl = "/api/v2/packages/runtime/session/token/static/plugin/index.html";
+
+  const result = await launchPluginRuntime(
+    {
+      url: "/api/v2/packages/runtime/static/workspace/demo/1.0.0/sha/_root/",
+      workspaceId: "workspace",
+      packageId: "package-demo",
+      packageName: "demo",
+    },
+    {
+      retryDelaysMs: [0, 0],
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return Response.json(
+            {
+              error: "插件尚未就绪",
+              code: "PLUGIN_RUNTIME_NOT_READY",
+              retryable: true,
+            },
+            { status: 404 },
+          );
+        }
+        return Response.json({ url: runtimeUrl });
+      },
+    },
+  );
+
+  assert.equal(result, runtimeUrl);
+  assert.equal(calls, 2);
+  assert.equal(isRetryablePluginLaunchStatus(404), true);
+  assert.equal(isRetryablePluginLaunchStatus(403), false);
+});
+
 test("same immutable GitHub source may refresh an installer-generated manifest", () => {
   const existingSource = packageInstallSourceFromDetailJson(
     JSON.stringify({
@@ -268,6 +457,37 @@ test("same immutable GitHub source may refresh an installer-generated manifest",
       },
     }),
     true,
+  );
+});
+
+test("same immutable archive may refresh an installer-generated manifest", () => {
+  assert.equal(
+    canRefreshGeneratedSourceManifest({
+      existingSource: {
+        kind: "archive",
+        archiveSha256: "ABC123",
+      },
+      incomingSource: {
+        kind: "archive",
+        archiveSha256: "abc123",
+        generatedManifest: true,
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    canRefreshGeneratedSourceManifest({
+      existingSource: {
+        kind: "archive",
+        archiveSha256: "abc123",
+      },
+      incomingSource: {
+        kind: "archive",
+        archiveSha256: "different",
+        generatedManifest: true,
+      },
+    }),
+    false,
   );
 });
 

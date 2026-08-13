@@ -1,9 +1,12 @@
 "use client";
 
 import { Plus, Trash2, Upload } from "lucide-react";
+import { SelectMenu } from "./select-menu";
 import { useState } from "react";
 import type { JsonSchema } from "../lib/json-schema";
 import { assetUploadRequestInit } from "../lib/asset-upload";
+import { StyleTagsField } from "./style-tags-field";
+import { DurationRangeMenu } from "./duration-range-menu";
 
 interface SchemaFieldProps {
   fieldKey: string;
@@ -137,14 +140,16 @@ export function SchemaField({
   }
 
   if (schema.type === "boolean") {
+    const on = Boolean(value);
     return (
-      <label className="schema-boolean">
+      <label className={`schema-boolean${on ? " is-on" : ""}`}>
         <input
           type="checkbox"
-          checked={Boolean(value)}
+          checked={on}
           onChange={(event) => onChange(event.target.checked)}
         />
         {title}
+        <span className="schema-boolean-state">{on ? "开" : "关"}</span>
       </label>
     );
   }
@@ -171,25 +176,50 @@ export function SchemaField({
         </fieldset>
       );
     }
+    const durationOptions = schema.enum.map((option) => ({
+      value: String(option),
+      label: String(option),
+    }));
+    const isDurationRange =
+      /duration/i.test(fieldKey) &&
+      durationOptions.length > 2 &&
+      durationOptions.every((option) => Number.isFinite(Number(option.value)));
+
+    if (isDurationRange) {
+      return (
+        <label>
+          {title}
+          <DurationRangeMenu
+            value={String(value ?? durationOptions[0]?.value ?? "")}
+            ariaLabel={`${label}：${String(value ?? "")}`}
+            onChange={(next) => {
+              const option = schema.enum?.find(
+                (candidate) => String(candidate) === next,
+              );
+              onChange(option);
+            }}
+            options={durationOptions}
+          />
+        </label>
+      );
+    }
     return (
       <label>
         {title}
-        <select
+        <SelectMenu
           value={String(value ?? "")}
-          onChange={(event) => {
+          placeholder={required ? undefined : "请选择"}
+          onChange={(next) => {
             const option = schema.enum?.find(
-              (candidate) => String(candidate) === event.target.value,
+              (candidate) => String(candidate) === next,
             );
             onChange(option);
           }}
-        >
-          {!required && <option value="">请选择</option>}
-          {schema.enum.map((option) => (
-            <option key={String(option)} value={String(option)}>
-              {String(option)}
-            </option>
-          ))}
-        </select>
+          options={schema.enum.map((option) => ({
+            value: String(option),
+            label: String(option),
+          }))}
+        />
       </label>
     );
   }
@@ -276,6 +306,20 @@ export function SchemaField({
           />
         </span>
       </label>
+    );
+  }
+
+  if (schema.format === "style-tags") {
+    return (
+      <div className="schema-style-tags-wrap">
+        <span>{title}</span>
+        <StyleTagsField
+          value={typeof value === "string" ? value : ""}
+          maxLength={schema.maxLength}
+          onChange={onChange}
+        />
+        {schema.description && <small>{schema.description}</small>}
+      </div>
     );
   }
 

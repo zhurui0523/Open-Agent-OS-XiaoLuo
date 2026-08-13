@@ -188,11 +188,15 @@ export function useCanvasCollaboration(input: {
       void heartbeat();
       void poll();
     }, 0);
-    const pollTimer = window.setInterval(() => void poll(), 2_000);
-    const heartbeatInterval = window.setInterval(
-      () => void heartbeat(),
-      8_000,
-    );
+    const pollTimer = window.setInterval(() => {
+      // 标签页切到后台时暂停轮询，降低资源占用
+      if (document.visibilityState !== "visible") return;
+      void poll();
+    }, 2_000);
+    const heartbeatInterval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void heartbeat();
+    }, 8_000);
     return () => {
       window.clearTimeout(firstPoll);
       window.clearInterval(pollTimer);

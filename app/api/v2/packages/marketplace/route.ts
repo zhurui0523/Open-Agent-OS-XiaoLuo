@@ -86,8 +86,16 @@ export async function GET(request: Request) {
         `SELECT package_key AS packageKey
          FROM xiaoluo_v2_packages
          WHERE workspace_id = ?
-           AND lifecycle_state <> 'uninstalled'`,
-        [workspaceId],
+           AND lifecycle_state <> 'uninstalled'
+         UNION
+         SELECT source_package.package_key AS packageKey
+         FROM xiaoluo_v2_package_availabilities available_package
+         INNER JOIN xiaoluo_v2_packages source_package
+           ON source_package.id = available_package.package_id
+         WHERE available_package.workspace_id = ?
+           AND available_package.user_id = ?
+           AND source_package.lifecycle_state <> 'uninstalled'`,
+        [workspaceId, workspaceId, user.id],
       ),
     ]);
     const installed = new Set(installedRows.map((row) => row.packageKey));

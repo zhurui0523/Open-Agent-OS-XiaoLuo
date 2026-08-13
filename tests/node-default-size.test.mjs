@@ -103,11 +103,11 @@ test("execution node options wrap without horizontal scrolling", async () => {
   );
   assert.match(
     styles,
-    /\.canvas-node\.node-role-execution \.node-option-strip \{[\s\S]{0,180}display:\s*grid;[\s\S]{0,180}grid-template-columns:\s*repeat\(auto-fit, minmax\(min\(100%, 180px\), 1fr\)\);/,
+    /\.canvas-node\.node-role-execution \.node-option-strip \{[\s\S]{0,180}display:\s*flex;[\s\S]{0,180}flex-wrap:\s*wrap;/,
   );
   assert.match(
     styles,
-    /\.canvas-node\.node-role-execution \.node-config-section \.node-fields,[\s\S]{0,180}grid-template-columns:\s*repeat\(auto-fit, minmax\(min\(100%, 132px\), 1fr\)\);/,
+    /\.canvas-node\.node-role-execution \.node-config-section \.node-fields,[\s\S]{0,180}display:\s*contents;/,
   );
   assert.doesNotMatch(
     styles,
@@ -124,7 +124,7 @@ test("default node guidance clears on the first prompt interaction", async () =>
   assert.doesNotMatch(nodeCard, /className="node-prompt"/);
   assert.match(
     nodeCard,
-    /className="node-prompt-input"[\s\S]{0,220}onFocus=[\s\S]{0,180}isDefaultNodePrompt\(node\.prompt\)[\s\S]{0,100}onUpdate\(\{ prompt: "" \}\)/,
+    /className="node-prompt-input node-prompt-rich-input"[\s\S]{0,320}onFocus=[\s\S]{0,180}isDefaultNodePrompt\(value\)[\s\S]{0,100}onChange\(""\)/,
   );
 });
 

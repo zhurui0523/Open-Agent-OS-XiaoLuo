@@ -98,6 +98,11 @@ test("routes model calls with retry fallback circuit breaking and async jobs", a
 
   assert.match(router, /orderedCandidates/);
   assert.match(router, /fallbackModelId/);
+  assert.match(
+    router,
+    /if \(requestedModelId\) return result\.slice\(0, 8\)/,
+    "a canvas-selected model must not silently route to unrelated models",
+  );
   assert.match(router, /retryAfterMs/);
   assert.match(router, /circuit_state/);
   assert.match(router, /active_requests < max_concurrency/);

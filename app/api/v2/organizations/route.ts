@@ -1,6 +1,7 @@
 import type { RowDataPacket } from "mysql2/promise";
 import { jsonError, requireUser } from "../../../lib/auth";
 import { mysqlRows, mysqlTransaction } from "../../../lib/mysql";
+import { resolveStorageQuotaBytes } from "../../../lib/storage-quota";
 
 interface OrganizationRow extends RowDataPacket {
   id: string;
@@ -11,6 +12,8 @@ interface OrganizationRow extends RowDataPacket {
   workspaceId: string | null;
   applicationStatus: "pending" | "approved" | "rejected" | null;
   createdAt: string;
+  storageUsedBytes: number | string;
+  storageQuotaBytes: number | string | null;
 }
 
 export async function GET(request: Request) {
@@ -25,17 +28,41 @@ export async function GET(request: Request) {
          om.status AS membershipStatus,
          o.workspace_id AS workspaceId,
          ea.status AS applicationStatus,
-         o.created_at AS createdAt
+         o.created_at AS createdAt,
+         COALESCE(au.used_bytes, 0) AS storageUsedBytes,
+         workspace_owner.storage_quota_bytes AS storageQuotaBytes
        FROM xiaoluo_v2_organizations o
        LEFT JOIN xiaoluo_v2_organization_members om
          ON om.organization_id = o.id AND om.user_id = ?
        LEFT JOIN xiaoluo_v2_enterprise_applications ea
          ON ea.organization_id = o.id AND ea.applicant_id = ?
+       LEFT JOIN xiaoluo_v2_workspaces organization_workspace
+         ON organization_workspace.id = o.workspace_id
+       LEFT JOIN xiaoluo_v2_users workspace_owner
+         ON workspace_owner.id = organization_workspace.owner_id
+       LEFT JOIN (
+         SELECT a.workspace_id, COALESCE(SUM(a.size), 0) AS used_bytes
+         FROM xiaoluo_v2_assets a
+         WHERE a.trashed_at IS NULL
+         GROUP BY a.workspace_id
+       ) au ON au.workspace_id = o.workspace_id
        WHERE om.user_id = ? OR ea.applicant_id = ?
        ORDER BY o.created_at DESC`,
       [user.id, user.id, user.id, user.id],
     );
-    return Response.json({ organizations });
+    const organizationsWithStorage = organizations.map((organization) => {
+      const usedBytes = Number(organization.storageUsedBytes || 0);
+      const quotaBytes = resolveStorageQuotaBytes(
+        organization.storageQuotaBytes,
+      );
+      return {
+        ...organization,
+        storageUsedBytes: usedBytes,
+        storageQuotaBytes: quotaBytes,
+        storageRemainingBytes: Math.max(0, quotaBytes - usedBytes),
+      };
+    });
+    return Response.json({ organizations: organizationsWithStorage });
   } catch (error) {
     return jsonError(error, "读取企业信息失败");
   }
@@ -114,4 +141,3 @@ export async function POST(request: Request) {
     return jsonError(error, "提交企业申请失败");
   }
 }
-

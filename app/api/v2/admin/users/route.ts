@@ -6,6 +6,13 @@ import {
 } from "../../../../lib/auth";
 import { runAuditedMutation } from "../../../../lib/domain-events";
 import { mysqlRows } from "../../../../lib/mysql";
+import { resolveStorageQuotaBytes } from "../../../../lib/storage-quota";
+
+type ManagedAccountType =
+  | "system_admin"
+  | "ordinary_user"
+  | "enterprise_admin"
+  | "enterprise_member";
 
 interface UserListRow extends RowDataPacket {
   id: string;
@@ -18,7 +25,10 @@ interface UserListRow extends RowDataPacket {
   textCount: number | string;
   imageCount: number | string;
   videoCount: number | string;
+  audioCount: number | string;
   storageBytes: number | string;
+  storageQuotaBytes: number | string | null;
+  accountType: ManagedAccountType;
   createdAt: string;
 }
 
@@ -35,7 +45,12 @@ function publicUser(row: UserListRow) {
     textCount: Number(row.textCount || 0),
     imageCount: Number(row.imageCount || 0),
     videoCount: Number(row.videoCount || 0),
+    audioCount: Number(row.audioCount || 0),
     storageBytes: Number(row.storageBytes || 0),
+    storageQuotaBytes: resolveStorageQuotaBytes(row.storageQuotaBytes),
+    canIncreaseStorage:
+      row.accountType === "ordinary_user" ||
+      row.accountType === "enterprise_admin",
   };
 }
 
@@ -68,11 +83,35 @@ export async function GET(request: Request) {
            WHERE mea.user_id = u.id AND mea.modality = 'video'
          ) AS videoCount,
          (
+           SELECT COUNT(*)
+           FROM xiaoluo_v2_model_execution_audits mea
+           WHERE mea.user_id = u.id AND mea.modality = 'audio'
+         ) AS audioCount,
+         (
            SELECT COALESCE(SUM(a.size), 0)
            FROM xiaoluo_v2_assets a
            INNER JOIN xiaoluo_v2_workspaces w ON w.id = a.workspace_id
            WHERE w.owner_id = u.id AND a.trashed_at IS NULL
          ) AS storageBytes,
+         u.storage_quota_bytes AS storageQuotaBytes,
+         CASE
+           WHEN u.platform_role = 'system_admin' THEN 'system_admin'
+           WHEN EXISTS (
+             SELECT 1
+             FROM xiaoluo_v2_organization_members organization_admin
+             WHERE organization_admin.user_id = u.id
+               AND organization_admin.status = 'active'
+               AND organization_admin.role = 'admin'
+           ) THEN 'enterprise_admin'
+           WHEN EXISTS (
+             SELECT 1
+             FROM xiaoluo_v2_organization_members organization_member
+             WHERE organization_member.user_id = u.id
+               AND organization_member.status = 'active'
+               AND organization_member.role = 'member'
+           ) THEN 'enterprise_member'
+           ELSE 'ordinary_user'
+         END AS accountType,
          u.created_at AS createdAt
        FROM xiaoluo_v2_users u
        WHERE u.email NOT LIKE 'deleted+%@invalid.local'
@@ -108,13 +147,15 @@ export async function PATCH(request: Request) {
       userId?: string;
       status?: "active" | "disabled";
     };
+    const userId = body.userId?.trim() ?? "";
+    const status = body.status;
     if (
-      !body.userId ||
-      (body.status !== "active" && body.status !== "disabled")
+      !userId ||
+      (status !== "active" && status !== "disabled")
     ) {
       return Response.json({ error: "用户状态无效" }, { status: 400 });
     }
-    if (body.userId === admin.id && body.status === "disabled") {
+    if (userId === admin.id && status === "disabled") {
       return Response.json(
         { error: "系统管理员不能停用自己的账号" },
         { status: 409 },
@@ -126,15 +167,15 @@ export async function PATCH(request: Request) {
         actorUserId: admin.id,
         eventType: "admin.user.status_changed",
         entityType: "user",
-        entityId: body.userId,
-        detail: { status: body.status },
+        entityId: userId,
+        detail: { status },
       },
       async (connection) => {
         const [result] = await connection.execute<ResultSetHeader>(
           `UPDATE xiaoluo_v2_users
            SET status = ?, updated_at = CURRENT_TIMESTAMP(3)
            WHERE id = ? AND platform_role = 'user'`,
-          [body.status, body.userId],
+          [status, userId],
         );
         if (!result.affectedRows) {
           throw new Response(
@@ -145,10 +186,10 @@ export async function PATCH(request: Request) {
             },
           );
         }
-        if (body.status === "disabled") {
+        if (status === "disabled") {
           await connection.execute(
             "DELETE FROM xiaoluo_v2_auth_sessions WHERE user_id = ?",
-            [body.userId],
+            [userId],
           );
         }
       },
@@ -166,23 +207,25 @@ export async function POST(request: Request) {
       userId?: string;
       newPassword?: string;
     };
-    if (!body.userId || !body.newPassword) {
+    const userId = body.userId?.trim() ?? "";
+    const newPassword = body.newPassword ?? "";
+    if (!userId || !newPassword) {
       return Response.json({ error: "用户与新密码不能为空" }, { status: 400 });
     }
-    if (body.newPassword.length < 6 || body.newPassword.length > 128) {
+    if (newPassword.length < 6 || newPassword.length > 128) {
       return Response.json(
         { error: "密码长度必须为 6–128 位" },
         { status: 400 },
       );
     }
-    const passwordHash = await hashPassword(body.newPassword);
+    const passwordHash = await hashPassword(newPassword);
 
     await runAuditedMutation(
       {
         actorUserId: admin.id,
         eventType: "admin.user.password_reset",
         entityType: "user",
-        entityId: body.userId,
+        entityId: userId,
       },
       async (connection) => {
         const [result] = await connection.execute<ResultSetHeader>(
@@ -191,7 +234,7 @@ export async function POST(request: Request) {
                password_changed_at = CURRENT_TIMESTAMP(3),
                updated_at = CURRENT_TIMESTAMP(3)
            WHERE id = ? AND platform_role = 'user'`,
-          [passwordHash, body.userId],
+          [passwordHash, userId],
         );
         if (!result.affectedRows) {
           throw new Response(
@@ -204,11 +247,11 @@ export async function POST(request: Request) {
         }
         await connection.execute(
           "DELETE FROM xiaoluo_v2_auth_sessions WHERE user_id = ?",
-          [body.userId],
+          [userId],
         );
         await connection.execute(
           "DELETE FROM xiaoluo_v2_password_reset_tokens WHERE user_id = ?",
-          [body.userId],
+          [userId],
         );
       },
     );
@@ -224,10 +267,11 @@ export async function DELETE(request: Request) {
   try {
     const admin = await requireSystemAdmin(request);
     const body = (await request.json()) as { userId?: string };
-    if (!body.userId) {
+    const userId = body.userId?.trim() ?? "";
+    if (!userId) {
       return Response.json({ error: "用户不能为空" }, { status: 400 });
     }
-    if (body.userId === admin.id) {
+    if (userId === admin.id) {
       return Response.json(
         { error: "系统管理员不能删除自己的账号" },
         { status: 409 },
@@ -246,7 +290,7 @@ export async function DELETE(request: Request) {
         actorUserId: admin.id,
         eventType: "admin.user.deleted",
         entityType: "user",
-        entityId: body.userId,
+        entityId: userId,
         detail: { deletionMode: "anonymized" },
       },
       async (connection) => {
@@ -256,7 +300,7 @@ export async function DELETE(request: Request) {
            WHERE id = ?
            LIMIT 1
            FOR UPDATE`,
-          [body.userId],
+          [userId],
         );
         const target = targets[0];
         if (!target || target.platformRole !== "user") {
@@ -282,29 +326,29 @@ export async function DELETE(request: Request) {
                password_changed_at = CURRENT_TIMESTAMP(3),
                updated_at = CURRENT_TIMESTAMP(3)
            WHERE id = ?`,
-          [tombstoneUsername, tombstoneEmail, tombstonePassword, body.userId],
+          [tombstoneUsername, tombstoneEmail, tombstonePassword, userId],
         );
         await connection.execute(
           "DELETE FROM xiaoluo_v2_auth_sessions WHERE user_id = ?",
-          [body.userId],
+          [userId],
         );
         await connection.execute(
           "DELETE FROM xiaoluo_v2_password_reset_tokens WHERE user_id = ?",
-          [body.userId],
+          [userId],
         );
         await connection.execute(
           "DELETE FROM xiaoluo_v2_workspace_members WHERE user_id = ?",
-          [body.userId],
+          [userId],
         );
         await connection.execute(
           `UPDATE xiaoluo_v2_organization_members
            SET status = 'disabled', updated_at = CURRENT_TIMESTAMP(3)
            WHERE user_id = ?`,
-          [body.userId],
+          [userId],
         );
         await connection.execute(
           "DELETE FROM xiaoluo_v2_resource_permissions WHERE user_id = ?",
-          [body.userId],
+          [userId],
         );
       },
     );

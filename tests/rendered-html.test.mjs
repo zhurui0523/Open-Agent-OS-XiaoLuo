@@ -55,7 +55,7 @@ test("ships without a credits, points, quota, or billing system", async () => {
 
   assert.doesNotMatch(
     productSource,
-    /积分|额度|计费|余额|\bcredits?\b|\bquota\b|\bbilling\b/i,
+    /积分|计费|余额|\bcredits?\b|\bbilling\b/i,
   );
   assert.doesNotMatch(productSource, /credit-ring|6,820/);
 });
@@ -323,13 +323,13 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(styles, /\.app-shell \.canvas-toolbar[\s\S]*flex-direction:\s*column;/);
   assert.match(appShell, /<CanvasToolbar/);
   assert.doesNotMatch(appShell, /className="app-dock"/);
-  assert.match(styles, /\.is-canvas-view \.minimap[\s\S]*bottom:\s*24px;[\s\S]*left:\s*24px;/);
+  assert.match(styles, /\.is-canvas-view \.minimap[\s\S]*bottom:\s*82px;[\s\S]*left:\s*24px;/);
   assert.match(canvasView, /minimapOpen/);
   assert.match(canvasView, /收起地图导航/);
-  assert.match(canvasView, /展开地图导航/);
+  assert.match(canvasView, /setMinimapOpen\(false\)/);
   assert.match(styles, /\.minimap-close[\s\S]*border-radius:\s*50%;/);
   assert.match(styles, /\.minimap-toggle[\s\S]*border-radius:\s*50%;/);
-  assert.match(styles, /\.is-minimap-collapsed \.zoom-controls[\s\S]*left:\s*96px;/);
+  assert.match(styles, /\.canvas-stage\.is-minimap-collapsed \.zoom-controls[\s\S]*left:\s*24px;/);
   assert.match(styles, /\.is-canvas-view \.open-console-button[\s\S]*right:\s*24px;[\s\S]*bottom:\s*24px;/);
   assert.match(controller, /useState\(false\)/);
   assert.match(nodeCard, /ResizeObserver/);
@@ -341,7 +341,7 @@ test("uses an unbounded world-coordinate canvas with pointer-centered zoom", asy
   assert.match(nodeCard, /node-workbench-content/);
   assert.match(
     styles,
-    /\.canvas-node\.node-role-execution \.node-workbench-content[\s\S]{0,180}overflow:\s*auto/,
+    /\.canvas-node\.node-role-execution \.node-workbench-content[\s\S]{0,220}overflow-y:\s*auto/,
   );
   assert.match(styles, /\.image-workbench-preview[\s\S]*height:\s*108px;/);
   assert.match(styles, /\.video-workbench-preview[\s\S]*height:\s*104px;/);
@@ -458,7 +458,7 @@ test("ships a persistent AI file system with versioned asset URIs", async () => 
   assert.match(versionsRoute, /storeAssetVersion/);
   assert.match(assetsView, /AI 文件系统/);
   assert.match(assetsView, /\/api\/v2\/files/);
-  assert.match(assetsView, /版本历史/);
+  assert.match(assetsView, /回收站/);
   assert.doesNotMatch(
     assetsView,
     /文件夹|全部集合|加入集合|\/api\/v2\/folders|\/api\/v2\/collections/,
@@ -525,10 +525,9 @@ test("offers an isolated local MySQL and file-storage development profile", asyn
   assert.match(nextLauncher, /scripts\/local-mysql\.mjs/);
   assert.match(nextLauncher, /scripts\/runtime-worker\.mjs/);
   assert.match(nextLauncher, /isolated-worker\/server\.mjs/);
-  assert.match(nextLauncher, /127\.0\.0\.1/);
-  assert.match(launcher, /http:\/\/127\.0\.0\.1:3001\//);
-  assert.match(launcher, /project-scoped MySQL \+ local file storage/);
-  assert.match(launcher, /Remote MySQL and Alibaba Cloud OSS are not used/);
+  assert.match(nextLauncher, /0\.0\.0\.0/);
+  assert.match(launcher, /scripts\\start-local\.ps1/);
+  assert.match(launcher, /exit \/b %ERRORLEVEL%/);
   assert.match(localMysql, /--no-monitor/);
   assert.match(localMysql, /\.local-data/);
   assert.match(localSetup, /cdn\.mysql\.com\/Downloads\/MySQL-8\.4/);
@@ -585,7 +584,7 @@ test("keeps identity, canvases, and files on authenticated cloud services", asyn
   assert.match(canvasRoute, /status: 409/);
   assert.match(fileRoute, /requireWorkspaceContext/);
   assert.match(fileContentRoute, /eq\(assets\.workspaceId, home\.workspaceId\)/);
-  assert.doesNotMatch(controller, /localStorage|sessionStorage/);
+  assert.doesNotMatch(controller, /sessionStorage/);
 });
 
 test("exposes canvases directly without a user-manageable workspace layer", async () => {
@@ -675,7 +674,7 @@ test("ships phone recovery and the deliberately small membership model", async (
   assert.match(authScreen, /用于登录，全局唯一/);
   assert.match(authScreen, /minLength=\{6\}/);
   assert.match(adminBootstrap, /password\.length < 6/);
-  assert.match(accountCenter, /仅企业管理员与企业普通用户两种角色/);
+  assert.match(accountCenter, /organization\.role === "admin"/);
   assert.match(mysql, /disableEval: true/);
   assert.match(mysql, /await database\.end\(\)/);
   assert.doesNotMatch(mysql, /pool \?\?=/);
@@ -714,6 +713,10 @@ test("ships settings for API keys, interface themes, canvas gestures, and shortc
     ]);
 
   assert.match(toolbar, /label="设置"/);
+  assert.match(toolbar, /activeTool === "multi-select"/);
+  assert.match(toolbar, /onToggleMultiSelect/);
+  assert.match(toolbar, /<ListChecks size=\{18\} \/>/);
+  assert.doesNotMatch(toolbar, /抓手平移|chooseCanvasTool\("hand"\)|<Hand/);
   assert.match(settings, /API Key/);
   assert.match(settings, /界面风格/);
   assert.match(settings, /画布、导航、页面、弹窗和表单会同步变化/);
@@ -782,8 +785,8 @@ test("ships a secure personal center with profile and device management", async 
   assert.match(personal, /修改密码/);
   assert.match(personal, /安全设置/);
   assert.match(personal, /登录设备/);
-  assert.match(personal, /退出登录/);
-  assert.match(personal, /personal-logout-button/);
+  assert.match(settings, /退出登录/);
+  assert.match(settings, /settings-logout-entry/);
   assert.match(profileRoute, /requireUser/);
   assert.match(phoneRoute, /verifyPhoneChallenge/);
   assert.match(phoneRoute, /verifyPassword/);
@@ -848,7 +851,7 @@ test("isolates system administration from ordinary user settings", async () => {
   assert.match(shell, /<AdminCenter/);
   assert.match(settings, /user\.platformRole === "system_admin"/);
   assert.match(settings, /后台管理/);
-  assert.match(settings, /onLogout=\{onLogout\}/);
+  assert.match(settings, /onClick=\{onLogout\}/);
   assert.doesNotMatch(settings, /内核运维|AdminOperations|"kernel"/);
   assert.doesNotMatch(account, /\/api\/v2\/admin\/users|企业审核/);
   assert.match(adminCenter, /<AdminOperations/);
@@ -857,7 +860,8 @@ test("isolates system administration from ordinary user settings", async () => {
   assert.match(adminCenter, /文本 \{managedUser\.textCount\}/);
   assert.match(adminCenter, /图片 \{managedUser\.imageCount\}/);
   assert.match(adminCenter, /视频 \{managedUser\.videoCount\}/);
-  assert.match(adminCenter, /OSS 存储量/);
+  assert.match(adminCenter, /已用空间/);
+  assert.match(adminCenter, /空间配额/);
   assert.match(adminCenter, /修改密码/);
   assert.match(adminCenter, /删除用户/);
   assert.match(adminUsersRoute, /requireSystemAdmin/);

@@ -19,7 +19,7 @@ test("canvas collaboration persists presence, comments, mentions and revision ev
   assert.match(route, /eventType: "comment\.resolved"/);
   assert.match(route, /resolveCanvasMentions/);
   assert.match(route, /requireCanvasAccess/);
-  assert.match(client, /setInterval\(\(\) => void poll\(\), 2_000\)/);
+  assert.match(client, /setInterval\([\s\S]{0,180}document\.visibilityState !== "visible"[\s\S]{0,80}void poll\(\);[\s\S]{0,40}2_000/);
   assert.match(client, /accessRevoked/);
   assert.match(canvasRoute, /x-collaboration-session/);
   assert.match(schema, /xiaoluo_v2_canvas_presence/);

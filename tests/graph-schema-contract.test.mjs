@@ -49,6 +49,120 @@ test("validates typed graph ports and rejects connections that form cycles", asy
   assert.equal(wouldCreateCycle([text, image, video], edges, "video", "text"), true);
 });
 
+test("all plugin nodes expose separate text and multi-media reference ports", async () => {
+  const { portsForNode, validateEdgePorts } = await import(
+    "../app/lib/node-ports.ts"
+  );
+  const referenceTypes = [
+    "image",
+    "video",
+    "audio",
+    "document",
+    "asset",
+    "asset_list",
+    "collection",
+  ];
+  const plugin = {
+    id: "plugin",
+    kind: "document",
+    role: "plugin",
+    parameters: {
+      capabilitySnapshot: {
+        ports: [
+          {
+            id: "configuration",
+            label: "Configuration",
+            direction: "input",
+            dataTypes: ["json"],
+          },
+          {
+            id: "result",
+            label: "Result",
+            direction: "output",
+            dataTypes: ["asset"],
+          },
+        ],
+      },
+    },
+  };
+  const ports = portsForNode(plugin);
+  const reference = ports.find(
+    (port) => port.direction === "input" && port.id === "materials",
+  );
+  const prompt = ports.find(
+    (port) => port.direction === "input" && port.dataTypes.includes("text"),
+  );
+
+  assert.ok(reference);
+  assert.ok(prompt);
+  assert.equal(prompt.label, "文本");
+  assert.deepEqual(prompt.dataTypes, ["text"]);
+  assert.equal(reference.cardinality, "many");
+  assert.equal(reference.label, "多媒体参考");
+  assert.deepEqual(reference.dataTypes, referenceTypes);
+  assert.ok(ports.some((port) => port.id === "configuration"));
+  assert.ok(ports.some((port) => port.id === "result"));
+
+  for (const dataType of ["image", "video", "audio", "document"]) {
+    const source = { id: `source-${dataType}`, kind: dataType };
+    assert.equal(
+      validateEdgePorts(
+        {
+          id: `edge-${dataType}`,
+          source: source.id,
+          target: plugin.id,
+          sourcePort: dataType,
+          targetPort: "materials",
+          dataType,
+        },
+        source,
+        plugin,
+      ),
+      null,
+    );
+  }
+
+  const textSource = { id: "source-text", kind: "text" };
+  assert.equal(
+    validateEdgePorts(
+      {
+        id: "edge-text",
+        source: textSource.id,
+        target: plugin.id,
+        sourcePort: "text",
+        targetPort: prompt.id,
+        dataType: "text",
+      },
+      textSource,
+      plugin,
+    ),
+    null,
+  );
+});
+
+test("legacy plugin text edges migrate from materials to the text input", async () => {
+  const { sanitizeCanvasEdges } = await import("../app/lib/node-ports.ts");
+  const text = { id: "text", kind: "text" };
+  const plugin = { id: "plugin", kind: "document", role: "plugin" };
+  const [edge] = sanitizeCanvasEdges(
+    [text, plugin],
+    [
+      {
+        id: "legacy-text",
+        source: text.id,
+        target: plugin.id,
+        sourcePort: "text",
+        targetPort: "materials",
+        dataType: "text",
+      },
+    ],
+  );
+
+  assert.ok(edge);
+  assert.equal(edge.targetPort, "prompt");
+  assert.equal(edge.dataType, "text");
+});
+
 test("validates nested Schema-driven input on client and server boundaries", async () => {
   const { validateJsonSchema } = await import("../app/lib/json-schema.ts");
   const schema = {

@@ -61,7 +61,7 @@ function ensureOptionFile() {
       "mysqlx=0",
       "character-set-server=utf8mb4",
       "collation-server=utf8mb4_unicode_ci",
-      "default-time-zone=+00:00",
+      "default-time-zone=+08:00",
       `log-error=${slash(path.join(logRoot, "mysql-error.log"))}`,
       `pid-file=${slash(path.join(dataRoot, "mysql.pid"))}`,
       `secure-file-priv=${slash(filesRoot)}`,

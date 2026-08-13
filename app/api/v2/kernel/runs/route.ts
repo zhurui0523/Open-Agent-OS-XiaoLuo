@@ -23,6 +23,7 @@ import {
   validatePortCardinality,
 } from "../../../../lib/node-ports";
 import { hasSelectedSkillCapability } from "../../../../lib/runtime-capability";
+import { packageAvailableToUser } from "../../../../lib/package-availability";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -139,7 +140,7 @@ export async function POST(request: Request) {
           .where(
             and(
               inArray(packageCapabilities.id, capabilityIds),
-              eq(packages.workspaceId, access.workspaceId),
+              packageAvailableToUser(access.workspaceId, user.id),
             ),
           )
       : [];
@@ -268,26 +269,48 @@ export async function POST(request: Request) {
       updatedAt: now,
     });
     await db.insert(kernelTasks).values(
-      runtimeGraph.nodes.map((node) => ({
-        id: `${runId}:${node.id}`,
-        runId,
-        nodeId: node.id,
-        status: "queued",
-        dependenciesJson: JSON.stringify(workflow.dependencies[node.id]),
-        attempt: 0,
-        maxAttempts: Math.min(
-          5,
-          Math.max(
-            1,
-            Number(
-              node.parameters?.failurePolicy === "retry"
-                ? node.parameters?.retryLimit ?? 3
-                : 1,
-            ) || 1,
+      runtimeGraph.nodes.map((node) => {
+        // 单节点运行中被标记复用的上游节点：直接预植为已成功任务（输出=已有结果），
+        // 下游照常读取其输出，节点本身不会再次执行
+        const reuseOutput = node.parameters?.reuseKernelOutput
+          ? node.parameters?.kernelOutput
+          : undefined;
+        if (reuseOutput && typeof reuseOutput === "object") {
+          return {
+            id: `${runId}:${node.id}`,
+            runId,
+            nodeId: node.id,
+            status: "succeeded",
+            dependenciesJson: JSON.stringify(workflow.dependencies[node.id]),
+            outputJson: JSON.stringify(reuseOutput),
+            executor: "reuse",
+            attempt: 0,
+            maxAttempts: 1,
+            completedAt: now,
+            updatedAt: now,
+          };
+        }
+        return {
+          id: `${runId}:${node.id}`,
+          runId,
+          nodeId: node.id,
+          status: "queued",
+          dependenciesJson: JSON.stringify(workflow.dependencies[node.id]),
+          attempt: 0,
+          maxAttempts: Math.min(
+            5,
+            Math.max(
+              1,
+              Number(
+                node.parameters?.failurePolicy === "retry"
+                  ? node.parameters?.retryLimit ?? 3
+                  : 1,
+              ) || 1,
+            ),
           ),
-        ),
-        updatedAt: now,
-      })),
+          updatedAt: now,
+        };
+      }),
     );
     await Promise.all([
       db.insert(registryEvents).values({

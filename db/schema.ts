@@ -41,6 +41,10 @@ export const users = mysqlTable("xiaoluo_v2_users", {
   status: mysqlEnum("status", ["active", "disabled"])
     .notNull()
     .default("active"),
+  storageQuotaBytes: bigint("storage_quota_bytes", {
+    mode: "number",
+    unsigned: true,
+  }),
   passwordChangedAt: timestamp("password_changed_at"),
   createdAt: timestamp("created_at"),
   updatedAt: timestamp("updated_at"),
@@ -276,8 +280,11 @@ export const organizationInvitations = mysqlTable(
     organizationId: id("organization_id", 36)
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    phoneHash: varchar("phone_hash", { length: 64 }).notNull(),
-    phoneLast4: varchar("phone_last4", { length: 4 }).notNull(),
+    inviteeUserId: id("invitee_user_id", 36).references(() => users.id, {
+      onDelete: "cascade",
+    }),
+    phoneHash: varchar("phone_hash", { length: 64 }),
+    phoneLast4: varchar("phone_last4", { length: 4 }),
     role: mysqlEnum("role", ["admin", "member"]).notNull().default("member"),
     tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
     invitedBy: id("invited_by", 36)
@@ -288,11 +295,13 @@ export const organizationInvitations = mysqlTable(
       onDelete: "set null",
     }),
     acceptedAt: datetime("accepted_at", { mode: "string", fsp: 3 }),
+    declinedAt: datetime("declined_at", { mode: "string", fsp: 3 }),
     revokedAt: datetime("revoked_at", { mode: "string", fsp: 3 }),
     createdAt: timestamp("created_at"),
   },
   (table) => [
     index("organization_invitations_org_idx").on(table.organizationId),
+    index("organization_invitations_invitee_idx").on(table.inviteeUserId),
     index("organization_invitations_phone_idx").on(table.phoneHash),
     index("organization_invitations_expiry_idx").on(table.expiresAt),
   ],
@@ -976,6 +985,35 @@ export const packages = mysqlTable("xiaoluo_v2_packages", {
   installedAt: timestamp("installed_at"),
   updatedAt: timestamp("updated_at"),
 });
+
+export const packageAvailabilities = mysqlTable(
+  "xiaoluo_v2_package_availabilities",
+  {
+    id: id("id", 120).primaryKey(),
+    packageId: id("package_id", 120)
+      .notNull()
+      .references(() => packages.id, { onDelete: "cascade" }),
+    workspaceId: id("workspace_id", 36)
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: id("user_id", 36)
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    uniqueIndex("package_availabilities_package_workspace_user_unique").on(
+      table.packageId,
+      table.workspaceId,
+      table.userId,
+    ),
+    index("package_availabilities_workspace_user_idx").on(
+      table.workspaceId,
+      table.userId,
+      table.createdAt,
+    ),
+  ],
+);
 
 export const packageCapabilities = mysqlTable(
   "xiaoluo_v2_package_capabilities",

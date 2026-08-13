@@ -41,6 +41,7 @@ export async function forwardImportedPackageInstall(
     }),
     {
       allowUnsignedGithubImport: input.source.kind === "github",
+      allowUnsignedSourceImport: input.source.generatedManifest === true,
       authenticatedUser: input.authenticatedUser,
       ...(input.authenticatedUser
         ? { authorizedWorkspaceId: input.workspaceId }

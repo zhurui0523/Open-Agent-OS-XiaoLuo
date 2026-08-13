@@ -17,6 +17,8 @@ import { requireCanvasAccess } from "../../../../lib/authorization";
 import { mysqlNow } from "../../../../lib/mysql";
 import { requireRequestedWorkspace } from "../../../../lib/workspace-context";
 import {
+  applyWorkflowAssetBundles,
+  collectWorkflowAssetBundles,
   sanitizeWorkflowGraph,
   workflowIntegrity,
   workflowTokenHash,
@@ -275,6 +277,9 @@ export async function POST(request: Request) {
     }
     const distributionWorkspaceId =
       organizationScope?.workspaceId ?? access.workspaceId;
+    const assetBundles = payload.canvasShare
+      ? await collectWorkflowAssetBundles(db, access.workspaceId, source.nodes)
+      : [];
     if (
       payload.canvasShare &&
       payload.audience === "organization_live" &&
@@ -324,6 +329,15 @@ export async function POST(request: Request) {
             enterpriseProject = { id: enterpriseProjectId };
           }
           collaborationCanvasId = crypto.randomUUID();
+          if (assetBundles.length) {
+            await applyWorkflowAssetBundles({
+              db,
+              workspaceId: organizationScope.workspaceId,
+              nodes: prepared.graph.nodes,
+              bundles: assetBundles,
+              sourceRef: canvasId,
+            });
+          }
           await db.insert(canvases).values({
             id: collaborationCanvasId,
             projectId: enterpriseProject.id,
@@ -458,8 +472,9 @@ export async function POST(request: Request) {
         : visibility,
       organizationId: organizationScope?.organizationId ?? null,
       counts: prepared.counts,
+      assets: assetBundles,
       privacy: {
-        assets: "placeholders-only",
+        assets: assetBundles.length ? "bundled" : "placeholders-only",
         secrets: "stripped",
         modelConnections: "requirements-only",
       },

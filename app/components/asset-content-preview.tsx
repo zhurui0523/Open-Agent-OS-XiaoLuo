@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { supportedFormatForName } from "../lib/file-formats";
+import { AudioPlayer } from "./audio-player";
+import { VideoPlayer } from "./video-player";
 import type { AssetKind } from "../types";
 
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
@@ -260,6 +262,7 @@ export function AssetContentPreview({
         src={contentUrl}
         alt={name}
         loading="lazy"
+        decoding="async"
         draggable={false}
         onDragStart={(event) => event.preventDefault()}
       />
@@ -269,24 +272,11 @@ export function AssetContentPreview({
     return <FileFallback kind={kind} name={name} />;
   }
   if (kind === "video") {
-    return (
-      <video
-        src={contentUrl}
-        controls
-        preload="metadata"
-        draggable={false}
-        onDragStart={(event) => event.preventDefault()}
-      >
-        当前浏览器不支持播放该视频格式。
-      </video>
-    );
+    // #t=0.1 让浏览器加载第一帧作为缩略图，避免预览一片漆黑
+    return <VideoPlayer src={`${contentUrl}#t=0.1`} title={name} />;
   }
   if (kind === "audio") {
-    return (
-      <audio src={contentUrl} controls preload="metadata">
-        当前浏览器不支持播放该音频格式。
-      </audio>
-    );
+    return <AudioPlayer src={contentUrl} title={name} />;
   }
   if (kind === "text" || format?.preview === "text") {
     return <TextPreview url={contentUrl} name={name} />;

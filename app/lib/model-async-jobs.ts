@@ -1,4 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+
+// 异步任务的总时限：超过后才允许因瞬时错误判失败。此前单纯依赖 pollCount 配额，
+// 会被查询/保存阶段的重试快速耗尽，远端实际已成功的任务被误判失败
+const MAX_ASYNC_JOB_LIFETIME_MS = 30 * 60_000;
 import { getDb } from "../../db";
 import {
   assetRelations,
@@ -15,10 +19,12 @@ import type {
 } from "../types";
 import {
   cancelModelJob,
+  ModelExecutionError,
   pollModelJob,
   type KernelNodeRequest,
 } from "./kernel-executors";
 import { recordAsyncModelCompletion } from "./model-runtime-router";
+import { sharedModelWorkspaceIds } from "./organization-workspaces";
 import {
   getFileBucket,
   MAX_FILE_BYTES,
@@ -31,11 +37,31 @@ import {
 import { mysqlExecute, mysqlNow } from "./mysql";
 import { artifactFormat, artifactName } from "./artifact-format";
 
+// 轮询时的瞬时错误（单次请求超时、网络抢失、限流、服务端暂时不可用）：不应终止任务，应重试轮询
+function transientPollFailure(error: unknown) {
+  // 保存阶段失败（下载产物/上传 OSS）：远端结果已存在，同样属于可重试的瞬时错误
+  if (error instanceof Error && error.message.startsWith("保存异步结果失败")) {
+    return true;
+  }
+  if (error instanceof ModelExecutionError) {
+    return ["PROVIDER_TIMEOUT", "PROVIDER_NETWORK_ERROR", "RATE_LIMITED", "PROVIDER_UNAVAILABLE"].includes(
+      error.code,
+    );
+  }
+  if (error instanceof TypeError) return true;
+  // undici 原始超时/中断错误（如结果资产下载或上传 OSS 超时）：按名称与消息逐层判定
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 3; depth += 1) {
+    const err = current as { name?: unknown; message?: unknown; cause?: unknown };
+    if (err.name === "TimeoutError" || err.name === "AbortError") return true;
+    if (typeof err.message === "string" && /aborted due to timeout/i.test(err.message)) return true;
+    current = err.cause ?? null;
+  }
+  return false;
+}
+
 function futureMysql(milliseconds: number) {
-  return new Date(Date.now() + milliseconds)
-    .toISOString()
-    .replace("T", " ")
-    .replace("Z", "");
+  return mysqlNow(new Date(Date.now() + milliseconds));
 }
 
 function parsedInput(value: string) {
@@ -162,6 +188,8 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
      WHERE id = ?
        AND workspace_id = ?
        AND status IN ('submitted', 'running')
+       AND next_poll_at IS NOT NULL
+       AND next_poll_at <= CURRENT_TIMESTAMP(3)
        AND (
          lease_owner IS NULL
          OR lease_expires_at IS NULL
@@ -176,13 +204,17 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
     if (!job.modelConnectionId || !job.pollUrl) {
       throw new Error("异步任务缺少模型连接或查询地址");
     }
+    const modelScopeWorkspaceIds = await sharedModelWorkspaceIds(
+      workspaceId,
+      job.requestedBy ?? "",
+    );
     [model] = await db
       .select()
       .from(modelConnections)
       .where(
         and(
           eq(modelConnections.id, job.modelConnectionId),
-          eq(modelConnections.workspaceId, workspaceId),
+          inArray(modelConnections.workspaceId, modelScopeWorkspaceIds),
         ),
       )
       .limit(1);
@@ -217,12 +249,21 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
       };
     }
 
-    const persisted = await persistAsyncResult(
-      job,
-      node,
-      inputs,
-      result.execution,
-    );
+    let persisted: Awaited<ReturnType<typeof persistAsyncResult>>;
+    try {
+      persisted = await persistAsyncResult(
+        job,
+        node,
+        inputs,
+        result.execution,
+      );
+    } catch (persistError) {
+      const detail =
+        persistError instanceof Error
+          ? persistError.message
+          : "未知错误";
+      throw new Error(`保存异步结果失败（将自动重试）：${detail}`);
+    }
     const outputJson = JSON.stringify({
       ...persisted.output,
       result: persisted.result,
@@ -305,6 +346,28 @@ export async function pollGenerationJob(jobId: string, workspaceId: string) {
     return { ...job, status: "succeeded", progress: 100, outputJson };
   } catch (error) {
     const message = error instanceof Error ? error.message : "异步任务查询失败";
+    const startedAtMs = job.startedAt
+      ? new Date(job.startedAt).getTime()
+      : Number.NaN;
+    const expired =
+      Number.isFinite(startedAtMs) &&
+      Date.now() - startedAtMs > MAX_ASYNC_JOB_LIFETIME_MS;
+    // 瞬时错误（含保存阶段超时）：不消耗 pollCount 配额，仅在超过总时限后才判失败
+    if (transientPollFailure(error) && !expired) {
+      const delay = Math.min(30_000, 5_000 + job.pollCount * 500);
+      await db
+        .update(generationJobs)
+        .set({
+          status: "running",
+          lastPolledAt: now,
+          nextPollAt: futureMysql(delay),
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          updatedAt: now,
+        })
+        .where(eq(generationJobs.id, job.id));
+      return { ...job, status: "running" };
+    }
     await Promise.all([
       db
         .update(generationJobs)

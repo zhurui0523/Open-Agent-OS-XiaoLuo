@@ -91,7 +91,8 @@ export async function GET(request: Request) {
     const usage = emptyUsage();
     for (const row of rows) {
       if (!["text", "image", "video"].includes(row.modality)) continue;
-      usage[row.modality] = {
+      const modality = row.modality as "text" | "image" | "video";
+      usage[modality] = {
         total: Number(row.totalCount) || 0,
         success: Number(row.successCount) || 0,
         failure: Number(row.failureCount) || 0,

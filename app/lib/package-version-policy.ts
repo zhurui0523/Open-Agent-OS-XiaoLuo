@@ -84,3 +84,35 @@ export function canRefreshGeneratedGithubManifest(input: {
     existingArchive === incomingArchive
   );
 }
+
+/**
+ * Installer-generated manifests contain deployment-specific runtime paths.
+ * Re-importing the exact same immutable archive in another personal workspace
+ * can therefore change the manifest digest even though the source bytes did
+ * not change. Treat that as a safe refresh; manually authored manifests and
+ * genuinely different archives still retain strict version immutability.
+ */
+export function canRefreshGeneratedSourceManifest(input: {
+  existingSource: PackageInstallSourceIdentity | null | undefined;
+  incomingSource: PackageInstallSourceIdentity | null | undefined;
+}) {
+  if (canRefreshGeneratedGithubManifest(input)) return true;
+
+  const existing = input.existingSource;
+  const incoming = input.incomingSource;
+  if (
+    existing?.kind !== "archive" ||
+    incoming?.kind !== "archive" ||
+    incoming.generatedManifest !== true
+  ) {
+    return false;
+  }
+
+  const existingArchive = normalizedDigest(existing.archiveSha256);
+  const incomingArchive = normalizedDigest(incoming.archiveSha256);
+  return Boolean(
+    existingArchive &&
+      incomingArchive &&
+      existingArchive === incomingArchive,
+  );
+}

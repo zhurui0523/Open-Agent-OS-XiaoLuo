@@ -15,14 +15,7 @@ async function source(path) {
   return readFile(new URL(path, root), "utf8");
 }
 
-test("model input defaults distinguish frame and multimodal video protocols", () => {
-  assert.deepEqual(
-    defaultModelInputConstraints("video", "runninghub-sparkvideo"),
-    {
-      maxTotal: 2,
-      maxByType: { image: 2, video: 0, audio: 0, document: 0 },
-    },
-  );
+test("model input defaults distinguish multimodal video protocols", () => {
   assert.deepEqual(
     defaultModelInputConstraints(
       "video",
@@ -272,7 +265,7 @@ test("intent composer shares thumbnail attachments and canvas asset mentions", a
   assert.match(intentConsole, /InputAssetPreview, NodePromptEditor/);
   assert.match(intentConsole, /canvasAssets: CanvasAssetReference\[\]/);
   assert.match(intentConsole, /<NodePromptEditor/);
-  assert.match(intentConsole, /attachedSourceIds=\{attachedSourceIds\}/);
+  assert.match(intentConsole, /attachedSourceIds=\{[\s\S]{0,120}composerMode === "quick" \? new Set<string>\(\) : attachedSourceIds[\s\S]{0,20}\}/);
   assert.match(intentConsole, /onAttach=\{attachCanvasAsset\}/);
   assert.match(intentConsole, /resolveProfessionalGeneratorRules/);
   assert.match(intentConsole, /normalizeModelInputConstraints/);
@@ -284,7 +277,7 @@ test("intent composer shares thumbnail attachments and canvas asset mentions", a
   assert.match(intentConsole, /className="composer-input-asset-add"/);
   assert.match(canvasView, /canvasAssets=\{canvasAssets\}/);
   assert.match(intentOS, /previewUrl: asset\.contentUrl/);
-  assert.match(intentOS, /inputAttachments: attachments/);
+  assert.match(intentOS, /attachments,/);
   assert.match(intentOS, /target: next\.id/);
   assert.match(styles, /\.composer-input-asset-grid/);
   assert.match(

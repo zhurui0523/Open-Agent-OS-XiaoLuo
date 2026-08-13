@@ -413,6 +413,7 @@ export function CanvasContextMenu({
       >
         <ListChecks size={19} />
         <span>{multiSelectActive ? "退出多选" : "多选"}</span>
+        <kbd>Ctrl+M</kbd>
         {multiSelectActive && <Check size={17} />}
       </button>
 

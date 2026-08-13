@@ -2,8 +2,8 @@
 
 import {
   Blocks,
-  Hand,
   Library,
+  ListChecks,
   ListTree,
   MousePointer2,
   PanelsTopLeft,
@@ -19,6 +19,7 @@ interface CanvasToolbarProps {
   drawerOpen: boolean;
   taskCenterOpen: boolean;
   onToolChange: (tool: string) => void;
+  onToggleMultiSelect: () => void;
   onToggleDrawer: () => void;
   onOpenTaskCenter: () => void;
   onOpenSettings: () => void;
@@ -31,6 +32,7 @@ export function CanvasToolbar({
   drawerOpen,
   taskCenterOpen,
   onToolChange,
+  onToggleMultiSelect,
   onToggleDrawer,
   onOpenTaskCenter,
   onOpenSettings,
@@ -38,6 +40,11 @@ export function CanvasToolbar({
 }: CanvasToolbarProps) {
   function chooseCanvasTool(tool: string) {
     onToolChange(tool);
+    onNavigate("canvas");
+  }
+
+  function toggleMultiSelect() {
+    onToggleMultiSelect();
     onNavigate("canvas");
   }
 
@@ -51,11 +58,11 @@ export function CanvasToolbar({
         <MousePointer2 size={18} />
       </IconButton>
       <IconButton
-        label="抓手平移"
-        active={currentView === "canvas" && activeTool === "hand"}
-        onClick={() => chooseCanvasTool("hand")}
+        label={activeTool === "multi-select" ? "退出多选" : "多选"}
+        active={currentView === "canvas" && activeTool === "multi-select"}
+        onClick={toggleMultiSelect}
       >
-        <Hand size={18} />
+        <ListChecks size={18} />
       </IconButton>
       <span className="tool-separator" />
       <IconButton

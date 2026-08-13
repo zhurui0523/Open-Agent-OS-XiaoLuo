@@ -1,5 +1,6 @@
 import type {
   ModelProtocol,
+  MediaPluginType,
   NodePort,
   NodeKind,
   PackageType,
@@ -52,6 +53,7 @@ export interface XiaoLuoPackageManifest {
   version: string;
   description?: string;
   type: PackageType;
+  assetTypes?: MediaPluginType[];
   access?: {
     scope: "personal" | "workspace" | "marketplace";
   };
@@ -93,17 +95,24 @@ const allowedModalities = new Set([
   "audio",
   "document",
 ]);
+const allowedAssetTypes = new Set<MediaPluginType>([
+  "image",
+  "video",
+  "audio",
+]);
 const allowedProtocols = new Set([
   "openai-compatible",
   "openai-responses",
   "anthropic-compatible",
   "gemini",
   "dall-e-3",
-  "runninghub-sparkvideo-mini",
   "runninghub-sparkvideo-mini-multimodal",
-  "runninghub-sparkvideo",
   "runninghub-sparkvideo-multimodal",
   "runninghub-minimax-h3",
+  "runninghub-seedance",
+  "runninghub-suno-v5",
+  "runninghub-rh-image-2",
+  "runninghub-nano-banana-2",
   "ark",
   "async-video",
   "generic-rest",
@@ -153,6 +162,18 @@ function validRemoteUrl(value: string) {
   } catch {
     return false;
   }
+}
+
+function validInternalSandboxEntry(value: string) {
+  const prefix = "/api/v2/packages/runtime/static/";
+  if (!value.startsWith(prefix) || value.length > 1600) return false;
+  if (value.includes("\\") || value.includes("\0") || /[?#]/.test(value)) {
+    return false;
+  }
+  return !value
+    .slice(prefix.length)
+    .split("/")
+    .some((segment) => segment === "." || segment === "..");
 }
 
 function validPackageEntry(value: string) {
@@ -293,6 +314,10 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
   const name = safeString(maybeEnvelope.name);
   const version = safeString(maybeEnvelope.version);
   const type = safeString(maybeEnvelope.type) as PackageType;
+  const rawAssetTypes = maybeEnvelope.assetTypes;
+  const assetTypes = Array.isArray(rawAssetTypes)
+    ? rawAssetTypes.map(safeString).filter(Boolean)
+    : [];
   const access = isRecord(maybeEnvelope.access) ? maybeEnvelope.access : {};
   const accessScope = safeString(access.scope) || "personal";
   const runtime = isRecord(maybeEnvelope.runtime) ? maybeEnvelope.runtime : {};
@@ -321,6 +346,15 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
       "type 只支持 skill、agent、workflow、plugin、model-provider 或 adapter",
     );
   }
+  if (rawAssetTypes !== undefined && !Array.isArray(rawAssetTypes)) {
+    issues.push("assetTypes 必须是数组");
+  }
+  if (assetTypes.some((item) => !allowedAssetTypes.has(item as MediaPluginType))) {
+    issues.push("assetTypes 只支持 image、video 或 audio");
+  }
+  if (type !== "plugin" && assetTypes.length > 0) {
+    issues.push("assetTypes 仅适用于 plugin Package");
+  }
   if (!["personal", "workspace", "marketplace"].includes(accessScope)) {
     issues.push("access.scope 只支持 personal、workspace 或 marketplace");
   }
@@ -345,10 +379,16 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     );
   }
   if (
-    (runtimeType === "sandbox-ui" || runtimeType === "remote-api") &&
-    !validRemoteUrl(runtimeEntry)
+    runtimeType === "sandbox-ui" &&
+    !validRemoteUrl(runtimeEntry) &&
+    !validInternalSandboxEntry(runtimeEntry)
   ) {
-    issues.push("沙盒 UI 或远程 API 必须提供安全的 HTTPS runtime.entry");
+    issues.push(
+      "沙盒 UI 必须提供 HTTPS 地址或系统内部静态 runtime.entry",
+    );
+  }
+  if (runtimeType === "remote-api" && !validRemoteUrl(runtimeEntry)) {
+    issues.push("远程 API 必须提供安全的 HTTPS runtime.entry");
   }
   if (runtimeType === "isolated-worker") {
     if (!["plugin", "adapter"].includes(type)) {
@@ -521,6 +561,13 @@ export function parsePackagePayload(payload: unknown): XiaoLuoPackageManifest {
     version,
     description: safeString(maybeEnvelope.description),
     type,
+    ...(type === "plugin"
+      ? {
+          assetTypes: [
+            ...new Set(assetTypes as MediaPluginType[]),
+          ],
+        }
+      : {}),
     access: {
       scope: accessScope as "personal" | "workspace" | "marketplace",
     },

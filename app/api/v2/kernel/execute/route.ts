@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import {
   generationJobs,
@@ -25,6 +25,12 @@ import type {
 } from "../../../../types";
 import { mysqlNow } from "../../../../lib/mysql";
 import { requireUser } from "../../../../lib/auth";
+import { packageAvailableToUser } from "../../../../lib/package-availability";
+import { sharedModelWorkspaceIds } from "../../../../lib/organization-workspaces";
+import {
+  canAccessRegistryResource,
+  modelAccessScope,
+} from "../../../../lib/registry-access";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -141,7 +147,7 @@ export async function POST(request: Request) {
         .where(
           and(
             eq(packageCapabilities.id, node.capabilityId),
-            eq(packages.workspaceId, run.workspaceId),
+            packageAvailableToUser(run.workspaceId, run.createdBy),
           ),
         )
         .limit(1);
@@ -161,24 +167,47 @@ export async function POST(request: Request) {
             .where(
               and(
                 eq(packages.id, capability.capability.packageId),
-                eq(packages.workspaceId, run.workspaceId),
+                packageAvailableToUser(run.workspaceId, run.createdBy),
               ),
             )
             .limit(1)
         : [];
-      const [model] =
-        node.modelId && node.modelId !== "unconfigured"
-          ? await db
-              .select()
-              .from(modelConnections)
-              .where(
-                and(
-                  eq(modelConnections.id, node.modelId),
-                  eq(modelConnections.workspaceId, run.workspaceId),
-                ),
-              )
-              .limit(1)
-          : [];
+      let model: typeof modelConnections.$inferSelect | undefined;
+      if (node.modelId && node.modelId !== "unconfigured") {
+        const modelScopeWorkspaceIds = await sharedModelWorkspaceIds(
+          run.workspaceId,
+          user.id,
+        );
+        const [modelRow] = await db
+          .select()
+          .from(modelConnections)
+          .where(
+            and(
+              eq(modelConnections.id, node.modelId),
+              inArray(modelConnections.workspaceId, modelScopeWorkspaceIds),
+            ),
+          )
+          .limit(1);
+        if (modelRow) {
+          let modelUiSchema: Record<string, unknown> = {};
+          try {
+            modelUiSchema = JSON.parse(
+              modelRow.uiSchemaJson,
+            ) as Record<string, unknown>;
+          } catch {
+            modelUiSchema = {};
+          }
+          if (
+            canAccessRegistryResource({
+              scope: modelAccessScope(modelUiSchema),
+              createdBy: modelRow.createdBy,
+              userId: user.id,
+            })
+          ) {
+            model = modelRow;
+          }
+        }
+      }
 
       validateRuntimeModel(capability?.capability, model, node.kind);
       const execution =

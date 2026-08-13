@@ -5,11 +5,14 @@ import {
   Building2,
   Check,
   CircleAlert,
+  ClipboardList,
   FileText,
   HardDrive,
   Image as ImageIcon,
   KeyRound,
   LoaderCircle,
+  Music,
+  Plus,
   Power,
   RefreshCcw,
   Search,
@@ -29,7 +32,7 @@ import type { AccountUser } from "../types";
 import { AdminOperations } from "./admin-operations";
 import { useAppDialog } from "./app-dialog";
 
-type AdminTab = "overview" | "users" | "enterprises";
+type AdminTab = "overview" | "users" | "enterprises" | "organizations";
 
 interface AdminCenterProps {
   user: AccountUser;
@@ -47,9 +50,24 @@ interface ManagedUser {
   textCount: number;
   imageCount: number;
   videoCount: number;
+  audioCount: number;
   storageBytes: number;
+  storageQuotaBytes: number;
+  accountType:
+    | "system_admin"
+    | "ordinary_user"
+    | "enterprise_admin"
+    | "enterprise_member";
+  canIncreaseStorage: boolean;
   createdAt: string;
 }
+
+const ACCOUNT_TYPE_LABEL: Record<ManagedUser["accountType"], string> = {
+  system_admin: "系统管理员",
+  ordinary_user: "普通用户",
+  enterprise_admin: "企业管理员",
+  enterprise_member: "企业成员",
+};
 
 interface EnterpriseApplication {
   id: string;
@@ -61,6 +79,35 @@ interface EnterpriseApplication {
   applicantEmail: string;
   phoneLast4: string | null;
   createdAt: string;
+}
+
+interface AdminOrganization {
+  id: string;
+  name: string;
+  registrationCode: string | null;
+  status: "pending" | "active" | "rejected" | "disabled";
+  createdAt: string;
+  creatorName: string | null;
+  creatorUsername: string | null;
+  adminNames: string | null;
+  memberCount: number;
+}
+
+const ORG_STATUS_LABEL: Record<AdminOrganization["status"], string> = {
+  pending: "待审核",
+  active: "已启用",
+  rejected: "已拒绝",
+  disabled: "已停用",
+};
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes(),
+  ).padStart(2, "0")}`;
 }
 
 async function requestJson<T>(url: string, init?: RequestInit) {
@@ -91,12 +138,15 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
   const [tab, setTab] = useState<AdminTab>("overview");
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [applications, setApplications] = useState<EnterpriseApplication[]>([]);
+  const [organizations, setOrganizations] = useState<AdminOrganization[]>([]);
   const [search, setSearch] = useState("");
   const [pending, setPending] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [resetTarget, setResetTarget] = useState<ManagedUser | null>(null);
+  const [storageTarget, setStorageTarget] = useState<ManagedUser | null>(null);
+  const [increaseGiB, setIncreaseGiB] = useState("10");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -133,6 +183,21 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
     }
   }, []);
 
+  const loadOrganizations = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const payload = await requestJson<{
+        organizations: AdminOrganization[];
+      }>("/api/v2/admin/organizations");
+      setOrganizations(payload.organizations);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "读取企业列表失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (tab === "users" && users.length === 0) {
       const timer = window.setTimeout(() => void loadUsers(), 0);
@@ -142,7 +207,19 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
       const timer = window.setTimeout(() => void loadApplications(), 0);
       return () => window.clearTimeout(timer);
     }
-  }, [applications.length, loadApplications, loadUsers, tab, users.length]);
+    if (tab === "organizations" && organizations.length === 0) {
+      const timer = window.setTimeout(() => void loadOrganizations(), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [
+    applications.length,
+    loadApplications,
+    loadOrganizations,
+    loadUsers,
+    organizations.length,
+    tab,
+    users.length,
+  ]);
 
   async function perform(
     operation: () => Promise<void>,
@@ -207,6 +284,34 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
       setNewPassword("");
       setConfirmPassword("");
       setMessage(payload.message);
+    });
+  }
+
+  function submitStorageIncrease(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!storageTarget) return;
+    const parsed = Number(increaseGiB);
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 1024) {
+      setError("请输入 1–1024 GB 的整数容量");
+      return;
+    }
+    void perform(async () => {
+      const payload = await requestJson<{
+        message: string;
+        storageQuotaBytes: number;
+      }>("/api/v2/admin/users/storage", {
+        method: "POST",
+        body: JSON.stringify({
+          userId: storageTarget.id,
+          increaseGiB: parsed,
+        }),
+      });
+      setStorageTarget(null);
+      setIncreaseGiB("10");
+      setMessage(
+        `${payload.message}，当前总空间 ${formatBytes(payload.storageQuotaBytes)}`,
+      );
+      await loadUsers(search);
     });
   }
 
@@ -315,6 +420,14 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                 <span>企业审核</span>
                 {applications.length > 0 && <i>{applications.length}</i>}
               </button>
+              <button
+                type="button"
+                className={tab === "organizations" ? "active" : ""}
+                onClick={() => setTab("organizations")}
+              >
+                <ClipboardList size={17} />
+                <span>企业列表</span>
+              </button>
             </nav>
             <div className="admin-access-note">
               <ShieldCheck size={17} />
@@ -370,7 +483,8 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                   <div className="admin-user-table-head" role="row">
                     <span>用户</span>
                     <span>使用情况</span>
-                    <span>OSS 存储量</span>
+                    <span>已用空间</span>
+                    <span>空间配额</span>
                     <span>状态</span>
                     <span>操作</span>
                   </div>
@@ -387,6 +501,11 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                             {managedUser.email} · 手机尾号{" "}
                             {managedUser.phoneLast4 ?? "未绑定"}
                           </small>
+                          <small
+                            className={`admin-account-type is-${managedUser.accountType}`}
+                          >
+                            {ACCOUNT_TYPE_LABEL[managedUser.accountType]}
+                          </small>
                         </div>
                       </div>
                       <div className="admin-usage-counts">
@@ -399,6 +518,9 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                         <span title="视频调用次数">
                           <Video size={13} /> 视频 {managedUser.videoCount}
                         </span>
+                        <span title="音乐调用次数">
+                          <Music size={13} /> 音乐 {managedUser.audioCount}
+                        </span>
                       </div>
                       <div className="admin-storage-cell">
                         <HardDrive size={15} />
@@ -406,6 +528,31 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                           <b>{formatBytes(managedUser.storageBytes)}</b>
                           <small>文件与画布资产</small>
                         </span>
+                      </div>
+                      <div className="admin-quota-cell">
+                        {managedUser.platformRole === "system_admin" ? (
+                          <small>不支持调整</small>
+                        ) : managedUser.canIncreaseStorage ? (
+                          <>
+                            <span>
+                              <b>{formatBytes(managedUser.storageQuotaBytes)}</b>
+                              <small>当前总空间</small>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setError("");
+                                setIncreaseGiB("10");
+                                setStorageTarget(managedUser);
+                              }}
+                              disabled={pending}
+                            >
+                              <Plus size={13} /> 增加空间
+                            </button>
+                          </>
+                        ) : (
+                          <small>企业成员不单独分配</small>
+                        )}
                       </div>
                       <div>
                         <span
@@ -535,6 +682,65 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                 </div>
               </section>
             )}
+
+            {tab === "organizations" && (
+              <section className="admin-enterprises-panel">
+                <div className="admin-panel-heading">
+                  <div>
+                    <h3>企业列表</h3>
+                    <p>查看平台上所有已注册企业的状态、负责人与成员规模。</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void loadOrganizations()}
+                  >
+                    <RefreshCcw size={15} /> 刷新
+                  </button>
+                </div>
+                <div className="admin-enterprise-list">
+                  {organizations.map((organization) => (
+                    <article key={organization.id}>
+                      <div>
+                        <b>{organization.name}</b>
+                        <small>
+                          社会信用代码：
+                          {organization.registrationCode || "未填写"}
+                        </small>
+                      </div>
+                      <div>
+                        <b>{organization.adminNames || "暂无管理员"}</b>
+                        <small>
+                          创建人：{organization.creatorName ?? "未知"}
+                          {organization.creatorUsername
+                            ? ` @${organization.creatorUsername}`
+                            : ""}
+                        </small>
+                      </div>
+                      <div>
+                        <b>{Number(organization.memberCount)} 名成员</b>
+                        <small>创建于 {formatDateTime(organization.createdAt)}</small>
+                      </div>
+                      <span>
+                        <em
+                          className={`admin-org-status is-${organization.status}`}
+                        >
+                          {ORG_STATUS_LABEL[organization.status]}
+                        </em>
+                      </span>
+                    </article>
+                  ))}
+                  {!loading && organizations.length === 0 && (
+                    <div className="admin-empty-state">当前还没有任何企业。</div>
+                  )}
+                  {loading && (
+                    <div className="admin-empty-state">
+                      <LoaderCircle className="spin" size={17} /> 企业数据加载中…
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
           </main>
         </div>
 
@@ -604,6 +810,93 @@ export function AdminCenter({ user, onClose }: AdminCenterProps) {
                 >
                   {pending && <LoaderCircle className="spin" size={15} />}
                   确认修改
+                </button>
+              </footer>
+            </form>
+          </div>
+        )}
+
+        {storageTarget && (
+          <div
+            className="admin-password-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setStorageTarget(null);
+            }}
+          >
+            <form
+              className="admin-password-dialog admin-storage-dialog"
+              onSubmit={submitStorageIncrease}
+            >
+              <header>
+                <div>
+                  <span className="eyebrow">INCREASE STORAGE</span>
+                  <h3>为 @{storageTarget.username} 增加空间</h3>
+                  <p>
+                    {ACCOUNT_TYPE_LABEL[storageTarget.accountType]} · 当前总空间{" "}
+                    {formatBytes(storageTarget.storageQuotaBytes)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => setStorageTarget(null)}
+                  aria-label="关闭增加空间"
+                >
+                  <X size={17} />
+                </button>
+              </header>
+              <div className="admin-storage-presets" aria-label="快捷容量">
+                {[1, 5, 10, 50].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={increaseGiB === String(value) ? "active" : ""}
+                    onClick={() => setIncreaseGiB(String(value))}
+                  >
+                    +{value} GB
+                  </button>
+                ))}
+              </div>
+              <label>
+                增加容量（GB）
+                <input
+                  type="number"
+                  min={1}
+                  max={1024}
+                  step={1}
+                  inputMode="numeric"
+                  value={increaseGiB}
+                  onChange={(event) => setIncreaseGiB(event.target.value)}
+                  required
+                />
+              </label>
+              <div className="admin-storage-result">
+                <span>增加后的总空间</span>
+                <b>
+                  {formatBytes(
+                    storageTarget.storageQuotaBytes +
+                      (Number.isSafeInteger(Number(increaseGiB))
+                        ? Number(increaseGiB) * 1024 ** 3
+                        : 0),
+                  )}
+                </b>
+              </div>
+              <footer>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setStorageTarget(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={pending}
+                >
+                  {pending && <LoaderCircle className="spin" size={15} />}
+                  确认增加
                 </button>
               </footer>
             </form>

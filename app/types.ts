@@ -18,9 +18,33 @@ export interface OrganizationSummary {
   workspaceId: string | null;
   applicationStatus: "pending" | "approved" | "rejected" | null;
   createdAt: string;
+  // 企业工作区（企业管理员空间）的存储用量
+  storageUsedBytes: number;
+  storageRemainingBytes: number;
 }
 
 export type NodeKind = "text" | "image" | "video" | "audio" | "document";
+
+export type MediaPluginType = Extract<NodeKind, "image" | "video" | "audio">;
+
+export interface PluginAssetContext {
+  canvasId: string;
+  nodeId: string;
+  kind: ModelInputAssetKind;
+  title: string;
+  url: string;
+  downloadUrl?: string;
+  assetId?: string;
+  mimeType?: string;
+}
+
+export interface PluginTextContext {
+  canvasId: string;
+  nodeId: string;
+  kind: "text";
+  title: string;
+  content: string;
+}
 
 export type PortDataType =
   | "text"
@@ -242,11 +266,13 @@ export type ModelProtocol =
   | "anthropic-compatible"
   | "gemini"
   | "dall-e-3"
-  | "runninghub-sparkvideo-mini"
   | "runninghub-sparkvideo-mini-multimodal"
-  | "runninghub-sparkvideo"
   | "runninghub-sparkvideo-multimodal"
   | "runninghub-minimax-h3"
+  | "runninghub-seedance"
+  | "runninghub-suno-v5"
+  | "runninghub-rh-image-2"
+  | "runninghub-nano-banana-2"
   | "ark"
   | "async-video"
   | "generic-rest";
@@ -283,6 +309,7 @@ export interface InstalledPackage {
   createdBy?: string;
   ownerScope?: "personal" | "administrator";
   accessScope?: "personal" | "workspace" | "marketplace";
+  availabilitySource?: "owned" | "added";
   canManage?: boolean;
   manifest?: Record<string, unknown>;
 }
@@ -319,6 +346,24 @@ export interface PackageInstallResult {
 export interface GithubCompatibilityReport {
   repository: string;
   commit: string;
+  projectType:
+    | "skill"
+    | "static-web"
+    | "frontend"
+    | "node"
+    | "python"
+    | "mcp"
+    | "openapi"
+    | "docker"
+    | "unknown";
+  projectTypeLabel: string;
+  adapterMode:
+    | "declarative-skill"
+    | "static-sandbox"
+    | "isolated-build"
+    | "remote-api"
+    | "source-only";
+  detectedEntrypoints: string[];
   detectedStack: string[];
   packageName: string | null;
   scripts: string[];
@@ -527,7 +572,10 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   time: string;
+  mode?: "xiaoluo" | "quick_answer";
   attachments?: ChatAttachment[];
+  resultNodeId?: string;
+  resultKind?: NodeKind;
 }
 
 export interface ChatAttachment {

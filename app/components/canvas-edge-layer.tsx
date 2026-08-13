@@ -99,6 +99,37 @@ function lineIntersectsBounds(
   );
 }
 
+export function canvasEdgeGeometry(
+  edge: CanvasEdge,
+  source: CanvasNode,
+  target: CanvasNode,
+  nodeHeights: Record<string, number>,
+) {
+  const resolved = resolveEdgePorts(edge, source, target);
+  if (!resolved.sourcePort || !resolved.targetPort) return null;
+  const start = portPoint(
+    source,
+    resolved.sourcePort.id,
+    "output",
+    nodeHeights[source.id] ?? 156,
+  );
+  const end = portPoint(
+    target,
+    resolved.targetPort.id,
+    "input",
+    nodeHeights[target.id] ?? 156,
+  );
+  return {
+    start,
+    end,
+    path: curve(start, end),
+    midpoint: curveMidpoint(start, end),
+    dataType: resolved.dataType ?? edge.dataType,
+    sourcePortLabel: resolved.sourcePort.label,
+    targetPortLabel: resolved.targetPort.label,
+  };
+}
+
 export function CanvasEdgeLayer({
   nodes,
   edges,
@@ -141,27 +172,27 @@ export function CanvasEdgeLayer({
         const source = nodeMap.get(edge.source);
         const target = nodeMap.get(edge.target);
         if (!source || !target) return null;
-        const resolved = resolveEdgePorts(edge, source, target);
-        if (!resolved.sourcePort || !resolved.targetPort) return null;
-        const start = portPoint(
+        const geometry = canvasEdgeGeometry(
+          edge,
           source,
-          resolved.sourcePort.id,
-          "output",
-          nodeHeights[source.id] ?? 156,
-        );
-        const end = portPoint(
           target,
-          resolved.targetPort.id,
-          "input",
-          nodeHeights[target.id] ?? 156,
+          nodeHeights,
         );
+        if (!geometry) return null;
+        const {
+          start,
+          end,
+          path,
+          midpoint,
+          dataType,
+          sourcePortLabel,
+          targetPortLabel,
+        } = geometry;
         const selected = edge.id === selectedEdgeId;
         if (!selected && !lineIntersectsBounds(start, end, bounds)) return null;
         const running =
           source.status === "running" || target.status === "running";
-        const path = curve(start, end);
-        const midpoint = curveMidpoint(start, end);
-        const color = portColor(resolved.dataType ?? edge.dataType);
+        const color = portColor(dataType);
         return (
           <g
             key={edge.id}
@@ -169,7 +200,7 @@ export function CanvasEdgeLayer({
             className={`canvas-edge ${running ? "is-flowing" : ""} ${selected ? "is-selected" : ""}`}
             role="button"
             tabIndex={0}
-            aria-label={`连接：${source.title} 的 ${resolved.sourcePort.label} 到 ${target.title} 的 ${resolved.targetPort.label}`}
+            aria-label={`连接：${source.title} 的 ${sourcePortLabel} 到 ${target.title} 的 ${targetPortLabel}`}
             aria-pressed={selected}
             style={{ color }}
             onPointerDown={stop}

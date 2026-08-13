@@ -132,7 +132,14 @@ export async function POST(request: Request) {
         state: result.state,
         latencyMs: result.latencyMs,
         lastCheckedAt: checkedAt,
-        ...(result.ok ? { catalogSyncedAt: checkedAt } : {}),
+        ...(result.ok
+          ? {
+              catalogSyncedAt: checkedAt,
+              circuitState: "closed",
+              circuitFailureCount: 0,
+              circuitOpenedAt: null,
+            }
+          : {}),
         updatedAt: checkedAt,
       })
       .where(eq(modelConnections.id, row.id));

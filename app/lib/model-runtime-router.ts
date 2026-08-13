@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import {
   modelConnections,
@@ -16,6 +16,7 @@ import {
   canAccessRegistryResource,
   modelAccessScope,
 } from "./registry-access";
+import { sharedModelWorkspaceIds } from "./organization-workspaces";
 import {
   parseModelInputConstraints,
   validateModelInputAssets,
@@ -80,6 +81,13 @@ function orderedCandidates(
     addWithFallback(row.fallbackModelId);
   };
   addWithFallback(requestedModelId);
+
+  // A model selected on the canvas is a hard routing constraint. Only its
+  // explicitly configured fallback chain may be used; never append unrelated
+  // compatible models, otherwise the generated result can come from a model
+  // the user did not select.
+  if (requestedModelId) return result.slice(0, 8);
+
   all
     .filter((row) => isCompatible(row, kind))
     .sort((left, right) => {
@@ -328,12 +336,16 @@ export async function invokeRoutedModel(
   signal?: AbortSignal,
 ): Promise<RoutedModelExecution> {
   const db = await getDb();
+  const modelScopeWorkspaceIds = await sharedModelWorkspaceIds(
+    context.workspaceId,
+    context.userId,
+  );
   const all = await db
     .select()
     .from(modelConnections)
     .where(
       and(
-        eq(modelConnections.workspaceId, context.workspaceId),
+        inArray(modelConnections.workspaceId, modelScopeWorkspaceIds),
         eq(modelConnections.enabled, true),
       ),
     )
@@ -341,12 +353,21 @@ export async function invokeRoutedModel(
       asc(modelConnections.priority),
       desc(modelConnections.updatedAt),
     );
+  // 用户在节点上明确指定的模型：只允许沿其自身回退链执行，绝不静默换用其他模型
+  const pinnedModel = all.find((row) => row.id === requestedModelId);
+  const pinnedModelId = pinnedModel ? requestedModelId : "";
   const candidates = orderedCandidates(
     all.filter((row) => isAccessible(row, context)),
-    requestedModelId,
+    pinnedModelId,
     node.kind,
   );
   if (!candidates.length) {
+    if (pinnedModel) {
+      throw new ModelExecutionError(
+        `节点选择的模型“${pinnedModel.name}”不支持${node.kind}节点或已停用，请重新选择模型`,
+        { status: 409, code: "MODEL_UNAVAILABLE" },
+      );
+    }
     throw new Error(`没有可用的${node.kind}模型连接`);
   }
 

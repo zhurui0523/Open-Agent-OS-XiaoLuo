@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   MonitorSmartphone,
+  Music,
   Phone,
   Save,
   ShieldCheck,
@@ -39,6 +40,7 @@ interface PersonalUsage {
     text: number;
     image: number;
     video: number;
+    audio: number;
   };
   storage: {
     usedBytes: number;
@@ -49,7 +51,7 @@ interface PersonalUsage {
 }
 
 const emptyUsage: PersonalUsage = {
-  usage: { text: 0, image: 0, video: 0 },
+  usage: { text: 0, image: 0, video: 0, audio: 0 },
   storage: {
     usedBytes: 0,
     quotaBytes: 0,
@@ -347,6 +349,10 @@ export function PersonalSettings({
                 <article>
                   <span><Video size={18} /></span>
                   <div><small>视频次数</small><strong>{usage.usage.video}</strong></div>
+                </article>
+                <article>
+                  <span><Music size={18} /></span>
+                  <div><small>音乐次数</small><strong>{usage.usage.audio}</strong></div>
                 </article>
               </div>
               <article className="personal-storage-card">

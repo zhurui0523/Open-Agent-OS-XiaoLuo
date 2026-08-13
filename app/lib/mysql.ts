@@ -96,5 +96,5 @@ export async function mysqlTransaction<T>(
 }
 
 export function mysqlNow(date = new Date()) {
-  return date.toISOString().replace("T", " ").replace("Z", "");
+  return new Date(date.getTime() + 8 * 3600_000).toISOString().replace("T", " ").replace("Z", "");
 }

@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   KernelUpstreamInput,
   ModelInputAssetKind,
   ModelInputConstraints,
@@ -28,15 +28,13 @@ function boundedLimit(value: unknown, fallback: number) {
 export function defaultModelInputConstraints(
   kind: NodeKind,
   protocol?: string,
+  modelName?: string,
 ): ModelInputConstraints {
   if (kind === "video") {
-    if (
-      protocol === "runninghub-sparkvideo-mini" ||
-      protocol === "runninghub-sparkvideo"
-    ) {
+    if (protocol === "runninghub-seedance") {
       return {
-        maxTotal: 2,
-        maxByType: { image: 2, video: 0, audio: 0, document: 0 },
+        maxTotal: 50,
+        maxByType: { image: 30, video: 10, audio: 10, document: 0 },
       };
     }
     return {
@@ -45,7 +43,19 @@ export function defaultModelInputConstraints(
     };
   }
   if (kind === "image") {
-    if (protocol === "dall-e-3") {
+    if (protocol === "runninghub-rh-image-2") {
+      return {
+        maxTotal: 10,
+        maxByType: { image: 10, video: 0, audio: 0, document: 0 },
+      };
+    }
+    if (protocol === "runninghub-nano-banana-2") {
+      return {
+        maxTotal: 10,
+        maxByType: { image: 10, video: 0, audio: 0, document: 0 },
+      };
+    }
+    if (protocol === "dall-e-3" && modelName !== "gpt-image-2") {
       return { maxTotal: 0, maxByType: emptyTypeLimits() };
     }
     return {
@@ -60,8 +70,9 @@ export function normalizeModelInputConstraints(
   value: unknown,
   kind: NodeKind,
   protocol?: string,
+  modelName?: string,
 ): ModelInputConstraints {
-  const fallback = defaultModelInputConstraints(kind, protocol);
+  const fallback = defaultModelInputConstraints(kind, protocol, modelName);
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return fallback;
   }
@@ -137,14 +148,16 @@ export function parseModelInputConstraints(
   value: string | null | undefined,
   kind: NodeKind,
   protocol?: string,
+  modelName?: string,
 ) {
   try {
     return normalizeModelInputConstraints(
       value ? JSON.parse(value) : undefined,
       kind,
       protocol,
+      modelName,
     );
   } catch {
-    return defaultModelInputConstraints(kind, protocol);
+    return defaultModelInputConstraints(kind, protocol, modelName);
   }
 }

@@ -31,16 +31,18 @@ const protocols = new Set<ModelProtocol>([
   "anthropic-compatible",
   "gemini",
   "dall-e-3",
-  "runninghub-sparkvideo-mini",
   "runninghub-sparkvideo-mini-multimodal",
-  "runninghub-sparkvideo",
   "runninghub-sparkvideo-multimodal",
   "runninghub-minimax-h3",
+  "runninghub-seedance",
+  "runninghub-suno-v5",
+  "runninghub-rh-image-2",
+  "runninghub-nano-banana-2",
   "ark",
   "async-video",
   "generic-rest",
 ]);
-const modalities = new Set<NodeKind>(["text", "image", "video"]);
+const modalities = new Set<NodeKind>(["text", "image", "video", "audio"]);
 
 function boundedInteger(
   value: unknown,

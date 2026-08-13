@@ -25,19 +25,27 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createRuntimeId } from "../lib/runtime-id";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import type {
   AccountUser,
   Capability,
   InstalledPackage,
+  GithubCompatibilityReport,
   GithubPackageImportResult,
   MarketplacePackage,
+  MediaPluginType,
   NodeKind,
   WorkflowMarketplaceItem,
 } from "../types";
 import { skillManifestFromMarkdown } from "../lib/skill-markdown";
 import { packageInstallStatus } from "../lib/package-install-status";
+import {
+  MEDIA_PLUGIN_TYPES,
+  mediaPluginTypes,
+  normalizeMediaPluginTypes,
+} from "../lib/media-plugin";
 import { useAppDialog } from "./app-dialog";
 import { SchemaOptionBuilder } from "./schema-option-builder";
 
@@ -137,6 +145,7 @@ const starterManifest = `{
   "version": "1.0.0",
   "description": "插件功能说明",
   "type": "plugin",
+  "assetTypes": ["image", "video", "audio"],
   "access": {
     "scope": "personal"
   },
@@ -168,6 +177,8 @@ export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
   const [skillDialog, setSkillDialog] = useState<Capability | "new" | null>(
     null,
   );
+  const [skillDialogTargetPackageId, setSkillDialogTargetPackageId] =
+    useState<string | null>(null);
   const [sandbox, setSandbox] = useState<{
     title: string;
     url: string;
@@ -260,7 +271,10 @@ export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
             type="button"
             className="secondary-button"
             title="创建私有或共享 Skill"
-            onClick={() => setSkillDialog("new")}
+            onClick={() => {
+              setSkillDialogTargetPackageId(null);
+              setSkillDialog("new");
+            }}
           >
             <Code2 size={16} /> 创建 Skill
           </button>
@@ -300,6 +314,12 @@ export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
             (candidate) => candidate.packageId === item.id,
           );
           if (capability) {
+            setSkillDialogTargetPackageId(
+              item.availabilitySource === "added" &&
+                user.platformRole === "system_admin"
+                ? item.id
+                : null,
+            );
             setSkillDialog(capability);
             return;
           }
@@ -363,10 +383,16 @@ export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
           initial={skillDialog === "new" ? undefined : skillDialog}
           packages={os.packages}
           isSystemAdmin={user.platformRole === "system_admin"}
-          onClose={() => setSkillDialog(null)}
-          onInstall={async (raw) => {
-            const result = await os.installPackage(raw);
+          onClose={() => {
             setSkillDialog(null);
+            setSkillDialogTargetPackageId(null);
+          }}
+          onInstall={async (raw) => {
+            const result = await os.installPackage(raw, {
+              targetPackageId: skillDialogTargetPackageId ?? undefined,
+            });
+            setSkillDialog(null);
+            setSkillDialogTargetPackageId(null);
             await refreshMarketplace();
             showNotice(
               `${result.package.name} 已${result.action === "installed" ? "创建" : "更新"}，节点选项与模型兼容规则已同步。`,
@@ -382,6 +408,109 @@ export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
         />
       )}
     </section>
+  );
+}
+
+const mediaPluginTypeLabel: Record<MediaPluginType, string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+};
+
+function PluginCardQuickSettings({
+  item,
+  disabled,
+  onSave,
+}: {
+  item: InstalledPackage;
+  disabled: boolean;
+  onSave: (settings: {
+    accessScope?: "personal" | "marketplace";
+    assetTypes?: MediaPluginType[];
+  }) => Promise<boolean>;
+}) {
+  const [accessScope, setAccessScope] = useState<"personal" | "marketplace">(
+    item.accessScope === "marketplace" ? "marketplace" : "personal",
+  );
+  const [assetTypes, setAssetTypes] = useState<MediaPluginType[]>(() =>
+    mediaPluginTypes(item),
+  );
+  const [saving, setSaving] = useState(false);
+
+  async function changeAccessScope(nextScope: "personal" | "marketplace") {
+    if (nextScope === accessScope) return;
+    const previousScope = accessScope;
+    setAccessScope(nextScope);
+    setSaving(true);
+    const saved = await onSave({ accessScope: nextScope });
+    if (!saved) setAccessScope(previousScope);
+    setSaving(false);
+  }
+
+  async function toggleAssetType(type: MediaPluginType) {
+    const previousTypes = assetTypes;
+    const nextTypes = assetTypes.includes(type)
+      ? assetTypes.filter((value) => value !== type)
+      : MEDIA_PLUGIN_TYPES.filter(
+          (value) => value === type || assetTypes.includes(value),
+        );
+    setAssetTypes(nextTypes);
+    setSaving(true);
+    const saved = await onSave({ assetTypes: nextTypes });
+    if (!saved) setAssetTypes(previousTypes);
+    setSaving(false);
+  }
+
+  const isDisabled = disabled || saving;
+
+  return (
+    <div className="package-card-quick-settings">
+      <label className="package-card-quick-field">
+        <span>可见范围</span>
+        <select
+          value={accessScope}
+          disabled={isDisabled}
+          onChange={(event) =>
+            void changeAccessScope(
+              event.target.value as "personal" | "marketplace",
+            )
+          }
+        >
+          <option value="personal">私有</option>
+          <option value="marketplace">共享</option>
+        </select>
+      </label>
+      <div className="package-card-quick-types">
+        <span>适用类型</span>
+        <details className="package-card-quick-type-dropdown">
+          <summary aria-label="选择适用类型">
+            {assetTypes.length
+              ? assetTypes.map((type) => mediaPluginTypeLabel[type]).join("、")
+              : "未选择"}
+          </summary>
+          <div className="package-card-quick-type-options" aria-label="适用类型">
+            {MEDIA_PLUGIN_TYPES.map((type) => {
+              const selected = assetTypes.includes(type);
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  className={selected ? "is-active" : ""}
+                  role="checkbox"
+                  aria-checked={selected}
+                  disabled={isDisabled}
+                  onClick={() => void toggleAssetType(type)}
+                >
+                  <span>{selected ? <Check size={11} /> : null}</span>
+                  {mediaPluginTypeLabel[type]}
+                </button>
+              );
+            })}
+          </div>
+        </details>
+      </div>
+      {saving && <LoaderCircle className="spin" size={14} aria-label="保存中" />}
+    </div>
   );
 }
 
@@ -507,49 +636,98 @@ function MarketplacePanel({
     }
   }
 
-  async function installPackage(item: MarketplacePackage) {
+  async function addMarketplacePackage(item: MarketplacePackage) {
     setBusyId(item.id);
     try {
-      const result = await os.installPackage(
-        JSON.stringify({
-          ...item.manifest,
-          access: { scope: "personal" },
-        }),
-      );
+      if (item.packageType === "skill") {
+        const result = await os.addPackageToAvailable(item.id);
+        await onRefresh();
+        onNotice(`${result.package.name} 已添加到可用 Skill。`);
+        return;
+      }
+      const result = await os.installPackage(JSON.stringify(item.manifest));
       await onRefresh();
-      onNotice(`${result.package.name} 已添加到可用能力。`);
+      onNotice(`${result.package.name} 已安装。`);
     } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "安装失败", "error");
+      onNotice(
+        reason instanceof Error
+          ? reason.message
+          : item.packageType === "skill"
+            ? "添加到可用 Skill 失败"
+            : "安装失败",
+        "error",
+      );
     } finally {
       setBusyId("");
     }
   }
 
-  async function changePluginVisibility(item: InstalledPackage) {
-    const nextScope =
-      item.accessScope === "personal" ? "marketplace" : "personal";
-    const nextLabel = nextScope === "personal" ? "私有" : "共享";
+  async function removeAvailableSkill(item: InstalledPackage) {
     const confirmed = await dialog.confirm(
-      nextScope === "personal"
-        ? `将“${item.name}”改为私有插件？修改后，其他用户将无法继续从共享插件中添加它。`
-        : `将“${item.name}”改为共享插件？修改后，所有用户都可以在共享插件中看到并添加它。`,
+      `从你的“可用 Skill”中移除“${item.name}”？共享 Skill 本身不会被删除，也不会影响其他用户。`,
       {
-        title: "修改插件可见性",
-        confirmText: `改为${nextLabel}`,
+        title: "移除可用 Skill",
+        confirmText: "确认移除",
+        tone: "danger",
       },
     );
     if (!confirmed) return;
+
     setBusyId(item.id);
     try {
-      await os.setPackageAccessScope(item.id, nextScope);
+      const result = await os.removePackageFromAvailable(item.id);
       await onRefresh();
-      setSource(nextScope === "personal" ? "private" : "shared");
-      onNotice(`${item.name} 已修改为${nextLabel}插件。`);
+      onNotice(`${result.package.name} 已从你的可用 Skill 中移除。`);
     } catch (reason) {
       onNotice(
-        reason instanceof Error ? reason.message : "修改插件可见性失败",
+        reason instanceof Error ? reason.message : "移除可用 Skill 失败",
         "error",
       );
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function savePluginSettings(
+    item: InstalledPackage,
+    settings: {
+      accessScope?: "personal" | "marketplace";
+      assetTypes?: MediaPluginType[];
+    },
+  ) {
+    if (
+      settings.accessScope &&
+      settings.accessScope !== item.accessScope
+    ) {
+      const nextLabel =
+        settings.accessScope === "personal" ? "私有" : "共享";
+      const confirmed = await dialog.confirm(
+        `确认将“${item.name}”改为${nextLabel}插件？`,
+        {
+          title: "修改插件可见范围",
+          confirmText: `改为${nextLabel}`,
+        },
+      );
+      if (!confirmed) return false;
+    }
+
+    setBusyId(item.id);
+    try {
+      await os.updatePackageSettings(item.id, settings);
+      await onRefresh();
+      if (settings.accessScope && source !== "installed") {
+        setSource(
+          settings.accessScope === "personal" ? "private" : "shared",
+        );
+      }
+      onNotice(`${item.name} 的插件设置已保存。`);
+      return true;
+    } catch (reason) {
+      onNotice(
+        reason instanceof Error ? reason.message : "保存插件设置失败",
+        "error",
+      );
+      return false;
     } finally {
       setBusyId("");
     }
@@ -786,52 +964,83 @@ function MarketplacePanel({
                   <strong>{packageInstallStatus(item).label}</strong>
                   <span>{packageInstallStatus(item).detail}</span>
                 </div>
-                {item.canManage && (
+                {(item.canManage ||
+                  (item.packageType === "skill" &&
+                    item.availabilitySource === "added")) && (
                   <div className="package-manage-actions">
-                  <button
-                    type="button"
-                    className="secondary-button compact"
-                    disabled={busyId === item.id}
-                    onClick={() =>
-                      item.packageType === "skill"
-                        ? onEditSkill(item)
-                        : onEditPackage(item)
-                    }
-                  >
-                    <SquarePen size={14} />
-                    {item.packageType === "skill" ? "修改 Skill" : "修改插件"}
-                  </button>
-                  <button
-                    type="button"
-                    className="danger-text-button"
-                    disabled={busyId === item.id}
-                    onClick={async () => {
-                      if (!(await dialog.confirm(
-                        `删除“${item.name}”后，画布中的对应选项也会同步移除。`,
-                        {
-                          title: "删除扩展能力",
-                          confirmText: "确认删除",
-                          tone: "danger",
-                        },
-                      ))) return;
-                      setBusyId(item.id);
-                      try {
-                        await os.uninstallPackage(item.id);
-                        await onRefresh();
-                        onNotice(`${item.name} 已删除。`);
-                      } catch (reason) {
-                        onNotice(
-                          reason instanceof Error ? reason.message : "删除失败",
-                          "error",
-                        );
-                      } finally {
-                        setBusyId("");
-                      }
-                    }}
-                  >
-                    <Trash2 size={14} />
-                    删除
-                  </button>
+                    {item.canManage && (
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        disabled={busyId === item.id}
+                        onClick={() =>
+                          item.packageType === "skill"
+                            ? onEditSkill(item)
+                            : onEditPackage(item)
+                        }
+                      >
+                        <SquarePen size={14} />
+                        {item.packageType === "skill"
+                          ? "修改 Skill"
+                          : "修改插件"}
+                      </button>
+                    )}
+                    {item.canManage && item.packageType === "plugin" && (
+                      <PluginCardQuickSettings
+                        key={`${item.id}:${item.accessScope}:${mediaPluginTypes(item).join(",")}`}
+                        item={item}
+                        disabled={busyId === item.id}
+                        onSave={(settings) =>
+                          savePluginSettings(item, settings)
+                        }
+                      />
+                    )}
+                    {item.packageType === "skill" &&
+                    item.availabilitySource === "added" ? (
+                      <button
+                        type="button"
+                        className="danger-text-button"
+                        disabled={busyId === item.id}
+                        onClick={() => void removeAvailableSkill(item)}
+                      >
+                        <Trash2 size={14} />
+                        移除
+                      </button>
+                    ) : item.canManage ? (
+                      <button
+                        type="button"
+                        className="danger-text-button"
+                        disabled={busyId === item.id}
+                        onClick={async () => {
+                          if (!(await dialog.confirm(
+                            `删除“${item.name}”后，画布中的对应选项也会同步移除。`,
+                            {
+                              title: "删除扩展能力",
+                              confirmText: "确认删除",
+                              tone: "danger",
+                            },
+                          ))) return;
+                          setBusyId(item.id);
+                          try {
+                            await os.uninstallPackage(item.id);
+                            await onRefresh();
+                            onNotice(`${item.name} 已删除。`);
+                          } catch (reason) {
+                            onNotice(
+                              reason instanceof Error
+                                ? reason.message
+                                : "删除失败",
+                              "error",
+                            );
+                          } finally {
+                            setBusyId("");
+                          }
+                        }}
+                      >
+                        <Trash2 size={14} />
+                        删除
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </footer>
@@ -867,19 +1076,25 @@ function MarketplacePanel({
               </div>
               {item.canManage && item.packageType === "plugin" && (
                 <footer>
-                  <button
-                    type="button"
-                    className="secondary-button compact"
-                    disabled={busyId === item.id}
-                    onClick={() => void changePluginVisibility(item)}
-                  >
-                    {busyId === item.id ? (
-                      <LoaderCircle size={14} className="spin" />
-                    ) : (
+                  <div className="package-manage-actions">
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      disabled={busyId === item.id}
+                      onClick={() => onEditPackage(item)}
+                    >
                       <SquarePen size={14} />
-                    )}
-                    修改
-                  </button>
+                      修改
+                    </button>
+                    <PluginCardQuickSettings
+                      key={`${item.id}:${item.accessScope}:${mediaPluginTypes(item).join(",")}`}
+                      item={item}
+                      disabled={busyId === item.id}
+                      onSave={(settings) =>
+                        savePluginSettings(item, settings)
+                      }
+                    />
+                  </div>
                 </footer>
               )}
             </article>
@@ -935,13 +1150,11 @@ function MarketplacePanel({
                       type="button"
                       className="secondary-button compact"
                       disabled={busyId === item.id}
-                      onClick={() => {
-                        if (item.packageType === "plugin") {
-                          void changePluginVisibility(item);
-                          return;
-                        }
-                        onEditSkill(item);
-                      }}
+                      onClick={() =>
+                        item.packageType === "plugin"
+                          ? onEditPackage(item)
+                          : onEditSkill(item)
+                      }
                     >
                       {busyId === item.id ? (
                         <LoaderCircle size={14} className="spin" />
@@ -950,6 +1163,16 @@ function MarketplacePanel({
                       )}
                       修改
                     </button>
+                    {item.packageType === "plugin" && (
+                      <PluginCardQuickSettings
+                        key={`${item.id}:${item.accessScope}:${mediaPluginTypes(item).join(",")}`}
+                        item={item}
+                        disabled={busyId === item.id}
+                        onSave={(settings) =>
+                          savePluginSettings(item, settings)
+                        }
+                      />
+                    )}
                     {item.packageType === "skill" && (
                       <button
                         type="button"
@@ -1004,14 +1227,24 @@ function MarketplacePanel({
                   type="button"
                   className="primary-button compact"
                   disabled={item.installed || busyId === item.id}
-                  onClick={() => void installPackage(item)}
+                  onClick={() => void addMarketplacePackage(item)}
                 >
                   {busyId === item.id ? (
                     <LoaderCircle size={14} className="spin" />
                   ) : (
-                    <Download size={14} />
+                    item.packageType === "skill" ? (
+                      <PackagePlus size={14} />
+                    ) : (
+                      <Download size={14} />
+                    )
                   )}
-                  {item.installed ? "已安装" : "安装"}
+                  {item.installed
+                    ? item.packageType === "skill"
+                      ? "已添加"
+                      : "已安装"
+                    : item.packageType === "skill"
+                      ? "添加到可用 Skill"
+                      : "安装"}
                 </button>
                 {isSystemAdmin && item.packageType === "skill" && (
                   <button
@@ -1370,6 +1603,9 @@ function PackageDialog({
       2,
     );
   });
+  const [assetTypes, setAssetTypes] = useState<MediaPluginType[]>(() =>
+    normalizeMediaPluginTypes(initial?.manifest?.assetTypes),
+  );
   const [accessScope, setAccessScope] = useState<
     "personal" | "marketplace"
   >(
@@ -1380,18 +1616,44 @@ function PackageDialog({
   const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
   const [githubRef, setGithubRef] = useState("");
-  const [compatibility, setCompatibility] = useState<
-    Extract<
-      GithubPackageImportResult,
-      { status: "needs_adaptation" }
-    >["compatibility"] | null
-  >(null);
+  const [compatibility, setCompatibility] =
+    useState<GithubCompatibilityReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [installPhase, setInstallPhase] = useState<
     "idle" | "analyzing" | "downloading" | "verifying" | "building" | "complete" | "build_pending" | "failed"
   >("idle");
   const [installMessage, setInstallMessage] = useState("");
+  function replaceManifestRaw(nextRaw: string) {
+    setRaw(nextRaw);
+    try {
+      const parsed = JSON.parse(nextRaw) as Record<string, unknown>;
+      setAssetTypes(normalizeMediaPluginTypes(parsed.assetTypes));
+    } catch {
+      // Keep the last valid type selection while the user is editing JSON.
+    }
+  }
+
+  function toggleAssetType(type: MediaPluginType) {
+    setAssetTypes((current) => {
+      const next = current.includes(type)
+        ? current.filter((item) => item !== type)
+        : MEDIA_PLUGIN_TYPES.filter(
+            (item) => item === type || current.includes(item),
+          );
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed.type === "plugin") {
+          parsed.assetTypes = next;
+          setRaw(JSON.stringify(parsed, null, 2));
+        }
+      } catch {
+        // The selected values are still kept in state and are applied on submit.
+      }
+      return next;
+    });
+  }
+
   async function submit() {
     setBusy(true);
     setError("");
@@ -1423,6 +1685,11 @@ function PackageDialog({
       } else {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         parsed.access = { scope: accessScope };
+        if (parsed.type === "plugin") {
+          parsed.assetTypes = assetTypes;
+        } else {
+          delete parsed.assetTypes;
+        }
         result = await onInstall({
           kind: "manifest",
           raw: JSON.stringify(parsed, null, 2),
@@ -1434,15 +1701,17 @@ function PackageDialog({
         setInstallPhase("failed");
         setInstallMessage("仓库需要完成插件适配后才能安装");
       } else if (result.source?.executionReady === false) {
+        setCompatibility(result.source.compatibility ?? null);
         setInstallPhase("build_pending");
         setInstallMessage(
-          result.source.runtimePreparation?.reason
-            ? `构建未完成：${result.source.runtimePreparation.reason}`
-            : "源码已安全导入，运行环境仍需继续构建",
+          `${result.source.compatibility?.projectTypeLabel ?? "源码项目"}已导入；源码和元数据已保存，配置隔离运行环境后即可启用`,
         );
       } else {
+        setCompatibility(result.source?.compatibility ?? null);
         setInstallPhase("complete");
-        setInstallMessage(`${result.package.name} 已安装完成，可以添加到画布`);
+        setInstallMessage(
+          `${result.package.name} 已安装完成${result.source?.compatibility?.projectTypeLabel ? `（已识别为${result.source.compatibility.projectTypeLabel}）` : ""}，可以添加到画布`,
+        );
       }
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "安装失败";
@@ -1481,9 +1750,9 @@ function PackageDialog({
       manifest.access = {
         scope: accessScope,
       };
-      setRaw(JSON.stringify(manifest, null, 2));
+      replaceManifestRaw(JSON.stringify(manifest, null, 2));
     } else {
-      setRaw(content);
+      replaceManifestRaw(content);
     }
     setMode("manifest");
     setError("");
@@ -1495,6 +1764,16 @@ function PackageDialog({
       : mode === "github"
         ? Boolean(githubUrl.trim())
         : Boolean(raw.trim());
+
+  const manifestIsPlugin = useMemo(() => {
+    if (mode !== "manifest") return false;
+    try {
+      const parsed = JSON.parse(raw) as { type?: unknown };
+      return parsed.type === "plugin";
+    } catch {
+      return initial?.packageType === "plugin";
+    }
+  }, [initial?.packageType, mode, raw]);
 
   return (
     <div className="extension-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1520,7 +1799,7 @@ function PackageDialog({
                     installPhase === "verifying" ? "正在安全校验" :
                       installPhase === "building" ? "正在构建运行环境" :
                         installPhase === "complete" ? "安装完成" :
-                          installPhase === "build_pending" ? "等待构建完成" : "安装失败"
+                          installPhase === "build_pending" ? "源码已导入" : "安装失败"
               }</h3>
               <div className="package-progress-steps">
                 {[
@@ -1562,7 +1841,7 @@ function PackageDialog({
               {initial ? `修改 ${initial.name}` : "导入 XiaoLuo Package"}
             </h2>
             <p>
-              可上传标准压缩包，或从 GitHub Release / 仓库按 Commit 锁定导入。
+              支持标准 Package，也支持直接导入普通开源 ZIP、GitHub 仓库与 Release。
             </p>
           </div>
           <button type="button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
@@ -1641,6 +1920,34 @@ function PackageDialog({
               </option>
             </select>
           </label>
+          {manifestIsPlugin && (
+            <div className="package-asset-types">
+              <span>适用类型</span>
+              <div className="package-asset-type-options" aria-label="插件适用类型">
+                {(
+                  [
+                    ["image", "图片"],
+                    ["video", "视频"],
+                    ["audio", "音频"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={assetTypes.includes(value)}
+                    className={assetTypes.includes(value) ? "is-active" : ""}
+                    onClick={() => toggleAssetType(value)}
+                  >
+                    <span aria-hidden="true">
+                      {assetTypes.includes(value) ? <Check size={13} /> : null}
+                    </span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
         {mode === "archive" && (
           <div className="package-source-panel package-archive-panel">
@@ -1648,7 +1955,7 @@ function PackageDialog({
               <span>本地文件</span>
               <div>
                 <h3>上传插件压缩包</h3>
-                <p>系统会先完成完整性与安全校验，再添加到当前账号。</p>
+                <p>有无 XiaoLuo Manifest 均可；系统会识别项目类型并自动生成内部清单。</p>
               </div>
             </div>
             <label className="package-file-button is-large">
@@ -1673,9 +1980,9 @@ function PackageDialog({
               />
             </label>
             <div className="package-format-guide">
-              <b>标准包结构</b>
-              <code>xiaoluo.plugin.json</code>
-              <span>可包含 dist、runtime、schemas、assets、checksums.json 和签名文件。</span>
+              <b>通用源码安装</b>
+              <code>Manifest 可选</code>
+              <span>Skill、静态站点和 Vite 前端会自动适配；后端与 CLI 源码先安全导入，再进入隔离运行配置。</span>
             </div>
           </div>
         )}
@@ -1704,7 +2011,7 @@ function PackageDialog({
             </label>
             <p className="package-source-help">
               安装器优先读取 Release 中的 .xlpkg；否则锁定仓库 Commit 并查找
-              xiaoluo.plugin.json。没有清单时会自动生成适配包装；需要构建的项目
+              xiaoluo.plugin.json。没有清单时会自动识别并生成适配包装；需要构建的项目
               会进入隔离构建准备状态，不会放进主服务进程执行。
             </p>
           </div>
@@ -1740,7 +2047,7 @@ function PackageDialog({
               <button
                 type="button"
                 className="secondary-button"
-                onClick={() => setRaw(starterManifest)}
+                onClick={() => replaceManifestRaw(starterManifest)}
               >
                 填入插件清单模板
               </button>
@@ -1754,7 +2061,7 @@ function PackageDialog({
             <textarea
               className="manifest-editor"
               value={raw}
-              onChange={(event) => setRaw(event.target.value)}
+              onChange={(event) => replaceManifestRaw(event.target.value)}
               placeholder="将 manifest JSON 粘贴到这里…"
               spellCheck={false}
             />
@@ -1766,7 +2073,7 @@ function PackageDialog({
             <header>
               <CircleAlert size={17} />
               <div>
-                <b>仓库已分析，需要适配后才能安装</b>
+                <b>源码识别结果：{compatibility.projectTypeLabel}</b>
                 <small>
                   {compatibility.repository} · {compatibility.commit.slice(0, 12)}
                 </small>
@@ -1782,8 +2089,8 @@ function PackageDialog({
               {compatibility.issues.map((item) => <li key={item}>{item}</li>)}
             </ul>
             <p>
-              补充 <code>xiaoluo.plugin.json</code>，或在 GitHub Release
-              上传标准 <code>.xlpkg</code> 后可直接重试。
+              <code>xiaoluo.plugin.json</code> 是可选增强文件；静态前端与 Skill
+              可自动启用，其他运行时会在隔离环境配置完成后启用。
             </p>
           </div>
         )}
@@ -2131,7 +2438,7 @@ function SandboxDialog({
   const [bridgeState, setBridgeState] = useState("等待插件握手");
   const [frameFailed, setFrameFailed] = useState(false);
   const [frameVersion, setFrameVersion] = useState(0);
-  const bridgeToken = useRef(crypto.randomUUID());
+  const bridgeToken = useRef(createRuntimeId());
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {

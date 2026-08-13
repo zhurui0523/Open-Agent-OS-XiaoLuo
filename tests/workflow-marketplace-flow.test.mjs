@@ -34,7 +34,15 @@ test("defines material, plugin, Skill execution, and result node contracts", asy
     parameters: { nodeRole: "result", resultSlot: true },
   };
 
-  assert.deepEqual(portsForNode(material, "input"), []);
+  assert.deepEqual(portsForNode(material, "input"), [
+    {
+      id: "material_input",
+      label: "素材输入",
+      direction: "input",
+      dataTypes: ["image", "video", "audio", "document", "asset"],
+      cardinality: "many",
+    },
+  ]);
   assert.equal(portsForNode(material, "output")[0].id, "material");
   assert.equal(portsForNode(plugin, "input")[0].cardinality, "many");
   assert.equal(portsForNode(plugin, "output")[0].cardinality, "many");

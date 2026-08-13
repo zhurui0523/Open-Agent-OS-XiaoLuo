@@ -1,8 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { getDb } from "../../db";
 import {
   assets,
   assetVersions,
+  users,
+  workspaces,
 } from "../../db/schema";
 import type {
   AssetKind,
@@ -15,11 +17,52 @@ import {
 } from "./file-formats";
 import { serverRuntimeConfig } from "./server-runtime-config";
 import { mysqlNow } from "./mysql";
+import { resolveStorageQuotaBytes } from "./storage-quota";
 
 type Database = Awaited<ReturnType<typeof getDb>>;
 type AssetRow = typeof assets.$inferSelect;
 
 export const MAX_FILE_BYTES = 100 * 1024 * 1024;
+
+async function assertWorkspaceStorageAvailable(
+  db: Database,
+  workspaceId: string,
+  incomingBytes: number,
+  replacedBytes = 0,
+) {
+  const [workspace] = await db
+    .select({
+      ownerId: workspaces.ownerId,
+      storageQuotaBytes: users.storageQuotaBytes,
+    })
+    .from(workspaces)
+    .innerJoin(users, eq(users.id, workspaces.ownerId))
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!workspace) throw new Error("工作区不存在");
+
+  const [usage] = await db
+    .select({
+      usedBytes: sql<number | string>`COALESCE(SUM(${assets.size}), 0)`,
+    })
+    .from(assets)
+    .innerJoin(workspaces, eq(workspaces.id, assets.workspaceId))
+    .where(
+      and(
+        eq(workspaces.ownerId, workspace.ownerId),
+        isNull(assets.trashedAt),
+      ),
+    );
+  const usedBytes = Number(usage?.usedBytes ?? 0);
+  const quotaBytes = resolveStorageQuotaBytes(workspace.storageQuotaBytes);
+  const projectedBytes = Math.max(0, usedBytes - replacedBytes) + incomingBytes;
+  if (projectedBytes > quotaBytes) {
+    const availableBytes = Math.max(0, quotaBytes - usedBytes + replacedBytes);
+    throw new Error(
+      `存储空间不足，当前还可使用 ${(availableBytes / 1024 ** 2).toFixed(1)} MB`,
+    );
+  }
+}
 
 function startsWith(bytes: Uint8Array, signature: number[], offset = 0) {
   return signature.every((value, index) => bytes[offset + index] === value);
@@ -531,7 +574,8 @@ export async function getFileBucket(): Promise<FileBucket> {
       method: input.method,
       headers,
       body: input.body,
-      signal: AbortSignal.timeout(8_000),
+      // 上传大文件（如音频结果）耗时较长，统一 8 秒会误断；带 body 的上传给 60 秒
+      signal: AbortSignal.timeout(input.body ? 60_000 : 8_000),
     });
   }
 
@@ -729,6 +773,11 @@ export async function storeAsset(
   if (input.bytes.byteLength > MAX_FILE_BYTES) {
     throw new Error("单个文件暂时不能超过 100 MB");
   }
+  await assertWorkspaceStorageAvailable(
+    db,
+    input.workspaceId,
+    input.bytes.byteLength,
+  );
   const now = mysqlNow();
   const hash = await sha256Hex(input.bytes);
   const [existingBlob] = await db
@@ -819,6 +868,12 @@ export async function storeAssetVersion(
   if (input.bytes.byteLength > MAX_FILE_BYTES) {
     throw new Error("单个文件暂时不能超过 100 MB");
   }
+  await assertWorkspaceStorageAvailable(
+    db,
+    asset.workspaceId,
+    input.bytes.byteLength,
+    asset.size,
+  );
   const now = mysqlNow();
   const hash = await sha256Hex(input.bytes);
   const [existingBlob] = await db

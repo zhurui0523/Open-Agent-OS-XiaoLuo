@@ -73,7 +73,11 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
   const nextId = useRef(1);
   const [requests, setRequests] = useState<DialogRequest[]>([]);
   const active = requests[0] ?? null;
-  const [inputValue, setInputValue] = useState("");
+  const [inputState, setInputState] = useState({ requestId: 0, value: "" });
+  const inputValue =
+    active && inputState.requestId === active.id
+      ? inputState.value
+      : (active?.options.defaultValue ?? "");
 
   const enqueue = useCallback(
     <T,>(
@@ -89,7 +93,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
             kind,
             message,
             options,
-            resolve,
+            resolve: (value: unknown) => resolve(value as T),
           },
         ]);
       }),
@@ -107,10 +111,6 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
     }),
     [enqueue],
   );
-
-  useEffect(() => {
-    setInputValue(active?.options.defaultValue ?? "");
-  }, [active?.id, active?.options.defaultValue]);
 
   const finish = useCallback(
     (value: unknown) => {
@@ -196,7 +196,12 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   autoFocus
                   value={inputValue}
                   placeholder={active.options.placeholder}
-                  onChange={(event) => setInputValue(event.target.value)}
+                  onChange={(event) =>
+                    setInputState({
+                      requestId: active.id,
+                      value: event.target.value,
+                    })
+                  }
                 />
               </label>
             )}

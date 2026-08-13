@@ -1,4 +1,8 @@
-import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
+import type {
+  PoolConnection,
+  ResultSetHeader,
+  RowDataPacket,
+} from "mysql2/promise";
 import type { CanvasEdge, CanvasGroup, CanvasNode } from "../types";
 import { mysqlRows, mysqlTransaction } from "./mysql";
 import { normalizeEdgePorts } from "./node-ports";
@@ -93,43 +97,152 @@ function timestamp(value: Date | string) {
   return Number.isNaN(date.valueOf()) ? String(value) : date.toISOString();
 }
 
+interface EnterpriseHomeRow extends RowDataPacket {
+  workspaceId: string;
+}
+
+interface WorkspaceHomeRow extends RowDataPacket {
+  projectId: string | null;
+  projectName: string | null;
+  canvasId: string | null;
+}
+
+// 在指定工作区内解析 home：复用已有项目与画布，缺失时按需创建。
+async function ensureHomeInWorkspace(
+  connection: PoolConnection,
+  workspaceId: string,
+  userId: string,
+): Promise<UserHome> {
+  const [homeRows] = await connection.execute<WorkspaceHomeRow[]>(
+    `SELECT
+       p.id AS projectId,
+       p.name AS projectName,
+       c.id AS canvasId
+     FROM xiaoluo_v2_projects p
+     LEFT JOIN xiaoluo_v2_canvases c
+       ON c.project_id = p.id
+      AND c.deleted_at IS NULL
+      AND c.archived_at IS NULL
+     WHERE p.workspace_id = ?
+       AND p.status = 'active'
+     ORDER BY p.created_at, p.id, c.created_at, c.id
+     LIMIT 1`,
+    [workspaceId],
+  );
+  const existing = homeRows[0];
+  if (existing?.projectId && existing.projectName && existing.canvasId) {
+    return {
+      workspaceId,
+      projectId: existing.projectId,
+      projectName: existing.projectName,
+      canvasId: existing.canvasId,
+    };
+  }
+
+  let projectId = existing?.projectId ?? null;
+  let projectName = existing?.projectName ?? null;
+  if (!projectId) {
+    projectId = crypto.randomUUID();
+    projectName = "我的第一个项目",
+    await connection.execute(
+      `INSERT INTO xiaoluo_v2_projects
+        (id, workspace_id, name, description, created_by)
+       VALUES (?, ?, ?, '', ?)`,
+      [projectId, workspaceId, projectName, userId],
+    );
+  }
+
+  let canvasId = existing?.canvasId ?? null;
+  if (!canvasId) {
+    canvasId = crypto.randomUUID();
+    await connection.execute(
+      `INSERT INTO xiaoluo_v2_canvases
+        (id, project_id, title, viewport_json, created_by)
+       VALUES (?, ?, '灵境画布', ?, ?)`,
+      [canvasId, projectId, JSON.stringify({ x: 0, y: 0, zoom: 100 }), userId],
+    );
+  }
+
+  if (!projectId || !projectName || !canvasId) {
+    throw new Error("无法初始化用户画布数据");
+  }
+  return { workspaceId, projectId, projectName, canvasId };
+}
+
 export async function ensureUserHome(
   userId: string,
   displayName: string,
 ): Promise<UserHome> {
-  const existing = await mysqlRows<HomeRow>(
-    `SELECT
-       w.id AS workspaceId,
-       p.id AS projectId,
-       p.name AS projectName,
-       c.id AS canvasId
-     FROM xiaoluo_v2_workspace_members wm
-     INNER JOIN xiaoluo_v2_workspaces w ON w.id = wm.workspace_id
-     LEFT JOIN xiaoluo_v2_projects p ON p.workspace_id = w.id
-     LEFT JOIN xiaoluo_v2_canvases c ON c.project_id = p.id AND c.deleted_at IS NULL
-     WHERE wm.user_id = ?
-       AND w.status = 'active'
-       AND (p.id IS NULL OR p.status = 'active')
-       AND (c.id IS NULL OR c.archived_at IS NULL)
-     ORDER BY w.created_at, p.created_at, c.created_at
-     LIMIT 1`,
-    [userId],
-  );
-  if (
-    existing[0]?.projectId &&
-    existing[0]?.projectName &&
-    existing[0]?.canvasId
-  ) {
-    return {
-      workspaceId: existing[0].workspaceId,
-      projectId: existing[0].projectId,
-      projectName: existing[0].projectName,
-      canvasId: existing[0].canvasId,
-    };
-  }
-
   return mysqlTransaction(async (connection) => {
-    let workspaceId = existing[0]?.workspaceId;
+    // Login and bootstrap can arrive concurrently. Lock the user before the
+    // second lookup so two requests cannot create two different personal
+    // workspaces for the same account.
+    await connection.execute(
+      `SELECT id FROM xiaoluo_v2_users WHERE id = ? FOR UPDATE`,
+      [userId],
+    );
+    // 企业成员共享企业管理员的空间，不存在自己的个人空间：
+    // home 直接落到企业工作区，绝不为其创建个人工作区。
+    const [enterpriseHomes] = await connection.execute<EnterpriseHomeRow[]>(
+      `SELECT o.workspace_id AS workspaceId
+       FROM xiaoluo_v2_organization_members om
+       INNER JOIN xiaoluo_v2_organizations o
+         ON o.id = om.organization_id
+        AND o.status = 'active'
+       WHERE om.user_id = ?
+         AND om.status = 'active'
+         AND om.role = 'member'
+         AND o.workspace_id IS NOT NULL
+       ORDER BY om.created_at, om.organization_id
+       LIMIT 1`,
+      [userId],
+    );
+    if (enterpriseHomes[0]) {
+      return ensureHomeInWorkspace(
+        connection,
+        enterpriseHomes[0].workspaceId,
+        userId,
+      );
+    }
+
+    const [homeRows] = await connection.execute<HomeRow[]>(
+      `SELECT
+         w.id AS workspaceId,
+         p.id AS projectId,
+         p.name AS projectName,
+         c.id AS canvasId
+       FROM xiaoluo_v2_workspace_members wm
+       INNER JOIN xiaoluo_v2_workspaces w ON w.id = wm.workspace_id
+       LEFT JOIN xiaoluo_v2_projects p
+         ON p.workspace_id = w.id
+        AND p.status = 'active'
+       LEFT JOIN xiaoluo_v2_canvases c
+         ON c.project_id = p.id
+        AND c.deleted_at IS NULL
+        AND c.archived_at IS NULL
+       WHERE wm.user_id = ?
+         AND w.owner_id = ?
+         AND w.status = 'active'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM xiaoluo_v2_organizations organization_home
+           WHERE organization_home.workspace_id = w.id
+         )
+       ORDER BY w.created_at, w.id, p.created_at, p.id, c.created_at, c.id
+       LIMIT 1`,
+      [userId, userId],
+    );
+    const existing = homeRows[0];
+    if (existing?.projectId && existing.projectName && existing.canvasId) {
+      return {
+        workspaceId: existing.workspaceId,
+        projectId: existing.projectId,
+        projectName: existing.projectName,
+        canvasId: existing.canvasId,
+      };
+    }
+
+    let workspaceId = existing?.workspaceId;
     if (!workspaceId) {
       workspaceId = crypto.randomUUID();
       await connection.execute(
@@ -144,39 +257,7 @@ export async function ensureUserHome(
       );
     }
 
-    let projectId = existing[0]?.projectId;
-    let projectName = existing[0]?.projectName;
-    if (!projectId) {
-      projectId = crypto.randomUUID();
-      projectName = "我的第一个项目";
-      await connection.execute(
-        `INSERT INTO xiaoluo_v2_projects
-          (id, workspace_id, name, description, created_by)
-         VALUES (?, ?, ?, '', ?)`,
-        [projectId, workspaceId, projectName, userId],
-      );
-    }
-
-    let canvasId = existing[0]?.canvasId;
-    if (!canvasId) {
-      canvasId = crypto.randomUUID();
-      await connection.execute(
-        `INSERT INTO xiaoluo_v2_canvases
-          (id, project_id, title, viewport_json, created_by)
-         VALUES (?, ?, '灵境画布', ?, ?)`,
-        [canvasId, projectId, JSON.stringify({ x: 0, y: 0, zoom: 100 }), userId],
-      );
-    }
-
-    if (
-      !workspaceId ||
-      !projectId ||
-      !projectName ||
-      !canvasId
-    ) {
-      throw new Error("无法初始化用户画布数据");
-    }
-    return { workspaceId, projectId, projectName, canvasId };
+    return ensureHomeInWorkspace(connection, workspaceId, userId);
   });
 }
 

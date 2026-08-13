@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import {
   assetRelations,
@@ -34,6 +34,12 @@ import { mysqlExecute, mysqlNow } from "./mysql";
 import { compileWorkflow } from "./workflow-kernel";
 import { artifactFormat, artifactName } from "./artifact-format";
 import { batchModeForNode, roleForNode } from "./node-role";
+import { packageAvailableToUser } from "./package-availability";
+import { sharedModelWorkspaceIds } from "./organization-workspaces";
+import {
+  canAccessRegistryResource,
+  modelAccessScope,
+} from "./registry-access";
 import {
   fetchExternalEndpoint,
   readResponseBytesLimited,
@@ -43,6 +49,10 @@ import {
   parseModelInputConstraints,
   validateModelInputAssets,
 } from "./model-input-constraints";
+import {
+  materializeKernelRunResultGraph,
+  persistKernelRunResultGraph,
+} from "./kernel-run-canvas-sync";
 
 type RunRow = typeof kernelRuns.$inferSelect;
 
@@ -65,6 +75,48 @@ async function appendRunEvent(
     payloadJson: JSON.stringify(payload),
     createdAt: mysqlNow(),
   });
+}
+
+const CANVAS_RESULT_PERSIST_RETRY_DELAYS = [0, 150, 500] as const;
+
+async function persistCompletedRunCanvasResults(run: RunRow) {
+  if (!run.canvasId) return null;
+  const db = await getDb();
+  const tasks = await db
+    .select()
+    .from(kernelTasks)
+    .where(eq(kernelTasks.runId, run.id));
+  let latestError: unknown;
+  for (let index = 0; index < CANVAS_RESULT_PERSIST_RETRY_DELAYS.length; index += 1) {
+    const delay = CANVAS_RESULT_PERSIST_RETRY_DELAYS[index];
+    if (delay) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    try {
+      return await persistKernelRunResultGraph({
+        runId: run.id,
+        canvasId: run.canvasId,
+        graphJson: run.graphJson,
+        tasks,
+      });
+    } catch (error) {
+      latestError = error;
+      if (index + 1 < CANVAS_RESULT_PERSIST_RETRY_DELAYS.length) {
+        await appendRunEvent(run.id, "run.canvas_results_persist_retry", {
+          attempt: index + 1,
+          error: error instanceof Error ? error.message : "Canvas result persistence failed",
+        }).catch(() => undefined);
+      }
+    }
+  }
+  await appendRunEvent(run.id, "run.canvas_results_persist_failed", {
+    attempts: CANVAS_RESULT_PERSIST_RETRY_DELAYS.length,
+    error:
+      latestError instanceof Error
+        ? latestError.message
+        : "Canvas result persistence failed",
+  }).catch(() => undefined);
+  return null;
 }
 
 async function desiredState(runId: string) {
@@ -167,7 +219,7 @@ async function executeQueuedTask(
       .where(
         and(
           eq(packageCapabilities.id, node.capabilityId),
-          eq(packages.workspaceId, run.workspaceId),
+          packageAvailableToUser(run.workspaceId, run.createdBy),
         ),
       )
       .limit(1);
@@ -197,21 +249,46 @@ async function executeQueuedTask(
           )
           .limit(1)
       : [];
-    const [model] =
+    let model: typeof modelConnections.$inferSelect | undefined;
+    if (
       role === "execution" &&
       node.modelId &&
       node.modelId !== "unconfigured"
-        ? await db
-            .select()
-            .from(modelConnections)
-            .where(
-              and(
-                eq(modelConnections.id, node.modelId),
-                eq(modelConnections.workspaceId, run.workspaceId),
-              ),
-            )
-            .limit(1)
-        : [];
+    ) {
+      const modelScopeWorkspaceIds = await sharedModelWorkspaceIds(
+        run.workspaceId,
+        run.createdBy,
+      );
+      const [modelRow] = await db
+        .select()
+        .from(modelConnections)
+        .where(
+          and(
+            eq(modelConnections.id, node.modelId),
+            inArray(modelConnections.workspaceId, modelScopeWorkspaceIds),
+          ),
+        )
+        .limit(1);
+      if (modelRow) {
+        let modelUiSchema: Record<string, unknown> = {};
+        try {
+          modelUiSchema = JSON.parse(
+            modelRow.uiSchemaJson,
+          ) as Record<string, unknown>;
+        } catch {
+          modelUiSchema = {};
+        }
+        if (
+          canAccessRegistryResource({
+            scope: modelAccessScope(modelUiSchema),
+            createdBy: modelRow.createdBy,
+            userId: run.createdBy,
+          })
+        ) {
+          model = modelRow;
+        }
+      }
+    }
     const pkg = role === "plugin" ? pluginPackage : capability?.pkg;
     if (role === "execution" && model?.enabled) {
       const inputValidation = validateModelInputAssets(
@@ -729,6 +806,9 @@ export async function dispatchKernelRun(runId: string, userId: string) {
     failure ? "run.failed" : "run.succeeded",
     failure ? { error: failure.message } : {},
   );
+  if (!failure) {
+    await persistCompletedRunCanvasResults(run);
+  }
   return readKernelRun(runId, userId);
 }
 
@@ -753,5 +833,35 @@ export async function readKernelRun(runId: string, userId: string) {
       .orderBy(runEvents.createdAt),
   ]);
   if (!run) throw new Response("Run not found", { status: 404 });
-  return { run, tasks, events };
+  let canvasRevision: number | null = null;
+  let canvasPersistenceError: string | null = null;
+  let canvasResultGraph: ReturnType<
+    typeof materializeKernelRunResultGraph
+  > | null = null;
+  if (run.status === "succeeded" && run.canvasId) {
+    canvasResultGraph = materializeKernelRunResultGraph({
+      runId: run.id,
+      graphJson: run.graphJson,
+      tasks,
+    });
+    try {
+      canvasRevision = await persistKernelRunResultGraph({
+        runId: run.id,
+        canvasId: run.canvasId,
+        graphJson: run.graphJson,
+        tasks,
+      });
+    } catch (error) {
+      canvasPersistenceError =
+        error instanceof Error ? error.message : "画布结果保存失败";
+    }
+  }
+  return {
+    run,
+    tasks,
+    events,
+    canvasRevision,
+    canvasPersistenceError,
+    canvasResultGraph,
+  };
 }

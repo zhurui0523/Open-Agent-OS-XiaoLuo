@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import {
   modelConnections,
+  packageAvailabilities,
   packageCapabilities,
   packages,
   registryEvents,
@@ -25,6 +26,8 @@ import {
   modelAccessScope,
   packageAccessScope,
 } from "../../../lib/registry-access";
+import { sharedModelWorkspaceIds } from "../../../lib/organization-workspaces";
+import { packageAvailableToUser } from "../../../lib/package-availability";
 
 function routeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Registry unavailable";
@@ -68,20 +71,30 @@ export async function GET(request: Request) {
       "view",
     );
     const access = await requireWorkspaceAccess(user.id, workspaceId, "view");
+    const modelScopeWorkspaceIds = await sharedModelWorkspaceIds(
+      workspaceId,
+      user.id,
+    );
     const ownershipContext = {
       userId: user.id,
       platformRole: user.platformRole,
       canManage: access.role === "owner" || access.role === "admin",
     };
     const db = await getDb();
-    const [packageRows, capabilityRows, modelRows, eventRows] =
+    const [
+      packageRows,
+      capabilityRows,
+      modelRows,
+      eventRows,
+      availabilityRows,
+    ] =
       await Promise.all([
         db
           .select()
           .from(packages)
           .where(
             and(
-              eq(packages.workspaceId, workspaceId),
+              packageAvailableToUser(workspaceId, user.id),
               ne(packages.lifecycleState, "uninstalled"),
             ),
           )
@@ -107,14 +120,14 @@ export async function GET(request: Request) {
           .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
           .where(
             and(
-              eq(packages.workspaceId, workspaceId),
+              packageAvailableToUser(workspaceId, user.id),
               ne(packages.lifecycleState, "uninstalled"),
             ),
           ),
         db
           .select()
           .from(modelConnections)
-          .where(eq(modelConnections.workspaceId, workspaceId))
+          .where(inArray(modelConnections.workspaceId, modelScopeWorkspaceIds))
           .orderBy(
             asc(modelConnections.priority),
             asc(modelConnections.createdAt),
@@ -126,7 +139,19 @@ export async function GET(request: Request) {
           .where(eq(registryEvents.workspaceId, workspaceId))
           .orderBy(desc(registryEvents.createdAt))
           .limit(20),
+        db
+          .select({ packageId: packageAvailabilities.packageId })
+          .from(packageAvailabilities)
+          .where(
+            and(
+              eq(packageAvailabilities.workspaceId, workspaceId),
+              eq(packageAvailabilities.userId, user.id),
+            ),
+          ),
       ]);
+    const addedPackageIds = new Set(
+      availabilityRows.map((row) => row.packageId),
+    );
     const visiblePackageRows = packageRows.filter((row) => {
       let manifest: XiaoLuoPackageManifest | null = null;
       try {
@@ -160,9 +185,20 @@ export async function GET(request: Request) {
     });
 
     return Response.json({
-      packages: visiblePackageRows.map((row) =>
-        serializePackage(row, ownershipContext),
-      ),
+      packages: visiblePackageRows.map((row) => {
+        const serialized = serializePackage(row, ownershipContext);
+        const availabilitySource = addedPackageIds.has(row.id)
+          ? ("added" as const)
+          : ("owned" as const);
+        return {
+          ...serialized,
+          availabilitySource,
+          canManage:
+            row.createdBy === user.id || row.workspaceId === workspaceId
+              ? serialized.canManage
+              : user.platformRole === "system_admin",
+        };
+      }),
       capabilities: capabilityRows.flatMap((row) => {
         const owner = visiblePackageMap.get(row.packageId);
         return owner
@@ -177,7 +213,12 @@ export async function GET(request: Request) {
           : [];
       }),
       models: visibleModelRows.map((row) =>
-        serializeModel(row, ownershipContext),
+        serializeModel(
+          row,
+          row.workspaceId === workspaceId
+            ? ownershipContext
+            : { ...ownershipContext, canManage: false },
+        ),
       ),
       modelProviders: modelProviderTemplates(visiblePackageRows),
       events: eventRows.map(serializeEvent),

@@ -20,6 +20,40 @@ export function needsDefaultSandboxPanel(payload: unknown) {
   );
 }
 
+export function needsHostedSandboxRuntime(payload: unknown) {
+  const manifest = packageManifestRecord(payload);
+  if (!manifest) return false;
+  const runtime = isRecord(manifest.runtime) ? manifest.runtime : {};
+  if (runtime.type !== "sandbox-ui") return false;
+  const entry = typeof runtime.entry === "string" ? runtime.entry.trim() : "";
+  if (entry.startsWith("/api/v2/packages/runtime/static/")) return false;
+  try {
+    return new URL(entry).protocol !== "https:";
+  } catch {
+    return true;
+  }
+}
+
+export function withHostedSandboxRuntime(input: {
+  payload: unknown;
+  runtimeEntry: string;
+}) {
+  const root = isRecord(input.payload) ? input.payload : {};
+  const manifest = packageManifestRecord(root);
+  if (!manifest) throw new Error("Package Manifest 必须是 JSON 对象");
+  const adaptedManifest = {
+    ...manifest,
+    runtime: {
+      ...(isRecord(manifest.runtime) ? manifest.runtime : {}),
+      type: "sandbox-ui",
+      entry: input.runtimeEntry,
+    },
+  };
+  return isRecord(root.manifest)
+    ? { ...root, manifest: adaptedManifest }
+    : adaptedManifest;
+}
+
 export function withDefaultSandboxPanel(input: {
   payload: unknown;
   runtimeEntry: string;

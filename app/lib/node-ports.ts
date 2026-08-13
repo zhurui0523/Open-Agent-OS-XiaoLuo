@@ -5,12 +5,23 @@ import type {
   PortDataType,
 } from "../types";
 import { roleForNode } from "./node-role.ts";
+import { normalizeModelInputConstraints } from "./model-input-constraints.ts";
 
 const REFERENCE_ASSET_TYPES: PortDataType[] = [
   "image",
   "video",
   "audio",
   "document",
+];
+
+const PLUGIN_REFERENCE_TYPES: PortDataType[] = [
+  "image",
+  "video",
+  "audio",
+  "document",
+  "asset",
+  "asset_list",
+  "collection",
 ];
 
 export const DEFAULT_NODE_PORTS: Record<CanvasNode["kind"], NodePort[]> = {
@@ -133,6 +144,13 @@ function rolePorts(
   if (role === "material") {
     return [
       {
+        id: "material_input",
+        label: "素材输入",
+        direction: "input",
+        dataTypes: ["image", "video", "audio", "document", "asset"],
+        cardinality: "many",
+      },
+      {
         id: "material",
         label: "素材",
         direction: "output",
@@ -145,10 +163,17 @@ function rolePorts(
     if (hasSnapshotPorts) return null;
     return [
       {
-        id: "materials",
-        label: "批量素材",
+        id: "prompt",
+        label: "文本",
         direction: "input",
-        dataTypes: ALL_CONTENT_TYPES,
+        dataTypes: ["text"],
+        cardinality: "many",
+      },
+      {
+        id: "materials",
+        label: "多媒体参考",
+        direction: "input",
+        dataTypes: [...PLUGIN_REFERENCE_TYPES],
         cardinality: "many",
       },
       {
@@ -204,9 +229,24 @@ function snapshotPorts(node: PortAwareNode) {
 }
 
 function withReferenceAssetPort(node: PortAwareNode, ports: NodePort[]) {
+  if (roleForNode(node) !== "execution" || node.kind === "document") {
+    return ports;
+  }
+
+  // 仅音乐节点：默认不提供参考素材端口（连线随端口失效而不再渲染），约束快照明确支持时才保留；其他节点不受影响
+  const snapshot = node.parameters?.inputConstraints;
+  const referenceAllowed =
+    Boolean(snapshot) &&
+    typeof snapshot === "object" &&
+    !Array.isArray(snapshot) &&
+    normalizeModelInputConstraints(snapshot, node.kind).maxTotal > 0;
+  if (node.kind === "audio" && !referenceAllowed) {
+    return ports.filter(
+      (port) => !(port.direction === "input" && port.id === "reference"),
+    );
+  }
+
   if (
-    roleForNode(node) !== "execution" ||
-    node.kind === "document" ||
     ports.some(
       (port) => port.direction === "input" && port.id === "reference",
     )
@@ -230,6 +270,76 @@ function withReferenceAssetPort(node: PortAwareNode, ports: NodePort[]) {
   ];
 }
 
+/**
+ * Every canvas plugin exposes two stable inputs even when the package ships
+ * its own capability port snapshot: blue `prompt` for text and green
+ * `materials` for image/video/audio/document references. Package-defined
+ * ports remain intact and legacy `materials`/`reference` edges keep working.
+ */
+function withPluginReferencePort(
+  node: PortAwareNode,
+  ports: NodePort[],
+): NodePort[] {
+  if (roleForNode(node) !== "plugin") return ports;
+
+  let resolved = ports.map((port) =>
+    port.direction === "input" &&
+    (port.id === "materials" || port.id === "reference")
+      ? {
+          ...port,
+          label: "多媒体参考",
+          dataTypes: [...PLUGIN_REFERENCE_TYPES],
+          cardinality: "many" as const,
+          maxConnections: undefined,
+        }
+      : port,
+  );
+
+  const hasTextInput = resolved.some(
+    (port) =>
+      port.direction === "input" &&
+      port.dataTypes.includes("text"),
+  );
+  const hasReferenceInput = resolved.some(
+    (port) =>
+      port.direction === "input" &&
+      (port.id === "materials" || port.id === "reference"),
+  );
+  const additions: NodePort[] = [];
+  if (!hasTextInput) {
+    additions.push({
+      id: resolved.some((port) => port.id === "prompt")
+        ? "plugin_text"
+        : "prompt",
+      label: "文本",
+      direction: "input",
+      dataTypes: ["text"],
+      cardinality: "many",
+    });
+  }
+  if (!hasReferenceInput) {
+    additions.push({
+      id: "materials",
+      label: "多媒体参考",
+      direction: "input",
+      dataTypes: [...PLUGIN_REFERENCE_TYPES],
+      cardinality: "many",
+    });
+  }
+  if (!additions.length) return resolved;
+
+  const firstOutput = resolved.findIndex(
+    (port) => port.direction === "output",
+  );
+  if (firstOutput < 0) return [...resolved, ...additions];
+  resolved = [
+    ...resolved.slice(0, firstOutput),
+    ...additions,
+    ...resolved.slice(firstOutput),
+  ];
+  return resolved;
+}
+
 export function portsForNode(
   node: PortAwareNode,
   direction?: NodePort["direction"],
@@ -248,7 +358,8 @@ export function portsForNode(
             ? { ...port, cardinality: port.cardinality ?? "many" }
             : port,
         ));
-  const withReferences = withReferenceAssetPort(node, resolved);
+  const withPluginReferences = withPluginReferencePort(node, resolved);
+  const withReferences = withReferenceAssetPort(node, withPluginReferences);
   return direction
     ? withReferences.filter((port) => port.direction === direction)
     : withReferences;
@@ -286,8 +397,15 @@ export function resolveEdgePorts(
   const sourcePort =
     portForNode(source, edge.sourcePort, "output") ??
     defaultOutputPort(source);
+  const explicitTargetPort = edge.targetPort
+    ? portForNode(target, edge.targetPort, "input")
+    : undefined;
+  // 显式指定的端口已不存在（如模型不再支持参考素材）：不静默改道到其他端口
+  if (edge.targetPort && !explicitTargetPort) {
+    return { sourcePort, targetPort: undefined, dataType: edge.dataType };
+  }
   const targetPort =
-    portForNode(target, edge.targetPort, "input") ??
+    explicitTargetPort ??
     compatibleInputPorts(target, edge.dataType ?? sourcePort.dataTypes[0])[0];
   const dataType =
     edge.dataType ??
@@ -350,12 +468,24 @@ export function sanitizeCanvasEdges(
       : defaultOutputPort(source);
     if (!sourcePort) continue;
 
-    const targetPort = edge.targetPort
+    let targetPort = edge.targetPort
       ? portForNode(target, edge.targetPort, "input")
       : compatibleInputPorts(
           target,
           edge.dataType ?? sourcePort.dataTypes[0],
         )[0];
+    // Before plugin inputs were split, text and media references both used
+    // `materials`. Preserve those canvases by moving legacy text edges to the
+    // new blue text input instead of silently dropping them during hydration.
+    if (
+      roleForNode(target) === "plugin" &&
+      edge.dataType === "text" &&
+      (edge.targetPort === "materials" || edge.targetPort === "reference") &&
+      targetPort &&
+      !targetPort.dataTypes.includes("text")
+    ) {
+      targetPort = compatibleInputPorts(target, "text")[0];
+    }
     if (!targetPort) continue;
 
     const dataType =

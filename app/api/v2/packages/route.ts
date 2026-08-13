@@ -32,10 +32,14 @@ import {
 import { packageSignaturesRequired } from "../../../lib/server-runtime-config";
 import { packageAccessScope } from "../../../lib/registry-access";
 import {
-  canRefreshGeneratedGithubManifest,
+  canRefreshGeneratedSourceManifest,
   packageInstallSourceFromDetailJson,
   packageInstallSourceFromScanJson,
 } from "../../../lib/package-version-policy";
+import {
+  MEDIA_PLUGIN_TYPES,
+  normalizeMediaPluginTypes,
+} from "../../../lib/media-plugin";
 
 function errorResponse(error: unknown) {
   if (error instanceof Response) return error;
@@ -71,6 +75,7 @@ export async function installPackage(
   request: Request,
   options: {
     allowUnsignedGithubImport?: boolean;
+    allowUnsignedSourceImport?: boolean;
     authenticatedUser?: AuthUser;
     authorizedWorkspaceId?: string;
   } = {},
@@ -83,6 +88,7 @@ export async function installPackage(
     const user = options.authenticatedUser ?? (await requireUser(request));
     const payload = (await request.json()) as {
       workspaceId?: string;
+      targetPackageId?: string;
       manifest?: unknown;
       signature?: string;
       publisherKeyId?: string;
@@ -97,7 +103,7 @@ export async function installPackage(
       };
     };
     const manifest = parsePackagePayload(payload);
-    const workspaceId = options.authorizedWorkspaceId
+    let workspaceId = options.authorizedWorkspaceId
       ? options.authorizedWorkspaceId
       : await requireRequestedWorkspace(
           request,
@@ -161,16 +167,70 @@ export async function installPackage(
           }
         : null;
     const db = await getDb();
-    const [existing] = await db
-      .select()
-      .from(packages)
-      .where(
-        and(
-          eq(packages.workspaceId, workspaceId),
-          eq(packages.packageKey, manifest.id),
-        ),
-      )
-      .limit(1);
+    const targetPackageId = payload.targetPackageId?.trim().slice(0, 120);
+    let existing: typeof packages.$inferSelect | undefined;
+    if (targetPackageId) {
+      if (user.platformRole !== "system_admin") {
+        return Response.json(
+          { error: "只有系统管理员可以修改其他用户共享的 Skill" },
+          { status: 403 },
+        );
+      }
+      const [targetPackage] = await db
+        .select()
+        .from(packages)
+        .where(eq(packages.id, targetPackageId))
+        .limit(1);
+      if (!targetPackage || targetPackage.packageType !== "skill") {
+        return Response.json({ error: "目标共享 Skill 不存在" }, { status: 404 });
+      }
+      if (
+        manifest.type !== "skill" ||
+        targetPackage.packageKey !== manifest.id
+      ) {
+        return Response.json(
+          { error: "修改内容与目标 Skill 不匹配" },
+          { status: 409 },
+        );
+      }
+      existing = targetPackage;
+      workspaceId = targetPackage.workspaceId;
+    } else {
+      [existing] = await db
+        .select()
+        .from(packages)
+        .where(
+          and(
+            eq(packages.workspaceId, workspaceId),
+            eq(packages.packageKey, manifest.id),
+          ),
+        )
+        .limit(1);
+      if (
+        !existing &&
+        (manifest.type === "skill" || manifest.type === "plugin")
+      ) {
+        // Personal Skill/plugin installs are account-owned. Older builds could
+        // create several personal workspaces during concurrent bootstrap, so
+        // reuse the user's existing record instead of creating an invisible
+        // duplicate in whichever workspace won the current request.
+        [existing] = await db
+          .select()
+          .from(packages)
+          .where(
+            and(
+              eq(packages.packageKey, manifest.id),
+              eq(packages.createdBy, user.id),
+            ),
+          )
+          .orderBy(
+            sql`CASE WHEN ${packages.lifecycleState} = 'uninstalled' THEN 1 ELSE 0 END`,
+            desc(packages.updatedAt),
+          )
+          .limit(1);
+        if (existing) workspaceId = existing.workspaceId;
+      }
+    }
     const runtimeEntryForTrustScan = normalizeRuntimeEntryForTrustScan(
       manifest.runtime.entry,
       request.url,
@@ -227,7 +287,10 @@ export async function installPackage(
       packageSignaturesRequired() &&
       !signatureVerified &&
       !workspaceDeclarativeSkill &&
-      !(options.allowUnsignedGithubImport && source?.kind === "github")
+      !(
+        (options.allowUnsignedGithubImport && source?.kind === "github") ||
+        (options.allowUnsignedSourceImport && source?.generatedManifest)
+      )
     ) {
       return Response.json(
         { error: "当前服务器要求由可信发布者签名的 Package" },
@@ -266,13 +329,22 @@ export async function installPackage(
     const manifestChanged = Boolean(
       existingReview && existingReview.manifestSha256 !== integritySha256,
     );
-    const generatedGithubRefresh =
+    const generatedSourceRefresh =
       manifestChanged &&
-      canRefreshGeneratedGithubManifest({
+      canRefreshGeneratedSourceManifest({
         existingSource: existingInstallSource,
         incomingSource: source,
       });
-    if (manifestChanged && !generatedGithubRefresh) {
+    const restoresExistingManifest = Boolean(
+      existing &&
+        existing.createdBy === user.id &&
+        existing.integritySha256 === integritySha256,
+    );
+    if (
+      manifestChanged &&
+      !generatedSourceRefresh &&
+      !restoresExistingManifest
+    ) {
       return Response.json(
         { error: "相同 Package 版本的 Manifest 已存在且摘要不同，请提升版本号" },
         { status: 409 },
@@ -441,7 +513,7 @@ export async function installPackage(
               : signature ?? existingReview.signature,
             scanJson: JSON.stringify(reviewScan),
             reason:
-              generatedGithubRefresh
+              generatedSourceRefresh
                 ? "同一 GitHub Commit 的系统自动适配 Manifest 已安全更新"
                 : reviewStatus === "quarantined"
                   ? "自动扫描判定为高风险"
@@ -622,6 +694,7 @@ export async function PATCH(request: Request) {
       id?: string;
       enabled?: boolean;
       accessScope?: "personal" | "marketplace";
+      assetTypes?: unknown;
       workspaceId?: string;
     };
     const requestedWorkspaceId = await requireRequestedWorkspace(
@@ -634,7 +707,11 @@ export async function PATCH(request: Request) {
     const updatesAccessScope =
       payload.accessScope === "personal" ||
       payload.accessScope === "marketplace";
-    if (!payload.id || (!updatesEnabled && !updatesAccessScope)) {
+    const assetTypesPayload = Array.isArray(payload.assetTypes)
+      ? payload.assetTypes
+      : null;
+    const updatesAssetTypes = assetTypesPayload !== null;
+    if (!payload.id || (!updatesEnabled && !updatesAccessScope && !updatesAssetTypes)) {
       return Response.json(
         { error: "id 必填，并且至少提供 enabled 或 accessScope" },
         { status: 400 },
@@ -646,21 +723,36 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
+    if (
+      payload.assetTypes !== undefined &&
+      (!updatesAssetTypes ||
+        assetTypesPayload?.some(
+          (value) =>
+            typeof value !== "string" ||
+            !MEDIA_PLUGIN_TYPES.includes(value as (typeof MEDIA_PLUGIN_TYPES)[number]),
+        ))
+    ) {
+      return Response.json(
+        { error: "assetTypes 只支持 image、video、audio" },
+        { status: 400 },
+      );
+    }
     const packageId = payload.id;
     const db = await getDb();
     const [candidate] = await db
       .select()
       .from(packages)
-      .where(
-        and(
-          eq(packages.id, packageId),
-          eq(packages.workspaceId, requestedWorkspaceId),
-        ),
-      )
+      .where(eq(packages.id, packageId))
       .limit(1);
-    if (!candidate) {
+    if (
+      !candidate ||
+      (candidate.workspaceId !== requestedWorkspaceId &&
+        candidate.createdBy !== user.id &&
+        user.platformRole !== "system_admin")
+    ) {
       return Response.json({ error: "Package 不存在" }, { status: 404 });
     }
+    const targetWorkspaceId = candidate.workspaceId;
     if (
       updatesAccessScope &&
       !["skill", "plugin"].includes(candidate.packageType)
@@ -670,11 +762,17 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
+    if (updatesAssetTypes && candidate.packageType !== "plugin") {
+      return Response.json(
+        { error: "只有插件可以修改适用类型" },
+        { status: 400 },
+      );
+    }
     const canManageOwnExtension =
       ["skill", "plugin"].includes(candidate.packageType) &&
       candidate.createdBy === user.id;
     if (
-      updatesAccessScope &&
+      (updatesAccessScope || updatesAssetTypes) &&
       user.platformRole !== "system_admin" &&
       !canManageOwnExtension
     ) {
@@ -684,7 +782,7 @@ export async function PATCH(request: Request) {
       );
     }
     if (user.platformRole !== "system_admin" && !canManageOwnExtension) {
-      await requireWorkspaceAccess(user.id, requestedWorkspaceId, "manage");
+      await requireWorkspaceAccess(user.id, targetWorkspaceId, "manage");
     }
     let autoApproveSandboxReviewId: string | null = null;
     let createAutoApproveSandboxReview = false;
@@ -767,26 +865,37 @@ export async function PATCH(request: Request) {
       }
     }
     let nextManifestJson = candidate.manifestJson;
+    const currentManifest = JSON.parse(
+      candidate.manifestJson,
+    ) as Record<string, unknown>;
     const previousAccessScope = packageAccessScope(
-      JSON.parse(candidate.manifestJson) as Record<string, unknown>,
+      currentManifest,
     );
-    if (updatesAccessScope) {
-      const manifest = JSON.parse(
-        candidate.manifestJson,
-      ) as Record<string, unknown>;
+    const previousAssetTypes = normalizeMediaPluginTypes(
+      currentManifest.assetTypes,
+    );
+    if (updatesAccessScope || updatesAssetTypes) {
+      const manifest = { ...currentManifest };
       const currentAccess =
         manifest.access &&
         typeof manifest.access === "object" &&
         !Array.isArray(manifest.access)
           ? (manifest.access as Record<string, unknown>)
           : {};
-      manifest.access = {
-        ...currentAccess,
-        scope: payload.accessScope,
-      };
+      if (updatesAccessScope) {
+        manifest.access = {
+          ...currentAccess,
+          scope: payload.accessScope,
+        };
+      }
+      if (updatesAssetTypes) {
+        manifest.assetTypes = normalizeMediaPluginTypes(payload.assetTypes);
+      }
       nextManifestJson = JSON.stringify(manifest);
     }
-    const eventType = updatesAccessScope
+    const eventType = updatesAssetTypes
+      ? "package.settings.updated"
+      : updatesAccessScope
       ? "package.visibility.updated"
       : payload.enabled
         ? "package.enabled"
@@ -800,9 +909,15 @@ export async function PATCH(request: Request) {
             accessScope: payload.accessScope,
           }
         : {}),
+      ...(updatesAssetTypes
+        ? {
+            previousAssetTypes,
+            assetTypes: normalizeMediaPluginTypes(payload.assetTypes),
+          }
+        : {}),
     };
     const domainRows = domainEventRows({
-      workspaceId: requestedWorkspaceId,
+      workspaceId: targetWorkspaceId,
       actorUserId: user.id,
       eventType,
       entityType: "package",
@@ -847,7 +962,7 @@ export async function PATCH(request: Request) {
             .where(eq(packageReviews.id, autoApproveSandboxReviewId));
         }
       }
-      if (updatesEnabled && updatesAccessScope) {
+      if (updatesEnabled && (updatesAccessScope || updatesAssetTypes)) {
         await tx
           .update(packages)
           .set({
@@ -865,7 +980,7 @@ export async function PATCH(request: Request) {
           .where(
             and(
               eq(packages.id, packageId),
-              eq(packages.workspaceId, requestedWorkspaceId),
+              eq(packages.workspaceId, targetWorkspaceId),
             ),
           );
       } else if (updatesEnabled) {
@@ -885,7 +1000,7 @@ export async function PATCH(request: Request) {
           .where(
             and(
               eq(packages.id, packageId),
-              eq(packages.workspaceId, requestedWorkspaceId),
+              eq(packages.workspaceId, targetWorkspaceId),
             ),
           );
       } else {
@@ -898,7 +1013,7 @@ export async function PATCH(request: Request) {
           .where(
             and(
               eq(packages.id, packageId),
-              eq(packages.workspaceId, requestedWorkspaceId),
+              eq(packages.workspaceId, targetWorkspaceId),
             ),
           );
       }
@@ -909,7 +1024,7 @@ export async function PATCH(request: Request) {
           .where(eq(packageCapabilities.packageId, packageId));
       }
       await tx.insert(registryEvents).values(
-        audit(requestedWorkspaceId, user.id, eventType, packageId, detail),
+        audit(targetWorkspaceId, user.id, eventType, packageId, detail),
       );
       await tx.insert(auditLogs).values(domainRows.audit);
       await tx.insert(outboxEvents).values(domainRows.outbox);
@@ -920,7 +1035,7 @@ export async function PATCH(request: Request) {
       .where(
         and(
           eq(packages.id, packageId),
-          eq(packages.workspaceId, requestedWorkspaceId),
+          eq(packages.workspaceId, targetWorkspaceId),
         ),
       )
       .limit(1);
@@ -952,26 +1067,24 @@ export async function DELETE(request: Request) {
     const [existing] = await db
       .select()
       .from(packages)
-      .where(
-        user.platformRole === "system_admin"
-          ? eq(packages.id, id)
-          : and(
-              eq(packages.id, id),
-              eq(packages.workspaceId, requestedWorkspaceId),
-            ),
-      )
+      .where(eq(packages.id, id))
       .limit(1);
-    if (!existing) {
+    if (
+      !existing ||
+      (existing.workspaceId !== requestedWorkspaceId &&
+        existing.createdBy !== user.id &&
+        user.platformRole !== "system_admin")
+    ) {
       return Response.json({ error: "Package 不存在" }, { status: 404 });
     }
+    const targetWorkspaceId = existing.workspaceId;
     const canDeleteOwnExtension =
       (existing.packageType === "skill" ||
         existing.packageType === "plugin") &&
       existing.createdBy === user.id;
     if (user.platformRole !== "system_admin" && !canDeleteOwnExtension) {
-      await requireWorkspaceAccess(user.id, requestedWorkspaceId, "manage");
+      await requireWorkspaceAccess(user.id, targetWorkspaceId, "manage");
     }
-    const targetWorkspaceId = existing.workspaceId;
     const detail = {
       packageKey: existing.packageKey,
       version: existing.version,

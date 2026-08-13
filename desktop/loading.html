@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>小逻工作台</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: #f6f8fc;
+        color: #152036;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 12%, rgba(73, 84, 255, 0.12), transparent 34%),
+          linear-gradient(155deg, #fbfcff 0%, #f3f6fc 52%, #eef3fb 100%);
+      }
+
+      .shell {
+        width: min(520px, calc(100vw - 48px));
+        padding: 48px;
+        border: 1px solid rgba(145, 157, 184, 0.2);
+        border-radius: 32px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 30px 80px rgba(37, 49, 78, 0.14);
+        text-align: center;
+      }
+
+      .icon-wrap {
+        width: 112px;
+        height: 112px;
+        margin: 0 auto 24px;
+        border-radius: 28px;
+        overflow: hidden;
+        box-shadow: 0 18px 42px rgba(39, 82, 226, 0.18);
+      }
+
+      .icon-wrap img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        letter-spacing: -0.03em;
+      }
+
+      .eyebrow {
+        margin: 9px 0 28px;
+        color: #5b6a86;
+        font-size: 14px;
+      }
+
+      .progress {
+        position: relative;
+        height: 6px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e8edfa;
+      }
+
+      .progress::after {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 -42%;
+        width: 42%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #7b86ff, #315cff);
+        animation: loading 1.25s ease-in-out infinite;
+      }
+
+      .shell[data-phase="ready"] .progress::after {
+        left: 0;
+        width: 100%;
+        animation: none;
+        background: #31b978;
+      }
+
+      .shell[data-phase="error"] .progress::after {
+        left: 0;
+        width: 100%;
+        animation: none;
+        background: #ef476f;
+      }
+
+      .status-title {
+        margin: 24px 0 7px;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .status-detail {
+        min-height: 42px;
+        margin: 0;
+        color: #72809a;
+        font-size: 14px;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+
+      .actions {
+        display: none;
+        gap: 10px;
+        justify-content: center;
+        margin-top: 24px;
+      }
+
+      .shell[data-phase="error"] .actions {
+        display: flex;
+      }
+
+      button {
+        min-width: 120px;
+        height: 44px;
+        padding: 0 20px;
+        border: 1px solid #dce3f2;
+        border-radius: 14px;
+        background: #fff;
+        color: #34415c;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button.primary {
+        border-color: #4a52ed;
+        background: #4a52ed;
+        color: #fff;
+        box-shadow: 0 12px 28px rgba(74, 82, 237, 0.22);
+      }
+
+      @keyframes loading {
+        0% {
+          transform: translateX(0);
+        }
+        100% {
+          transform: translateX(340%);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell" data-phase="checking">
+      <div class="icon-wrap">
+        <img src="./assets/xiaoluo.png" alt="小逻" />
+      </div>
+      <h1>小逻工作台</h1>
+      <p class="eyebrow" id="eyebrow">桌面创作与智能画布</p>
+      <div class="progress" aria-hidden="true"></div>
+      <p class="status-title" id="status-title">正在检查小逻服务</p>
+      <p class="status-detail" id="status-detail">请稍候…</p>
+      <div class="actions">
+        <button id="open-secondary" type="button">查看日志</button>
+        <button class="primary" id="retry" type="button">重新启动</button>
+      </div>
+    </main>
+    <script>
+      const shell = document.querySelector(".shell");
+      const statusTitle = document.querySelector("#status-title");
+      const statusDetail = document.querySelector("#status-detail");
+      const retryButton = document.querySelector("#retry");
+      const eyebrow = document.querySelector("#eyebrow");
+      const openSecondaryButton = document.querySelector("#open-secondary");
+
+      function renderStatus(status) {
+        shell.dataset.phase = status.phase || "checking";
+        statusTitle.textContent = status.title || "正在启动小逻工作台";
+        statusDetail.textContent = status.detail || "请稍候…";
+      }
+
+      window.xiaoluoDesktop.getMeta().then((meta) => {
+        const isProduction = meta.mode === "production";
+        eyebrow.textContent = isProduction ? "云端创作工作台" : "本地开发工作台";
+        openSecondaryButton.textContent = isProduction ? "在浏览器中打开" : "查看日志";
+        retryButton.textContent = isProduction ? "重新连接" : "重新启动";
+      });
+
+      window.xiaoluoDesktop.getStatus().then(renderStatus);
+      window.xiaoluoDesktop.onStatus(renderStatus);
+
+      retryButton.addEventListener("click", async () => {
+        retryButton.disabled = true;
+        await window.xiaoluoDesktop.retry();
+        retryButton.disabled = false;
+      });
+
+      openSecondaryButton.addEventListener("click", async () => {
+        const result = await window.xiaoluoDesktop.openSecondary();
+        if (!result.ok) statusDetail.textContent = result.message;
+      });
+    </script>
+  </body>
+</html>

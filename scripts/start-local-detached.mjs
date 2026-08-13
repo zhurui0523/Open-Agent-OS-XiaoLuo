@@ -113,7 +113,7 @@ async function serverIsReady(timeoutMs = 1_500) {
   }
 }
 
-async function waitForServer(pid, timeoutMs = 15_000) {
+async function waitForServer(pid, timeoutMs = 60_000) {
   const startedAt = Date.now();
   let nextProgressAt = startedAt + 2_000;
 
@@ -132,7 +132,10 @@ async function waitForServer(pid, timeoutMs = 15_000) {
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  return false;
+  // The first Next.js/Turbopack compilation can finish just after the polling
+  // deadline. Give the health and page endpoints one final, slightly longer
+  // probe so a healthy server is not reported as an ELIFECYCLE failure.
+  return serverIsReady(5_000);
 }
 
 function logTail(path, count = 18) {
@@ -202,8 +205,8 @@ const serverPid = serverAlreadyRunning
         // must use Next's Node runtime. Vinext remains the production build.
         "node_modules/next/dist/bin/next",
         "dev",
-        "--hostname",
-        "127.0.0.1",
+      "--hostname",
+      "0.0.0.0",
         "--port",
         "3001",
       ],
@@ -241,6 +244,6 @@ const isolatedWorkerPid =
       })
     : "not-configured";
 
-console.log(`local_web=ready url=http://127.0.0.1:3001 pid=${serverPid}`);
+console.log(`local_web=ready url=http://0.0.0.0:3001 pid=${serverPid}`);
 console.log(`runtime_worker_pid=${workerPid}`);
 console.log(`isolated_worker_pid=${isolatedWorkerPid}`);

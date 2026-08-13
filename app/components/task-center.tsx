@@ -348,6 +348,7 @@ export function TaskCenter({
         })()}
         {tasks.map((task) => {
           const active = ["queued", "submitted", "running"].includes(task.status);
+          const generationTask = task.taskType === "generation" ? task : null;
           return (
             <article
               key={`${task.taskType}-${task.id}`}
@@ -368,13 +369,13 @@ export function TaskCenter({
                     {statusLabels[task.status] ?? task.status}
                   </em>
                 </div>
-                <p>{task.provider}{task.providerStatus ? ` · ${task.providerStatus}` : ""}</p>
+                <p>{task.provider}{generationTask?.providerStatus ? ` · ${generationTask.providerStatus}` : ""}</p>
                 <div className="task-progress">
                   <span style={{ width: `${Math.max(0, Math.min(100, task.progress))}%` }} />
                 </div>
                 <small>
-                  {task.progress}% · {task.nodeId ? `节点 ${task.nodeId}` : `任务 ${task.id.slice(0, 12)}`}
-                  {task.pollCount ? ` · 已轮询 ${task.pollCount} 次` : ""}
+                  {task.progress}% · {generationTask?.nodeId ? `节点 ${generationTask.nodeId}` : `任务 ${task.id.slice(0, 12)}`}
+                  {generationTask?.pollCount ? ` · 已轮询 ${generationTask.pollCount} 次` : ""}
                 </small>
                 {task.error && <code>{task.error}</code>}
                 {task.taskType === "run" && (

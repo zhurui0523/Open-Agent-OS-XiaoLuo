@@ -2,6 +2,7 @@
 
 import { Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { createRuntimeId } from "../lib/runtime-id";
 
 interface SchemaOptionBuilderProps {
   title: string;
@@ -93,7 +94,7 @@ export function SchemaOptionBuilder({
           update([
             ...rows,
             {
-              key: `parameter_${crypto.randomUUID().slice(0, 8)}`,
+              key: `parameter_${createRuntimeId().slice(0, 8)}`,
               title: "",
               options: "",
               defaultValue: "",

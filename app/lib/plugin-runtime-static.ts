@@ -132,13 +132,35 @@ export async function servePluginRuntimeStatic(
     let workspaceId = params.workspaceId;
 
     if (runtimeToken) {
-      verifyPluginRuntimeGrant(runtimeToken, {
-        workspaceId: params.workspaceId,
-        packageKey: params.packageKey,
-        version: params.version,
-        archiveSha: params.archiveSha,
-        root: params.root,
-      });
+      try {
+        verifyPluginRuntimeGrant(runtimeToken, {
+          workspaceId: params.workspaceId,
+          packageKey: params.packageKey,
+          version: params.version,
+          archiveSha: params.archiveSha,
+          root: params.root,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "插件运行授权已失效";
+        const serializedMessage = JSON.stringify(message).replace(
+          /</g,
+          "\\u003c",
+        );
+        return new Response(
+          `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在重新连接插件</title><style>html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#fff;color:#64748b;font:14px system-ui,sans-serif}.state{display:grid;gap:10px;justify-items:center}.spinner{width:24px;height:24px;border:3px solid #e2e8f0;border-top-color:#4f46e5;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="state"><span class="spinner"></span><span>插件授权已更新，正在重新连接…</span></div><script>window.parent.postMessage({type:"xiaoluo:runtime-grant-expired",reason:${serializedMessage}},"*");</script></body></html>`,
+          {
+            status: 401,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "private, no-store",
+              "content-security-policy":
+                "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'self'",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      }
     } else {
       const user = await requireUser(request);
       workspaceId = await requireRequestedWorkspace(request, user.id, "view", {
@@ -164,6 +186,7 @@ export async function servePluginRuntimeStatic(
           eq(packages.workspaceId, workspaceId),
           eq(packages.packageKey, params.packageKey),
           eq(packages.version, params.version),
+          eq(packages.lifecycleState, "active"),
         ),
       )
       .limit(1);

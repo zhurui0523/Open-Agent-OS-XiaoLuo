@@ -38,6 +38,8 @@ import {
   ASSET_UPLOAD_TAGS_HEADER,
   decodeAssetUploadHeader,
 } from "../../../lib/asset-upload";
+import { purgeExpiredTrashedAssets } from "../../../lib/asset-trash-cleanup";
+import { ASSET_TRASH_RETENTION_HOURS } from "../../../lib/asset-trash-policy";
 
 function errorResponse(error: unknown, status = 400) {
   if (error instanceof Response) return error;
@@ -126,13 +128,21 @@ export async function GET(request: Request) {
         : null;
       const cursorId = separator > 0 ? cursor.slice(separator + 2) : "";
       if (cursorUpdatedAt && !Number.isNaN(cursorUpdatedAt.getTime()) && cursorId) {
+        const cursorTimestamp = cursorUpdatedAt
+          .toISOString()
+          .slice(0, 23)
+          .replace("T", " ");
         const cursorCondition = or(
-          lt(assets.updatedAt, cursorUpdatedAt),
-          and(eq(assets.updatedAt, cursorUpdatedAt), lt(assets.id, cursorId)),
+          lt(assets.updatedAt, cursorTimestamp),
+          and(eq(assets.updatedAt, cursorTimestamp), lt(assets.id, cursorId)),
         );
         if (cursorCondition) conditions.push(cursorCondition);
       }
     }
+    const trashCleanup = await purgeExpiredTrashedAssets({
+      db,
+      workspaceId: home.workspaceId,
+    });
     const rows = await db
       .select()
       .from(assets)
@@ -149,6 +159,8 @@ export async function GET(request: Request) {
         hasMore && last?.updatedAt
           ? `${new Date(last.updatedAt).toISOString()}::${last.id}`
           : null,
+      trashRetentionHours: ASSET_TRASH_RETENTION_HOURS,
+      purgedExpiredAssets: trashCleanup.deletedAssets,
     });
   } catch (error) {
     return errorResponse(error, 500);

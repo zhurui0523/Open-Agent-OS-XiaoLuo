@@ -95,6 +95,14 @@ function AuthenticatedShell({
         drawerOpen={os.drawerOpen}
         taskCenterOpen={taskCenterOpen}
         onToolChange={os.setActiveTool}
+        onToggleMultiSelect={() => {
+          if (os.activeTool === "multi-select") {
+            os.setActiveTool("select");
+            os.setSelectedNodeId(os.selectedNodeId);
+            return;
+          }
+          os.setActiveTool("multi-select");
+        }}
         onToggleDrawer={() => {
           const alreadyOnCanvas = os.view === "canvas";
           os.setView("canvas");
@@ -165,7 +173,13 @@ function AppShellContent() {
 
   useEffect(() => {
     let active = true;
-    void fetch("/api/v2/auth/session")
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+
+    void fetch("/api/v2/auth/session", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (response) => {
         const payload = (await response.json().catch(() => ({}))) as {
           user?: AccountUser | null;
@@ -184,11 +198,20 @@ function AppShellContent() {
       })
       .catch(() => {
         if (!active) return;
-        setServiceError("无法连接云端认证服务，请检查网络与服务器配置");
+        setServiceError(
+          controller.signal.aborted
+            ? "认证服务响应超时，请刷新页面或检查服务器状态"
+            : "无法连接云端认证服务，请检查网络与服务器配置",
+        );
         setStatus("anonymous");
+      })
+      .finally(() => {
+        window.clearTimeout(timeout);
       });
     return () => {
       active = false;
+      controller.abort();
+      window.clearTimeout(timeout);
     };
   }, []);
 

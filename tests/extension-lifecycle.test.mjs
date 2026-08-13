@@ -46,7 +46,8 @@ test("enforces private and shared Skill scopes for administrators and users", as
   assert.match(capabilities, /可用 Skill/);
   assert.match(capabilities, /私有 Skill/);
   assert.match(capabilities, /共享 Skill/);
-  assert.match(capabilities, /系统管理员发布，所有用户可用/);
+  assert.match(capabilities, /系统管理员发布的/);
+  assert.match(capabilities, /供所有用户添加/);
   assert.match(capabilities, /所有用户可见并可添加/);
 });
 
@@ -56,7 +57,7 @@ test("shows personal modality usage and OSS storage percentage", async () => {
     source("app/components/personal-settings.tsx"),
   ]);
   assert.match(route, /model_execution_audits/);
-  assert.match(route, /USER_STORAGE_QUOTA_BYTES/);
+  assert.match(route, /resolveStorageQuotaBytes/);
   assert.match(personal, /用量与存储/);
   assert.match(personal, /storage\.usedPercent/);
 });

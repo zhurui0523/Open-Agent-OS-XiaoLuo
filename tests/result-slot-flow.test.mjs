@@ -86,6 +86,14 @@ test("result slots reject empty upstream output and preserve usable output", asy
     styles,
     /:is\(\.preview-image > img, \.preview-video > video\)[\s\S]{0,220}border:\s*0;[\s\S]{0,100}border-radius:\s*0;/,
   );
+  assert.match(
+    styles,
+    /not\(\.is-user-sized\):is\([\s\S]{0,100}\.node-kind-image,[\s\S]{0,100}\.node-kind-video[\s\S]{0,160}height:\s*156px;[\s\S]{0,80}min-height:\s*156px;/,
+  );
+  assert.match(
+    styles,
+    /> \.node-workbench-content[\s\S]{0,700}> \.node-workbench[\s\S]{0,700}\.workbench-preview[\s\S]{0,180}height:\s*100%;/,
+  );
   assert.match(nodeLayout, /TEXT_RESULT_NODE_WIDTH = 360/);
   assert.match(nodeLayout, /TEXT_RESULT_NODE_HEIGHT = 400/);
   assert.match(nodeLayout, /if \(textResultHasOutput\(node\)\) return TEXT_RESULT_NODE_WIDTH/);
@@ -178,16 +186,43 @@ test("media clicks do not immediately capture the pointer or move nodes", async 
   assert.match(nodeCard, /alt=\{`\$\{node\.title\} 生成结果`\}[\s\S]{0,80}draggable=\{false\}/);
 });
 
-test("successful text image and video results omit the completed badge", async () => {
+test("node dragging previews with compositor transforms and commits once", async () => {
+  const [nodeCard, canvasView, edgeLayer, styles] = await Promise.all([
+    source("app/components/node-card.tsx"),
+    source("app/components/canvas-view.tsx"),
+    source("app/components/canvas-edge-layer.tsx"),
+    source("app/globals.css"),
+  ]);
+  const finishDrag = nodeCard.slice(
+    nodeCard.indexOf("const finishNodeDrag"),
+    nodeCard.indexOf("const copyFeedbackTimer"),
+  );
+  const pointerMove = nodeCard.slice(
+    nodeCard.indexOf("function handlePointerMove"),
+    nodeCard.indexOf("function endDrag"),
+  );
+
+  assert.match(pointerMove, /requestAnimationFrame/);
+  assert.match(pointerMove, /card\.style\.transform = `translate3d\(/);
+  assert.match(pointerMove, /onMovePreview\(next\.x, next\.y\)/);
+  assert.doesNotMatch(pointerMove, /onMove\(/);
+  assert.match(finishDrag, /onMove\(finalMove\.x, finalMove\.y\)/);
+  assert.match(canvasView, /const previewNodeMove = useCallback/);
+  assert.match(canvasView, /onMovePreview=\{\(x, y\) => previewNodeMove\(node\.id, x, y\)\}/);
+  assert.match(edgeLayer, /export function canvasEdgeGeometry/);
+  assert.match(styles, /\.canvas-node\.is-dragging[\s\S]{0,120}will-change:\s*transform/);
+});
+
+test("successful text image video and audio results omit the completed badge", async () => {
   const nodeCard = await source("app/components/node-card.tsx");
 
   assert.match(
     nodeCard,
-    /const hideSucceededResultStatus =[\s\S]{0,180}role === "result"[\s\S]{0,100}node\.status === "succeeded"[\s\S]{0,160}node\.kind === "text"[\s\S]{0,80}node\.kind === "image"[\s\S]{0,80}node\.kind === "video"/,
+    /const hideSucceededResultStatus =[\s\S]{0,180}role === "result"[\s\S]{0,100}node\.status === "succeeded"[\s\S]{0,240}node\.kind === "text"[\s\S]{0,80}node\.kind === "image"[\s\S]{0,80}node\.kind === "video"[\s\S]{0,80}node\.kind === "audio"/,
   );
   assert.match(
     nodeCard,
-    /node\.status !== "draft" && !hideSucceededResultStatus/,
+    /node\.status !== "draft" &&\s*!hideSucceededResultStatus/,
   );
   assert.match(
     nodeCard,

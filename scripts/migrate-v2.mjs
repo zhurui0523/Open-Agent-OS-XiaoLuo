@@ -41,6 +41,9 @@ const migrations = [
   "0015_flat_asset_storage",
   "0016_model_input_constraints",
   "0017_multi_user_secret_vault",
+  "0018_organization_member_confirmation",
+  "0019_package_availabilities",
+  "0020_user_storage_quotas",
 ];
 
 async function tableExists(name) {
@@ -222,6 +225,7 @@ async function verify() {
     "xiaoluo_v2_workflow_listings",
     "xiaoluo_v2_workflow_versions",
     "xiaoluo_v2_workflow_installations",
+    "xiaoluo_v2_package_availabilities",
   ];
   const absent = [];
   for (const table of expectedTables) {
@@ -259,11 +263,14 @@ async function verify() {
          OR (TABLE_NAME = 'xiaoluo_v2_model_connections' AND COLUMN_NAME = 'capability_tags_json')
          OR (TABLE_NAME = 'xiaoluo_v2_canvas_nodes' AND COLUMN_NAME = 'node_role')
          OR (TABLE_NAME = 'xiaoluo_v2_canvases' AND COLUMN_NAME = 'groups_json')
+         OR (TABLE_NAME = 'xiaoluo_v2_organization_invitations' AND COLUMN_NAME = 'invitee_user_id')
+         OR (TABLE_NAME = 'xiaoluo_v2_organization_invitations' AND COLUMN_NAME = 'declined_at')
+         OR (TABLE_NAME = 'xiaoluo_v2_users' AND COLUMN_NAME = 'storage_quota_bytes')
        )`,
   );
-  if (absent.length || columns.length !== 27) {
+  if (absent.length || columns.length !== 30) {
     throw new Error(
-      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/27`,
+      `Schema verification failed. Missing tables: ${absent.join(", ") || "none"}; key columns: ${columns.length}/30`,
     );
   }
   const [nodeKindColumns] = await connection.execute(
@@ -282,7 +289,7 @@ async function verify() {
     JSON.stringify({
       ok: true,
       tables: expectedTables.length,
-      keyColumns: 27,
+      keyColumns: 30,
       canvasNodeKinds: 5,
     }),
   );

@@ -1,5 +1,72 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+export const PLUGIN_STATIC_RUNTIME_PREFIX =
+  "/api/v2/packages/runtime/static/";
+
+/**
+ * Runtime entries are persisted with a path that belongs to XiaoLuo itself.
+ * Older canvas nodes may still contain an absolute localhost URL, while the
+ * same service is now opened through a LAN address. Normalize those entries
+ * to the origin of the current request and authorize the workspace encoded in
+ * the path instead of binding a package to the hostname used at install time.
+ */
+export function normalizeInternalPluginRuntimeUrl(
+  runtimeUrl: string,
+  requestUrl: string,
+) {
+  const requestOrigin = new URL(requestUrl).origin;
+  const target = new URL(runtimeUrl, requestOrigin);
+  if (!target.pathname.startsWith(PLUGIN_STATIC_RUNTIME_PREFIX)) return null;
+  return new URL(`${target.pathname}${target.search}`, requestOrigin);
+}
+
+interface PluginRuntimeCandidateIdentity {
+  id: string;
+  packageKey: string;
+  name: string;
+  version: string;
+}
+
+interface RequestedPluginRuntimeIdentity {
+  packageId?: string;
+  packageKey?: string;
+  packageName?: string;
+  savedPackageKey: string;
+  savedVersion: string;
+}
+
+/**
+ * Rank an installed plugin against the identity saved in a canvas node.
+ * Name matching is intentionally supported because older generic ZIP imports
+ * used a source.upload.* package key while a later GitHub installation uses a
+ * stable github.* key for the same plugin.
+ */
+export function scorePluginRuntimeCandidate(
+  candidate: PluginRuntimeCandidateIdentity,
+  requested: RequestedPluginRuntimeIdentity,
+) {
+  let score = 0;
+  if (requested.packageId && candidate.id === requested.packageId) {
+    score += 1_000;
+  }
+  if (
+    candidate.packageKey === requested.savedPackageKey ||
+    (requested.packageKey && candidate.packageKey === requested.packageKey)
+  ) {
+    score += 500;
+  }
+  if (
+    requested.packageName &&
+    candidate.name.trim().toLocaleLowerCase() ===
+      requested.packageName.trim().toLocaleLowerCase()
+  ) {
+    score += 250;
+  }
+  if (score === 0) return 0;
+  if (candidate.version === requested.savedVersion) score += 20;
+  return score;
+}
+
 export interface PluginRuntimeGrant {
   v: 1;
   workspaceId: string;
@@ -10,7 +77,10 @@ export interface PluginRuntimeGrant {
   exp: number;
 }
 
-const PLUGIN_RUNTIME_GRANT_TTL_SECONDS = 5 * 60;
+// The token only grants read access to one immutable plugin artifact. Keep it
+// valid for a normal editing session so lazy-loaded chunks do not fail midway;
+// the host still renews it automatically when a session is restored later.
+export const PLUGIN_RUNTIME_GRANT_TTL_SECONDS = 12 * 60 * 60;
 
 function runtimeSecret() {
   const configured =

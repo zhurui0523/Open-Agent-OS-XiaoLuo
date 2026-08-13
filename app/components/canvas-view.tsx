@@ -18,6 +18,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 import type { IntentOSController } from "../hooks/use-intent-os";
 import {
   fitWorldBounds,
@@ -37,29 +38,44 @@ import {
 import { compatibleInputPorts } from "../lib/node-ports";
 import type {
   CanvasAssetReference,
+  CanvasEdge,
   CanvasNode,
   KernelNodeOutput,
   ModelInputAssetKind,
   NodeKind,
   NodeInputAssetReference,
   PortDataType,
+  PluginAssetContext,
+  PluginTextContext,
   WorkflowMarketplaceItem,
   WorkflowVisibility,
 } from "../types";
 import { SUPPORTED_FILE_ACCEPT } from "../lib/file-formats";
+import { mediaPluginSupports } from "../lib/media-plugin";
+import { packageInstallStatus } from "../lib/package-install-status";
 import { CanvasContextMenu } from "./canvas-context-menu";
 import {
   CanvasCollaborationPanel,
   useCanvasCollaboration,
 } from "./canvas-collaboration";
 import { CanvasDrawer } from "./canvas-drawer";
-import { CanvasEdgeLayer } from "./canvas-edge-layer";
+import {
+  CanvasEdgeLayer,
+  canvasEdgeGeometry,
+} from "./canvas-edge-layer";
 import { CanvasGroupRegion } from "./canvas-group-region";
 import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
 import { IntentConsole } from "./intent-console";
 import { NodeCard } from "./node-card";
-import { PluginRuntimeDialog } from "./plugin-runtime-dialog";
+import {
+  PluginRuntimeDialog,
+  type PluginRuntimeMode,
+} from "./plugin-runtime-dialog";
+import {
+  pluginAssetContextsFromReferences,
+  pluginTextContextsFromNodes,
+} from "../lib/plugin-reference-context";
 import { ZoomControls } from "./zoom-controls";
 
 const NODE_FIT_HEIGHT = 220;
@@ -182,6 +198,8 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     };
   const workspaceRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadAnchorRef = useRef({ x: 0, y: 0 });
   const [pan, setPan] = useState({
@@ -201,6 +219,11 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const [pluginRuntime, setPluginRuntime] = useState<{
     title: string;
     url: string | null;
+    packageId: string | null;
+    packageKey: string | null;
+    assetContexts: PluginAssetContext[];
+    textContexts: PluginTextContext[];
+    mode: PluginRuntimeMode;
   } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
@@ -234,6 +257,18 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   });
   const panFrame = useRef<number | null>(null);
   const pendingPan = useRef<{ x: number; y: number } | null>(null);
+  const lastPanStateCommit = useRef(0);
+  const wheelCommitTimer = useRef<number | null>(null);
+  const edgePreviewElements = useRef(
+    new Map<
+      string,
+      {
+        group: SVGGElement;
+        paths: SVGPathElement[];
+        remove: SVGGElement | null;
+      }
+    >(),
+  );
   const collaborationCursorRef = useRef<{ x: number; y: number } | null>(
     null,
   );
@@ -244,6 +279,64 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     canvasRevision: os.canvasRevision,
     cursorRef: collaborationCursorRef,
   });
+  const previewViewport = useCallback((next: ViewportTransform) => {
+    const scale = next.zoom / 100;
+    const grid = gridRef.current;
+    const content = contentRef.current;
+    if (grid) {
+      grid.style.backgroundPosition = `${next.x}px ${next.y}px, ${next.x}px ${next.y}px, ${next.x}px ${next.y}px`;
+      grid.style.backgroundSize = `${32 * scale}px ${32 * scale}px, ${32 * scale}px ${32 * scale}px, ${8 * scale}px ${8 * scale}px`;
+    }
+    if (content) {
+      content.style.transform = `translate3d(${next.x}px, ${next.y}px, 0) scale(${scale})`;
+    }
+  }, []);
+  const cancelStageInteractions = useCallback(() => {
+    const stage = stageRef.current;
+    const pointerIds = [
+      panGesture.current?.pointerId,
+      selectionPointerId.current,
+    ].filter((pointerId): pointerId is number => pointerId !== null && pointerId !== undefined);
+    for (const pointerId of pointerIds) {
+      if (stage?.hasPointerCapture(pointerId)) {
+        try {
+          stage.releasePointerCapture(pointerId);
+        } catch {
+          // Capture can already be gone after the browser loses focus.
+        }
+      }
+    }
+    if (panFrame.current !== null) {
+      cancelAnimationFrame(panFrame.current);
+      panFrame.current = null;
+    }
+    if (wheelCommitTimer.current !== null) {
+      window.clearTimeout(wheelCommitTimer.current);
+      wheelCommitTimer.current = null;
+    }
+    pendingPan.current = null;
+    if (panGesture.current) {
+      setPan({ x: viewportRef.current.x, y: viewportRef.current.y });
+      os.setCanvasViewport(viewportRef.current);
+    }
+    panGesture.current = null;
+    selectionPointerId.current = null;
+    setIsPanning(false);
+    setSelectionBox(null);
+    setConnectionDraft(null);
+  }, [os]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") cancelStageInteractions();
+    };
+    window.addEventListener("blur", cancelStageInteractions);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", cancelStageInteractions);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [cancelStageInteractions]);
 
   const nodeBounds = useMemo<WorldBounds>(() => {
     if (!os.nodes.length) {
@@ -333,6 +426,23 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     );
   }, [commitViewport, contentBounds, stageSize]);
 
+  const focusNodeOnCanvas = useCallback(
+    (nodeId: string) => {
+      const node = os.nodes.find((item) => item.id === nodeId);
+      if (!node) return;
+      os.setSelectedNodeId(nodeId);
+      const scale = viewportRef.current.zoom / 100;
+      const width = widthForNode(node);
+      const height = nodeHeights[node.id] ?? NODE_FIT_HEIGHT;
+      commitViewport({
+        x: stageSize.width / 2 - (node.x + width / 2) * scale,
+        y: stageSize.height / 2 - (node.y + height / 2) * scale,
+        zoom: viewportRef.current.zoom,
+      });
+    },
+    [commitViewport, nodeHeights, os, stageSize],
+  );
+
   const zoomAtCenter = useCallback(
     (nextZoom: number) => {
       commitViewport(
@@ -372,6 +482,9 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   useEffect(
     () => () => {
       if (panFrame.current !== null) cancelAnimationFrame(panFrame.current);
+      if (wheelCommitTimer.current !== null) {
+        window.clearTimeout(wheelCommitTimer.current);
+      }
     },
     [],
   );
@@ -436,8 +549,20 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         y: current.y - vertical,
       };
       viewportRef.current = next;
-      setPan({ x: next.x, y: next.y });
-      setCanvasViewport(next);
+      previewViewport(next);
+      const now = performance.now();
+      if (now - lastPanStateCommit.current > 100) {
+        lastPanStateCommit.current = now;
+        setPan({ x: next.x, y: next.y });
+      }
+      if (wheelCommitTimer.current !== null) {
+        window.clearTimeout(wheelCommitTimer.current);
+      }
+      wheelCommitTimer.current = window.setTimeout(() => {
+        wheelCommitTimer.current = null;
+        setPan({ x: viewportRef.current.x, y: viewportRef.current.y });
+        setCanvasViewport(viewportRef.current);
+      }, 120);
     }
     canvasStage.addEventListener("wheel", wheel, { passive: false });
     return () => canvasStage.removeEventListener("wheel", wheel);
@@ -445,6 +570,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     commitViewport,
     gesturePreset,
     invertZoom,
+    previewViewport,
     setCanvasViewport,
     zoomSensitivity,
   ]);
@@ -490,6 +616,19 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         event.key.toLowerCase() === "v"
       ) {
         if (pasteCopied()) event.preventDefault();
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "m"
+      ) {
+        event.preventDefault();
+        if (os.activeTool === "multi-select") {
+          os.setActiveTool("select");
+          os.setSelectedNodeId(os.selectedNodeId);
+        } else {
+          os.setActiveTool("multi-select");
+        }
         return;
       }
       if (event.key === "Escape") {
@@ -572,6 +711,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     deleteEdge,
     deleteSelected,
     keyboardShortcuts,
+    os,
     pasteCopied,
     redoCanvas,
     selectedEdgeId,
@@ -719,6 +859,19 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       collaborationCursorRef.current = collaborationCursor;
       collaboration.scheduleHeartbeat();
     }
+    const ownsActiveGesture =
+      connectionDraft !== null ||
+      selectionPointerId.current === event.pointerId ||
+      panGesture.current?.pointerId === event.pointerId;
+    if (
+      ownsActiveGesture &&
+      event.pointerType !== "touch" &&
+      (event.buttons & 1) === 0 &&
+      (event.buttons & 4) === 0
+    ) {
+      cancelStageInteractions();
+      return;
+    }
     if (connectionDraft) {
       const current = clientToWorld(event.clientX, event.clientY);
       if (current) {
@@ -755,7 +908,18 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     pendingPan.current = { x: next.x, y: next.y };
     if (panFrame.current === null) {
       panFrame.current = requestAnimationFrame(() => {
-        if (pendingPan.current) setPan(pendingPan.current);
+        if (pendingPan.current) {
+          const current = {
+            ...viewportRef.current,
+            ...pendingPan.current,
+          };
+          previewViewport(current);
+          const now = performance.now();
+          if (now - lastPanStateCommit.current > 100) {
+            lastPanStateCommit.current = now;
+            setPan(pendingPan.current);
+          }
+        }
         pendingPan.current = null;
         panFrame.current = null;
       });
@@ -883,8 +1047,14 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (panFrame.current !== null) {
+      cancelAnimationFrame(panFrame.current);
+      panFrame.current = null;
+    }
+    pendingPan.current = null;
     panGesture.current = null;
     setIsPanning(false);
+    previewViewport(viewportRef.current);
     setPan({ x: viewportRef.current.x, y: viewportRef.current.y });
     os.setCanvasViewport(viewportRef.current);
   }
@@ -1053,6 +1223,72 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     () => new CanvasSpatialIndex(os.nodes, os.edges, nodeHeights),
     [nodeHeights, os.edges, os.nodes],
   );
+  const connectedEdgesByNode = useMemo(() => {
+    const result = new Map<string, CanvasEdge[]>();
+    for (const edge of os.edges) {
+      const sourceEdges = result.get(edge.source) ?? [];
+      sourceEdges.push(edge);
+      result.set(edge.source, sourceEdges);
+      const targetEdges = result.get(edge.target) ?? [];
+      targetEdges.push(edge);
+      result.set(edge.target, targetEdges);
+    }
+    return result;
+  }, [os.edges]);
+  useEffect(() => {
+    edgePreviewElements.current.clear();
+  }, [os.edges]);
+  const previewNodeMove = useCallback(
+    (nodeId: string, x: number, y: number) => {
+      const stage = stageRef.current;
+      const node = spatialIndex.nodeById.get(nodeId);
+      if (!stage || !node) return;
+      const movedNode = { ...node, x, y };
+      for (const edge of connectedEdgesByNode.get(nodeId) ?? []) {
+        const source =
+          edge.source === nodeId
+            ? movedNode
+            : spatialIndex.nodeById.get(edge.source);
+        const target =
+          edge.target === nodeId
+            ? movedNode
+            : spatialIndex.nodeById.get(edge.target);
+        if (!source || !target) continue;
+        const geometry = canvasEdgeGeometry(
+          edge,
+          source,
+          target,
+          nodeHeights,
+        );
+        if (!geometry) continue;
+        let elements = edgePreviewElements.current.get(edge.id);
+        if (!elements?.group.isConnected) {
+          const group = stage.querySelector<SVGGElement>(
+            `[data-edge-id="${CSS.escape(edge.id)}"]`,
+          );
+          if (!group) continue;
+          elements = {
+            group,
+            paths: Array.from(
+              group.querySelectorAll<SVGPathElement>(
+                ".canvas-edge-hit, .canvas-edge-path",
+              ),
+            ),
+            remove: group.querySelector<SVGGElement>(".canvas-edge-remove"),
+          };
+          edgePreviewElements.current.set(edge.id, elements);
+        }
+        elements.paths.forEach((path) =>
+          path.setAttribute("d", geometry.path),
+        );
+        elements.remove?.setAttribute(
+          "transform",
+          `translate(${geometry.midpoint.x} ${geometry.midpoint.y})`,
+        );
+      }
+    },
+    [connectedEdgesByNode, nodeHeights, spatialIndex],
+  );
   const canvasAssets = useMemo(
     () =>
       os.nodes
@@ -1077,6 +1313,23 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
 
     return result;
   }, [os.edges, spatialIndex]);
+  const inputTextContextsByNode = useMemo(() => {
+    const result = new Map<string, PluginTextContext[]>();
+
+    for (const edge of os.edges) {
+      const source = spatialIndex.nodeById.get(edge.source);
+      if (!source || source.kind !== "text") continue;
+      const [context] = pluginTextContextsFromNodes(os.activeCanvasId, [source]);
+      if (!context) continue;
+      const contexts = result.get(edge.target) ?? [];
+      if (!contexts.some((item) => item.nodeId === context.nodeId)) {
+        contexts.push(context);
+      }
+      result.set(edge.target, contexts);
+    }
+
+    return result;
+  }, [os.activeCanvasId, os.edges, spatialIndex]);
   const displayedConnectionDraft =
     connectionDraft ?? contextMenu?.pendingConnection ?? null;
   const visibleNodeIds = spatialIndex.queryNodeIds(renderBounds);
@@ -1087,6 +1340,61 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const visibleNodes = [...visibleNodeIds]
     .map((id) => spatialIndex.nodeById.get(id))
     .filter((node): node is NonNullable<typeof node> => Boolean(node));
+
+  function installedPluginForNode(node: CanvasNode) {
+    const packageId =
+      typeof node.parameters?.packageId === "string"
+        ? node.parameters.packageId
+        : "";
+    const packageKey =
+      typeof node.parameters?.packageKey === "string"
+        ? node.parameters.packageKey
+        : "";
+    return os.packages.find(
+      (item) =>
+        item.id === packageId ||
+        (Boolean(packageKey) && item.packageKey === packageKey),
+    );
+  }
+
+  function currentPluginRuntimeUrl(node: CanvasNode) {
+    const installedPlugin = installedPluginForNode(node);
+    const savedRuntimeUrl =
+      typeof node.parameters?.runtimeUrl === "string"
+        ? node.parameters.runtimeUrl
+        : null;
+    return installedPlugin?.runtimeUrl ?? savedRuntimeUrl;
+  }
+  function pluginAssetContextForNode(
+    node: CanvasNode,
+  ): PluginAssetContext[] {
+    if (!(["image", "video", "audio", "document"] as NodeKind[]).includes(node.kind)) {
+      return [];
+    }
+    const asset = canvasAssetReference(node);
+    if (!asset?.url) return [];
+    const [context] = pluginAssetContextsFromReferences(os.activeCanvasId, [asset]);
+    return context
+      ? [{
+          ...context,
+          ...(typeof node.parameters?.assetDownloadUrl === "string"
+            ? { downloadUrl: node.parameters.assetDownloadUrl }
+            : {}),
+        }]
+      : [];
+  }
+  const availableMediaPlugins = useMemo(
+    () =>
+      os.packages.filter(
+        (item) =>
+          item.packageType === "plugin" &&
+          item.enabled &&
+          item.permissions.includes("assets:read") &&
+          Boolean(item.runtimeUrl) &&
+          packageInstallStatus(item).available,
+      ),
+    [os.packages],
+  );
   const visibleEdgeIds = spatialIndex.queryEdgeIds(expandBounds(visibleBounds, 360));
   if (selectedEdgeId) visibleEdgeIds.add(selectedEdgeId);
   const visibleEdges = [...visibleEdgeIds]
@@ -1292,9 +1600,17 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           onPointerMove={handleStagePointerMove}
           onPointerUp={endStagePan}
           onPointerCancel={cancelStagePointer}
+          onLostPointerCapture={(event) => {
+            if (event.target === event.currentTarget) cancelStagePointer(event);
+          }}
           onContextMenu={handleStageContextMenu}
         >
-          <div className="canvas-grid" style={gridStyle} aria-hidden="true" />
+          <div
+            ref={gridRef}
+            className="canvas-grid"
+            style={gridStyle}
+            aria-hidden="true"
+          />
           {selectionBox && (
             <div
               className="canvas-selection-box"
@@ -1333,7 +1649,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             </div>
           )}
 
-          <div className="canvas-content" style={worldStyle}>
+          <div ref={contentRef} className="canvas-content" style={worldStyle}>
             {collaboration.presence
               .filter(
                 (item) =>
@@ -1399,6 +1715,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
               <NodeCard
                 key={node.id}
                 node={node}
+                canvasId={os.activeCanvasId}
                 workspaceId={os.workspaceId}
                 selected={node.id === os.selectedNodeId}
                 multiSelected={os.selectedNodeIds.includes(node.id)}
@@ -1410,11 +1727,17 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                   (asset) => asset.sourceNodeId !== node.id,
                 )}
                 inputAssets={inputAssetsByNode.get(node.id) ?? []}
+                inputTextContexts={inputTextContextsByNode.get(node.id) ?? []}
+                mediaPlugins={availableMediaPlugins.filter((item) =>
+                  mediaPluginSupports(item, node.kind),
+                )}
+                pluginRuntimeUrl={currentPluginRuntimeUrl(node)}
                 onSelect={(additive) => {
                   setSelectedEdgeId(null);
                   os.selectNode(node.id, additive);
                 }}
                 onMoveStart={os.beginNodeMove}
+                onMovePreview={(x, y) => previewNodeMove(node.id, x, y)}
                 onMove={(x, y) => os.moveNode(node.id, x, y)}
                 onUpdate={(patch) => os.updateNode(node.id, patch)}
                 onSizeChange={handleNodeSizeChange}
@@ -1446,28 +1769,39 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
                 onRun={() => void os.startRun(node.id)}
                 onRerunBranch={() => void os.rerunBranch(node.id)}
                 onDelete={() => void os.deleteNode(node.id)}
-                onOpenPlugin={() => {
-                  const packageId =
-                    typeof node.parameters?.packageId === "string"
-                      ? node.parameters.packageId
-                      : "";
-                  const packageKey =
-                    typeof node.parameters?.packageKey === "string"
-                      ? node.parameters.packageKey
-                      : "";
-                  const installedPlugin = os.packages.find(
-                    (item) =>
-                      item.id === packageId ||
-                      (Boolean(packageKey) && item.packageKey === packageKey),
-                  );
-                  const savedRuntimeUrl =
-                    typeof node.parameters?.runtimeUrl === "string"
-                      ? node.parameters.runtimeUrl
-                      : null;
+                onOpenPlugin={(mode = "window") => {
+                  const installedPlugin = installedPluginForNode(node);
 
                   setPluginRuntime({
                     title: installedPlugin?.name ?? node.title,
-                    url: installedPlugin?.runtimeUrl ?? savedRuntimeUrl,
+                    url: currentPluginRuntimeUrl(node),
+                    packageId:
+                      installedPlugin?.id ??
+                      (typeof node.parameters?.packageId === "string"
+                        ? node.parameters.packageId
+                        : null),
+                    packageKey:
+                      installedPlugin?.packageKey ??
+                      (typeof node.parameters?.packageKey === "string"
+                        ? node.parameters.packageKey
+                        : null),
+                    assetContexts: pluginAssetContextsFromReferences(
+                      os.activeCanvasId,
+                      inputAssetsByNode.get(node.id) ?? [],
+                    ),
+                    textContexts: inputTextContextsByNode.get(node.id) ?? [],
+                    mode,
+                  });
+                }}
+                onOpenMediaPlugin={(plugin) => {
+                  setPluginRuntime({
+                    title: plugin.name,
+                    url: plugin.runtimeUrl ?? null,
+                    packageId: plugin.id,
+                    packageKey: plugin.packageKey ?? null,
+                    assetContexts: pluginAssetContextForNode(node),
+                    textContexts: [],
+                    mode: "window",
                   });
                 }}
               />
@@ -1762,12 +2096,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           messages={os.messages}
           plan={os.plan}
           isPlanning={os.isPlanning}
+          isQuickAnswering={os.isQuickAnswering}
           runState={os.runState}
           capabilities={os.capabilities}
           models={os.models}
           canvasAssets={canvasAssets}
+          nodes={os.nodes}
+          onFocusNode={focusNodeOnCanvas}
           onClose={() => os.setConsoleOpen(false)}
           onSubmit={os.submitIntent}
+          onQuickAnswer={os.submitQuickAnswer}
           onGenerate={os.generateDirectly}
           onUploadAttachments={os.uploadIntentAttachments}
           onConfirmPlan={os.confirmPlan}
@@ -1776,6 +2114,33 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           onStart={os.startRun}
           onPause={os.pauseRun}
           onCancel={os.cancelRun}
+          onClearMessages={() => {
+            void dialog
+              .confirm("确定清空当前对话的所有消息？此操作不可恢复。", {
+                tone: "danger",
+                title: "清空对话",
+                confirmText: "清空",
+                cancelText: "取消",
+              })
+              .then((ok) => {
+                if (ok) os.clearMessages();
+              });
+          }}
+          onNewConversation={() => {
+            void dialog
+              .confirm("结束当前对话并新建一个？当前对话将归档保存。", {
+                tone: "warning",
+                title: "新建对话",
+                confirmText: "确定",
+                cancelText: "取消",
+              })
+              .then((ok) => {
+                if (ok) os.startNewConversation();
+              });
+          }}
+          conversationHistory={os.conversationHistory}
+          onFetchHistory={os.fetchConversationHistory}
+          onRestoreConversation={os.restoreConversation}
         />
       )}
       {shareOpen && (
@@ -1801,6 +2166,12 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
         <PluginRuntimeDialog
           title={pluginRuntime.title}
           url={pluginRuntime.url}
+          workspaceId={os.workspaceId}
+          packageId={pluginRuntime.packageId}
+          packageKey={pluginRuntime.packageKey}
+          assetContexts={pluginRuntime.assetContexts}
+          textContexts={pluginRuntime.textContexts}
+          initialMode={pluginRuntime.mode}
           onClose={() => setPluginRuntime(null)}
         />
       )}
@@ -1867,7 +2238,7 @@ function CanvasDistributionDialog({
     }
   }
 
-  return (
+  return createPortal(
     <div
       className="extension-modal-backdrop"
       role="presentation"
@@ -1896,7 +2267,10 @@ function CanvasDistributionDialog({
         {!shared ? (
           <>
             <div className="workflow-publish-form">
-              <label className="span-two">
+              <label
+                className="span-two canvas-share-scope-field"
+                style={{ width: "25%", minWidth: 180, justifySelf: "start" }}
+              >
                 <span>共享范围</span>
                 <select
                   value={audience}
@@ -1974,7 +2348,8 @@ function CanvasDistributionDialog({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -2076,7 +2451,7 @@ function CanvasShareDialog({
     }
   }
 
-  return (
+  return createPortal(
     <div
       className="extension-modal-backdrop"
       role="presentation"
@@ -2213,6 +2588,7 @@ function CanvasShareDialog({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

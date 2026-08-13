@@ -229,14 +229,22 @@ export function modelAdapterProbeRequest(config: ModelAdapterConfig) {
     return new Request(baseUrl, { method: "HEAD", headers });
   }
   if (
-    config.protocol === "runninghub-sparkvideo-mini" ||
     config.protocol === "runninghub-sparkvideo-mini-multimodal" ||
-    config.protocol === "runninghub-sparkvideo" ||
     config.protocol === "runninghub-sparkvideo-multimodal" ||
-    config.protocol === "runninghub-minimax-h3"
+    config.protocol === "runninghub-minimax-h3" ||
+    config.protocol === "runninghub-seedance" ||
+    config.protocol === "runninghub-suno-v5" ||
+    config.protocol === "runninghub-rh-image-2" ||
+    config.protocol === "runninghub-nano-banana-2"
   ) {
     headers.set("content-type", "application/json");
-    return new Request("https://www.runninghub.cn/openapi/v2/query", {
+    const queryEndpoint =
+      config.protocol === "runninghub-rh-image-2" ||
+      config.protocol === "runninghub-nano-banana-2" ||
+      config.protocol === "runninghub-suno-v5"
+        ? "https://www.runninghub.ai/openapi/v2/query"
+        : "https://www.runninghub.cn/openapi/v2/query";
+    return new Request(queryEndpoint, {
       method: "POST",
       headers,
       body: JSON.stringify({ taskId: "0" }),
@@ -432,17 +440,58 @@ export async function probeModelAdapter(
     );
     const latencyMs = Date.now() - startedAt;
     if (response.ok) {
+      if (
+            config.protocol === "runninghub-sparkvideo-mini-multimodal" ||
+            config.protocol === "runninghub-sparkvideo-multimodal" ||
+        config.protocol === "runninghub-minimax-h3" ||
+        config.protocol === "runninghub-seedance" ||
+        config.protocol === "runninghub-suno-v5" ||
+        config.protocol === "runninghub-rh-image-2" ||
+        config.protocol === "runninghub-nano-banana-2"
+      ) {
+        const probePayload = await readResponseJsonLimited(response).catch(
+          () => null,
+        );
+        const probeRecord =
+          probePayload && typeof probePayload === "object"
+            ? (probePayload as Record<string, unknown>)
+            : {};
+        const probeCode =
+          typeof probeRecord.code === "number" ? probeRecord.code : null;
+        const probeDetail =
+          typeof probeRecord.msg === "string"
+            ? probeRecord.msg
+            : typeof probeRecord.message === "string"
+              ? probeRecord.message
+              : "";
+        const denied =
+          probeCode === 401 ||
+          probeCode === 403 ||
+          /access denied|access_denied|permission/i.test(probeDetail);
+        if (denied) {
+          return {
+            ok: false,
+            state: "attention",
+            latencyMs,
+            message: probeDetail
+              ? `密钥无权调用该标准模型 API：${probeDetail.slice(0, 240)}（标准模型 API 仅限企业级-共享 API Key）`
+              : "密钥无权调用该标准模型 API（标准模型 API 仅限企业级-共享 API Key）",
+          };
+        }
+      }
       let discoveredModels: string[] | undefined;
       let catalog: AdapterModelDescriptor[] | undefined;
       if (
         config.protocol !== "generic-rest" &&
         config.protocol !== "async-video" &&
         config.protocol !== "dall-e-3" &&
-        config.protocol !== "runninghub-sparkvideo-mini" &&
         config.protocol !== "runninghub-sparkvideo-mini-multimodal" &&
-        config.protocol !== "runninghub-sparkvideo" &&
         config.protocol !== "runninghub-sparkvideo-multimodal" &&
         config.protocol !== "runninghub-minimax-h3" &&
+        config.protocol !== "runninghub-seedance" &&
+        config.protocol !== "runninghub-suno-v5" &&
+        config.protocol !== "runninghub-rh-image-2" &&
+        config.protocol !== "runninghub-nano-banana-2" &&
         !(config.protocol === "gemini" && config.modalities.includes("image"))
       ) {
         const payload = await readResponseJsonLimited(response).catch(() => null);

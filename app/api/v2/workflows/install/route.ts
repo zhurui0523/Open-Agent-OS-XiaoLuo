@@ -14,12 +14,15 @@ import { requireProjectAccess } from "../../../../lib/authorization";
 import { mysqlNow, mysqlTransaction } from "../../../../lib/mysql";
 import { roleForNode } from "../../../../lib/node-role";
 import {
+  applyWorkflowAssetBundles,
   workflowIntegrity,
   workflowTokenHash,
+  type WorkflowAssetBundle,
   type WorkflowGraphSnapshot,
   type WorkflowRequirements,
 } from "../../../../lib/workflow-marketplace";
 import { compileWorkflow } from "../../../../lib/workflow-kernel";
+import { packageAvailableToUser } from "../../../../lib/package-availability";
 import type { CanvasNode, ModelProtocol } from "../../../../types";
 
 function parseJson<T>(value: string, fallback: T) {
@@ -168,7 +171,7 @@ export async function POST(request: Request) {
           .from(packages)
           .where(
             and(
-              eq(packages.workspaceId, access.workspaceId),
+              packageAvailableToUser(access.workspaceId, user.id),
               ne(packages.lifecycleState, "uninstalled"),
               eq(packages.enabled, true),
             ),
@@ -182,7 +185,7 @@ export async function POST(request: Request) {
           .innerJoin(packages, eq(packages.id, packageCapabilities.packageId))
           .where(
             and(
-              eq(packages.workspaceId, access.workspaceId),
+              packageAvailableToUser(access.workspaceId, user.id),
               eq(packages.enabled, true),
               eq(packageCapabilities.enabled, true),
             ),
@@ -322,6 +325,22 @@ export async function POST(request: Request) {
     }));
     compileWorkflow(nodes, edges);
 
+    const assetBundles = Array.isArray(manifest.assets)
+      ? (manifest.assets as WorkflowAssetBundle[])
+      : [];
+    if (assetBundles.length) {
+      await applyWorkflowAssetBundles({
+        db,
+        workspaceId: access.workspaceId,
+        nodes,
+        bundles: assetBundles.map((bundle) => ({
+          ...bundle,
+          nodeId: idMap.get(bundle.nodeId) ?? bundle.nodeId,
+        })),
+        sourceRef: listing.id,
+      });
+    }
+
     const canvasId = crypto.randomUUID();
     const installationId = `workflow_install_${crypto.randomUUID()}`;
     const now = mysqlNow();
@@ -359,8 +378,8 @@ export async function POST(request: Request) {
             node.modelId,
             node.x,
             node.y,
-            null,
-            null,
+            node.progress ?? null,
+            node.result ?? null,
             JSON.stringify(node.parameters ?? {}),
             node.createdAt ?? null,
           ],

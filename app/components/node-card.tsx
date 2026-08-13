@@ -8,23 +8,29 @@ import {
   ChevronUp,
   Clock3,
   Copy,
+  Cpu,
   Download,
   FileText,
   FileOutput,
   GitBranch,
+  GripVertical,
   Image as ImageIcon,
   LoaderCircle,
+  Maximize2,
   Pause,
   Play,
   Plus,
   RotateCcw,
+  Sparkles,
   Video,
   X,
   XCircle,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -35,12 +41,16 @@ import type {
   CanvasNode,
   Capability,
   KernelNodeOutput,
+  InstalledPackage,
+  MediaPluginType,
   ModelInputAssetKind,
   ModelInputConstraints,
   ModelConnection,
   NodeInputAssetReference,
   NodeStatus,
   PortDataType,
+  PluginAssetContext,
+  PluginTextContext,
 } from "../types";
 import { SUPPORTED_FILE_ACCEPT } from "../lib/file-formats";
 import { portColor, portsForNode } from "../lib/node-ports";
@@ -65,12 +75,20 @@ import {
 } from "../lib/capability-sync";
 import { IconButton } from "./icon-button";
 import { AssetContentPreview } from "./asset-content-preview";
+import { AudioPlayer } from "./audio-player";
+import { AssetPluginMenu } from "./asset-plugin-menu";
+import { VideoPlayer } from "./video-player";
+import { SelectMenu } from "./select-menu";
 import { SchemaFields } from "./schema-fields";
 import { SchemaOutput } from "./schema-output";
+import type { PluginRuntimeMode } from "./plugin-runtime-dialog";
 import {
   normalizeModelInputConstraints,
   validateModelInputAssets,
 } from "../lib/model-input-constraints";
+import { launchPluginRuntime } from "../lib/plugin-runtime-client";
+import { pluginAssetContextsFromReferences } from "../lib/plugin-reference-context";
+import { syncPluginReferenceFrame } from "../lib/plugin-reference-bridge";
 
 const statusMeta: Record<
   NodeStatus,
@@ -141,6 +159,7 @@ function textDownloadName(title: string) {
 
 interface NodeCardProps {
   node: CanvasNode;
+  canvasId: string;
   workspaceId: string;
   selected: boolean;
   multiSelected: boolean;
@@ -150,8 +169,12 @@ interface NodeCardProps {
   models: ModelConnection[];
   canvasAssets: CanvasAssetReference[];
   inputAssets: NodeInputAssetReference[];
+  inputTextContexts: PluginTextContext[];
+  mediaPlugins: InstalledPackage[];
+  pluginRuntimeUrl?: string | null;
   onSelect: (additive?: boolean) => void;
   onMoveStart: () => void;
+  onMovePreview: (x: number, y: number) => void;
   onMove: (x: number, y: number) => void;
   onUpdate: (patch: Partial<CanvasNode>) => void;
   onSizeChange: (nodeId: string, height: number) => void;
@@ -168,7 +191,8 @@ interface NodeCardProps {
   onRun: () => void;
   onRerunBranch: () => void;
   onDelete: () => void;
-  onOpenPlugin: () => void;
+  onOpenPlugin: (mode?: PluginRuntimeMode) => void;
+  onOpenMediaPlugin: (plugin: InstalledPackage) => void;
 }
 
 const inputAssetMeta: Record<
@@ -187,9 +211,9 @@ export function InputAssetPreview({ asset }: { asset: CanvasAssetReference }) {
     <div className="node-input-asset-preview" aria-hidden="true">
       {asset.kind === "image" && asset.url ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={asset.url} alt="" draggable={false} />
+        <img src={asset.url} alt="" draggable={false} loading="lazy" decoding="async" />
       ) : asset.kind === "video" && asset.url ? (
-        <video src={asset.url} muted playsInline preload="metadata" />
+        <video src={`${asset.url}#t=0.1`} muted playsInline preload="metadata" />
       ) : (
         <AssetIcon size={17} />
       )}
@@ -906,6 +930,32 @@ function NodeInputAssets({
   );
 }
 
+function audioTagString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+// 尽力从模型参数或内核输出数据中提取音乐节点的风格标签（tags），
+// 供音频播放器信息头展示胶囊；不存在时返回 undefined
+function findAudioTags(value: unknown, depth = 0): string | undefined {
+  if (!value || typeof value !== "object" || depth > 3) return undefined;
+  const record = value as Record<string, unknown>;
+  const direct = audioTagString(record.tags);
+  if (direct) return direct;
+  for (const key of ["value", "data", "parameters", "modelParameters"]) {
+    const nested = record[key];
+    if (Array.isArray(nested)) {
+      for (const item of nested) {
+        const found = findAudioTags(item, depth + 1);
+        if (found) return found;
+      }
+    } else {
+      const found = findAudioTags(nested, depth + 1);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 interface NodeWorkbenchProps {
   node: CanvasNode;
 }
@@ -936,6 +986,11 @@ function NodeWorkbench({ node }: NodeWorkbenchProps) {
       : undefined;
   const isAssetReference =
     parameters.source === "asset-kernel" && Boolean(assetContentUrl);
+  const audioTags =
+    node.kind === "audio"
+      ? findAudioTags(parameters.modelParameters) ??
+        findAudioTags(kernelOutput?.data)
+      : undefined;
 
   return (
     <section className={`node-workbench workbench-${node.kind}`}>
@@ -958,13 +1013,16 @@ function NodeWorkbench({ node }: NodeWorkbenchProps) {
             src={mediaUrl}
             alt={`${node.title} 生成结果`}
             draggable={false}
+            loading="lazy"
+            decoding="async"
           />
         )}
         {node.kind === "video" && mediaUrl && (
-          <video src={mediaUrl} controls aria-label={`${node.title} 生成结果`} />
+          // #t=0.1 让浏览器加载第一帧作为缩略图，避免预览一片漆黑
+          <VideoPlayer src={`${mediaUrl}#t=0.1`} title={node.title} />
         )}
         {node.kind === "audio" && mediaUrl && (
-          <audio src={mediaUrl} controls preload="metadata" />
+          <AudioPlayer src={mediaUrl} title={node.title} tags={audioTags} />
         )}
         {node.kind === "document" && isAssetReference && mediaUrl && (
           <AssetContentPreview
@@ -988,6 +1046,7 @@ function NodeWorkbench({ node }: NodeWorkbenchProps) {
 
 export function NodeCard({
   node,
+  canvasId,
   workspaceId,
   selected,
   multiSelected,
@@ -997,8 +1056,12 @@ export function NodeCard({
   models,
   canvasAssets = [],
   inputAssets = [],
+  inputTextContexts = [],
+  mediaPlugins = [],
+  pluginRuntimeUrl: currentPluginRuntimeUrl,
   onSelect,
   onMoveStart,
+  onMovePreview,
   onMove,
   onUpdate,
   onSizeChange,
@@ -1011,8 +1074,27 @@ export function NodeCard({
   onRerunBranch,
   onDelete,
   onOpenPlugin,
+  onOpenMediaPlugin,
 }: NodeCardProps) {
   const cardRef = useRef<HTMLElement>(null);
+  const pluginPreviewFrameRef = useRef<HTMLIFrameElement>(null);
+  const pluginPreviewHostRef = useRef<HTMLDivElement>(null);
+  const pluginAssetContextsRef = useRef<PluginAssetContext[]>([]);
+  const pluginTextContextsRef = useRef<PluginTextContext[]>([]);
+  const pluginAssetContexts = useMemo(
+    () => pluginAssetContextsFromReferences(canvasId, inputAssets),
+    [canvasId, inputAssets],
+  );
+  const notifyPluginPreviewHost = useCallback(
+    (frame: HTMLIFrameElement | null) => {
+      syncPluginReferenceFrame(
+        frame,
+        pluginAssetContextsRef.current,
+        pluginTextContextsRef.current,
+      );
+    },
+    [],
+  );
   const drag = useRef<{
     pointerId: number;
     startX: number;
@@ -1021,9 +1103,12 @@ export function NodeCard({
     nodeY: number;
     checkpointed: boolean;
     captured: boolean;
+    captureTarget: HTMLElement | null;
   } | null>(null);
   const moveFrame = useRef<number | null>(null);
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
+  const latestMove = useRef<{ x: number; y: number } | null>(null);
+  const dragCleanup = useRef<(() => void) | null>(null);
   const resize = useRef<{
     pointerId: number;
     startX: number;
@@ -1033,6 +1118,46 @@ export function NodeCard({
   } | null>(null);
   const pendingResize = useRef<{ width: number; height: number } | null>(null);
   const resizeCleanup = useRef<(() => void) | null>(null);
+  const finishNodeDrag = useCallback(
+    (pointerId?: number) => {
+      const current = drag.current;
+      if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) {
+        return;
+      }
+      dragCleanup.current?.();
+      dragCleanup.current = null;
+      if (moveFrame.current !== null) {
+        cancelAnimationFrame(moveFrame.current);
+        moveFrame.current = null;
+      }
+      const finalMove = latestMove.current;
+      pendingMove.current = null;
+      latestMove.current = null;
+      if (finalMove) {
+        const card = cardRef.current;
+        if (card) {
+          card.style.transform = "";
+          card.style.left = `${finalMove.x}px`;
+          card.style.top = `${finalMove.y}px`;
+          card.classList.remove("is-dragging");
+        }
+        onMove(finalMove.x, finalMove.y);
+      } else {
+        cardRef.current?.classList.remove("is-dragging");
+      }
+      if (
+        current.captureTarget?.hasPointerCapture(current.pointerId)
+      ) {
+        try {
+          current.captureTarget.releasePointerCapture(current.pointerId);
+        } catch {
+          // The browser may already have released capture after blur/cancel.
+        }
+      }
+      drag.current = null;
+    },
+    [onMove],
+  );
   const copyFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const downloadFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -1044,7 +1169,12 @@ export function NodeCard({
     "idle" | "downloaded" | "failed"
   >("idle");
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const status = statusMeta[node.status];
+  const failureNotice =
+    node.status === "failed" || node.status === "skipped"
+      ? (node.result ?? "").replace(/^执行失败：/, "").trim()
+      : "";
   const ResultPlaceholderIcon = kindMeta[node.kind].icon;
   const StatusIcon = status.icon;
   const role = roleForNode(node);
@@ -1112,11 +1242,35 @@ export function NodeCard({
     Boolean(kernelOutput?.assetUrl) ||
     (typeof node.parameters?.assetContentUrl === "string" &&
       Boolean(node.parameters.assetContentUrl.trim()));
+  const mediaSourceUrl =
+    (typeof kernelOutput?.assetUrl === "string" && kernelOutput.assetUrl) ||
+    (typeof node.parameters?.assetContentUrl === "string" &&
+      node.parameters.assetContentUrl) ||
+    "";
+  const mediaDownloadName = (() => {
+    const fallbackLabel =
+      node.kind === "video"
+        ? "视频"
+        : node.kind === "audio"
+          ? "音频"
+          : "图片";
+    const fallbackExtension =
+      node.kind === "video" ? "mp4" : node.kind === "audio" ? "mp3" : "png";
+    const base = (node.title || fallbackLabel).replace(/[\\/:*?"<>|]/g, "_").trim() || fallbackLabel;
+    const extension = (mediaSourceUrl.split(".").pop() ?? "").split("?")[0];
+    return /^[a-z0-9]{1,10}$/i.test(extension)
+      ? `${base}.${extension.toLowerCase()}`
+      : `${base}.${fallbackExtension}`;
+  })();
   const isEmptyResultPlaceholder = role === "result" && !hasResultOutput;
   const isSizedTextResult =
     role === "result" && node.kind === "text" && hasResultOutput;
   const hasTextResultActions =
     selected && role === "result" && node.kind === "text" && hasResultOutput;
+  const hasMediaActions =
+    selected && (node.kind === "image" || node.kind === "video") && hasMediaAssetOutput;
+  const hasAudioActions =
+    selected && node.kind === "audio" && hasMediaAssetOutput;
   const isExecutionNode = role === "execution";
   const hasResultTextSurface =
     role === "result" &&
@@ -1128,7 +1282,10 @@ export function NodeCard({
   const hideSucceededResultStatus =
     role === "result" &&
     node.status === "succeeded" &&
-    (node.kind === "text" || node.kind === "image" || node.kind === "video");
+    (node.kind === "text" ||
+      node.kind === "image" ||
+      node.kind === "video" ||
+      node.kind === "audio");
   const isGeneratingResultPlaceholder =
     isEmptyResultPlaceholder &&
     (node.status === "queued" ||
@@ -1141,55 +1298,198 @@ export function NodeCard({
     source: string;
     url: string;
   } | null>(null);
+  const [pluginLaunching, setPluginLaunching] = useState(false);
+  const [pluginLaunchError, setPluginLaunchError] = useState<string | null>(
+    null,
+  );
+  const [pluginLaunchRevision, setPluginLaunchRevision] = useState(0);
+  const pluginPackageId =
+    typeof node.parameters?.packageId === "string"
+      ? node.parameters.packageId
+      : null;
+  const pluginPackageKey =
+    typeof node.parameters?.packageKey === "string"
+      ? node.parameters.packageKey
+      : null;
   const pluginRuntimeUrl =
-    role === "plugin" && typeof node.parameters?.runtimeUrl === "string"
-      ? node.parameters.runtimeUrl
+    role === "plugin"
+      ? currentPluginRuntimeUrl ??
+        (typeof node.parameters?.runtimeUrl === "string"
+          ? node.parameters.runtimeUrl
+          : "")
       : "";
-
   useEffect(() => {
+    const controller = new AbortController();
     let cancelled = false;
-    if (!pluginRuntimeUrl) return;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setPluginPreview((current) =>
+        current?.source === pluginRuntimeUrl ? current : null,
+      );
+      setPluginLaunchError(null);
+    });
+
+    if (!pluginRuntimeUrl) {
+      void Promise.resolve().then(() => {
+        if (cancelled) return;
+        setPluginLaunching(false);
+        if (role === "plugin") {
+          setPluginLaunchError("插件运行地址不可用，请重新安装或更新插件。");
+        }
+      });
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
 
     const target = new URL(pluginRuntimeUrl, window.location.origin);
     if (!target.pathname.startsWith("/api/v2/packages/runtime/static/")) {
       void Promise.resolve().then(() => {
         if (!cancelled) {
           setPluginPreview({ source: pluginRuntimeUrl, url: target.href });
+          setPluginLaunching(false);
         }
       });
-      return;
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
     }
 
-    void fetch("/api/v2/packages/runtime/launch", {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: target.href }),
-    })
-      .then(async (response) => {
-        const payload = (await response.json()) as {
-          url?: string;
-          error?: string;
-        };
-        if (!response.ok || !payload.url) {
-          throw new Error(payload.error || "无法加载插件预览");
-        }
-        return payload.url;
-      })
+    void Promise.resolve().then(() => {
+      if (!cancelled) setPluginLaunching(true);
+    });
+    void launchPluginRuntime(
+      {
+        url: target.href,
+        workspaceId,
+        packageId: pluginPackageId,
+        packageKey: pluginPackageKey,
+        packageName: node.title,
+      },
+      { signal: controller.signal },
+    )
       .then((previewUrl) => {
         if (!cancelled) {
           setPluginPreview({ source: pluginRuntimeUrl, url: previewUrl });
+          setPluginLaunchError(null);
         }
       })
-      .catch(() => {
-        // Keep the node usable through the full-window launch button when a
-        // lightweight preview grant cannot be created.
+      .catch((error) => {
+        if (!cancelled && !controller.signal.aborted) {
+          setPluginLaunchError(
+            error instanceof Error ? error.message : "无法加载插件预览",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPluginLaunching(false);
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [pluginRuntimeUrl]);
+  }, [
+    node.title,
+    pluginPackageId,
+    pluginPackageKey,
+    pluginLaunchRevision,
+    pluginRuntimeUrl,
+    role,
+    workspaceId,
+  ]);
+
+  useEffect(() => {
+    const host = pluginPreviewHostRef.current;
+    if (role !== "plugin" || !host) return;
+
+    let frame: HTMLIFrameElement | null = null;
+    const previewUrl =
+      pluginPreview?.source === pluginRuntimeUrl ? pluginPreview.url : null;
+    if (!frame && previewUrl) {
+      const existing = pluginPreviewFrameRef.current;
+      if (existing?.dataset.runtimeUrl === previewUrl) {
+        frame = existing;
+      } else {
+        existing?.remove();
+        const created = document.createElement("iframe");
+        created.dataset.runtimeUrl = previewUrl;
+        created.src = previewUrl;
+        created.title = `${node.title} 画布插件`;
+        created.setAttribute(
+          "sandbox",
+          "allow-scripts allow-same-origin allow-forms allow-downloads",
+        );
+        created.setAttribute("referrerPolicy", "no-referrer");
+        created.setAttribute(
+          "allow",
+          "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'",
+        );
+        created.tabIndex = 0;
+        created.addEventListener("load", () => {
+          notifyPluginPreviewHost(created);
+        });
+        frame = created;
+      }
+    }
+    if (!frame) return;
+
+    pluginPreviewFrameRef.current = frame;
+    frame.style.cssText =
+      "display:block;width:100%;height:100%;border:0;background:#fff;pointer-events:auto;";
+    host.appendChild(frame);
+    notifyPluginPreviewHost(frame);
+    // 缩放跟随容器宽度：拖动调整卡片大小时，预览内容同步放大/缩小
+    return () => {
+      if (frame.parentNode === host) {
+        frame.remove();
+      }
+      if (pluginPreviewFrameRef.current === frame) {
+        pluginPreviewFrameRef.current = null;
+      }
+    };
+  }, [
+    node.title,
+    notifyPluginPreviewHost,
+    pluginPreview,
+    pluginRuntimeUrl,
+    role,
+  ]);
+
+  useEffect(() => {
+    if (role !== "plugin") return;
+    pluginAssetContextsRef.current = pluginAssetContexts;
+    pluginTextContextsRef.current = inputTextContexts;
+    notifyPluginPreviewHost(pluginPreviewFrameRef.current);
+  }, [inputTextContexts, notifyPluginPreviewHost, pluginAssetContexts, role]);
+
+  useEffect(() => {
+    if (role !== "plugin") return;
+    function handleMessage(event: MessageEvent) {
+      if (event.source !== pluginPreviewFrameRef.current?.contentWindow) return;
+      if (!event.data || typeof event.data !== "object") return;
+      if (event.data.type === "xiaoluo:runtime-grant-expired") {
+        setPluginPreview(null);
+        setPluginLaunchRevision((current) => current + 1);
+        return;
+      }
+      if (event.data.type === "xiaoluo:capability-request") {
+        pluginPreviewFrameRef.current?.contentWindow?.postMessage(
+          {
+            type: "xiaoluo:capability-response",
+            requestId: event.data.requestId,
+            ok: false,
+            error: "该插件能力尚未获得宿主授权。",
+          },
+          "*",
+        );
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [role]);
 
   useEffect(() => {
     const card = cardRef.current;
@@ -1209,6 +1509,15 @@ export function NodeCard({
       }
       if (downloadFeedbackTimer.current !== null) {
         clearTimeout(downloadFeedbackTimer.current);
+      }
+      dragCleanup.current?.();
+      dragCleanup.current = null;
+      drag.current = null;
+      pendingMove.current = null;
+      latestMove.current = null;
+      if (cardRef.current) {
+        cardRef.current.style.transform = "";
+        cardRef.current.classList.remove("is-dragging");
       }
       resizeCleanup.current?.();
     },
@@ -1319,6 +1628,67 @@ export function NodeCard({
     }
   }
 
+  async function copyMediaLink(url: string) {
+    try {
+      if (!url) throw new Error("没有可复制的链接");
+
+      try {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error("clipboard unavailable");
+        }
+        await navigator.clipboard.writeText(url);
+      } catch {
+        const textarea = document.createElement("textarea");
+        textarea.value = url;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) throw new Error("复制失败");
+      }
+
+      setCopyState("copied");
+      resetResultActionFeedback("copy");
+    } catch {
+      setCopyState("failed");
+      resetResultActionFeedback("copy", 2200);
+    }
+  }
+
+  async function downloadMediaAsset(
+    sourceUrl: string,
+    downloadUrl?: string,
+  ) {
+    try {
+      if (!sourceUrl) throw new Error("没有可下载的媒体");
+      try {
+        const response = await fetch(downloadUrl ?? sourceUrl, {
+          credentials: "include",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = mediaDownloadName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      } catch {
+        window.open(sourceUrl, "_blank", "noopener");
+      }
+      setDownloadState("downloaded");
+      resetResultActionFeedback("download");
+    } catch {
+      setDownloadState("failed");
+      resetResultActionFeedback("download", 2200);
+    }
+  }
+
   const customWidth = customWidthForNode(node);
   const customHeight = heightForNode(node);
   const nodeSizeStyle: CSSProperties = {
@@ -1372,26 +1742,29 @@ export function NodeCard({
       const current = resize.current;
       if (!current || current.pointerId !== event.pointerId) return;
       const scale = Math.max(zoom / 100, 0.01);
-      const next = {
-        width: Math.round(
-          Math.min(
-            MAX_NODE_WIDTH,
-            Math.max(
-              minWidthForNode(node),
-              current.startWidth + (clientX - current.startX) / scale,
-            ),
+      const nextWidth = Math.round(
+        Math.min(
+          MAX_NODE_WIDTH,
+          Math.max(
+            minWidthForNode(node),
+            current.startWidth + (clientX - current.startX) / scale,
           ),
         ),
-        height: Math.round(
-          Math.min(
-            MAX_NODE_HEIGHT,
-            Math.max(
-              minHeightForNode(node),
-              current.startHeight + (clientY - current.startY) / scale,
-            ),
-          ),
-        ),
-      };
+      );
+      // 插件卡片锁定预览画面比例（920:612），高度跟随宽度，内容等比填满
+      const nextHeight =
+        role === "plugin"
+          ? Math.round(nextWidth * (612 / 920))
+          : Math.round(
+              Math.min(
+                MAX_NODE_HEIGHT,
+                Math.max(
+                  minHeightForNode(node),
+                  current.startHeight + (clientY - current.startY) / scale,
+                ),
+              ),
+            );
+      const next = { width: nextWidth, height: nextHeight };
       pendingResize.current = next;
       card.style.width = `${next.width}px`;
       card.style.height = `${next.height}px`;
@@ -1399,6 +1772,13 @@ export function NodeCard({
 
     const handleResizeMove = (pointerEvent: PointerEvent) => {
       if (pointerEvent.pointerId !== event.pointerId) return;
+      if (
+        pointerEvent.pointerType !== "touch" &&
+        (pointerEvent.buttons & 1) === 0
+      ) {
+        cancelResize();
+        return;
+      }
       pointerEvent.preventDefault();
       applyResize(pointerEvent.clientX, pointerEvent.clientY);
     };
@@ -1407,8 +1787,20 @@ export function NodeCard({
       window.removeEventListener("pointermove", handleResizeMove);
       window.removeEventListener("pointerup", finishResize);
       window.removeEventListener("pointercancel", finishResize);
+      window.removeEventListener("blur", cancelResize);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       document.body.classList.remove("is-resizing-node");
       resizeCleanup.current = null;
+    }
+
+    function cancelResize() {
+      cleanup();
+      resize.current = null;
+      commitResize();
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState !== "visible") cancelResize();
     }
 
     function finishResize(pointerEvent: PointerEvent) {
@@ -1421,10 +1813,12 @@ export function NodeCard({
     }
 
     document.body.classList.add("is-resizing-node");
-    resizeCleanup.current = cleanup;
+    resizeCleanup.current = cancelResize;
     window.addEventListener("pointermove", handleResizeMove, { passive: false });
     window.addEventListener("pointerup", finishResize, { passive: false });
     window.addEventListener("pointercancel", finishResize, { passive: false });
+    window.addEventListener("blur", cancelResize);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
   }
 
   function resizeWithKeyboard(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -1440,25 +1834,30 @@ export function NodeCard({
     onSelect(false);
     onMoveStart();
     const step = event.shiftKey ? 100 : 20;
+    const keyNextWidth = Math.round(
+      Math.min(
+        MAX_NODE_WIDTH,
+        Math.max(
+          minWidthForNode(node),
+          cardRef.current.offsetWidth + horizontal * step,
+        ),
+      ),
+    );
     pendingResize.current = {
-      width: Math.round(
-        Math.min(
-          MAX_NODE_WIDTH,
-          Math.max(
-            minWidthForNode(node),
-            cardRef.current.offsetWidth + horizontal * step,
-          ),
-        ),
-      ),
-      height: Math.round(
-        Math.min(
-          MAX_NODE_HEIGHT,
-          Math.max(
-            minHeightForNode(node),
-            cardRef.current.offsetHeight + vertical * step,
-          ),
-        ),
-      ),
+      width: keyNextWidth,
+      // 插件卡片锁定预览画面比例（920:612），高度跟随宽度
+      height:
+        role === "plugin"
+          ? Math.round(keyNextWidth * (612 / 920))
+          : Math.round(
+              Math.min(
+                MAX_NODE_HEIGHT,
+                Math.max(
+                  minHeightForNode(node),
+                  cardRef.current.offsetHeight + vertical * step,
+                ),
+              ),
+            ),
     };
     commitResize();
   }
@@ -1480,8 +1879,11 @@ export function NodeCard({
     if (panMode || event.button !== 0) return;
     const target = event.target as HTMLElement;
     if (
-      target.closest("button, input, textarea, select, audio, a")
+      target.closest(
+        "button, input, textarea, select, audio, a, [contenteditable='true']"
+      )
     ) {
+      // 提示词输入框内优先进行文字选中/复制，不触发卡片拖拽
       return;
     }
     const video = target.closest("video");
@@ -1490,6 +1892,7 @@ export function NodeCard({
       const controlHeight = Math.min(48, rect.height * 0.3);
       if (event.clientY >= rect.bottom - controlHeight) return;
     }
+    finishNodeDrag();
     drag.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -1498,8 +1901,32 @@ export function NodeCard({
       nodeY: node.y,
       checkpointed: false,
       captured: false,
+      captureTarget: null,
     };
     onSelect(event.shiftKey || event.metaKey || event.ctrlKey);
+
+    const finishFromWindow = (pointerEvent: PointerEvent) => {
+      finishNodeDrag(pointerEvent.pointerId);
+    };
+    const finishAfterFocusLoss = () => finishNodeDrag();
+    const finishAfterVisibilityLoss = () => {
+      if (document.visibilityState !== "visible") finishNodeDrag();
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointerup", finishFromWindow, true);
+      window.removeEventListener("pointercancel", finishFromWindow, true);
+      window.removeEventListener("blur", finishAfterFocusLoss);
+      document.removeEventListener(
+        "visibilitychange",
+        finishAfterVisibilityLoss,
+      );
+      if (dragCleanup.current === cleanup) dragCleanup.current = null;
+    };
+    dragCleanup.current = cleanup;
+    window.addEventListener("pointerup", finishFromWindow, true);
+    window.addEventListener("pointercancel", finishFromWindow, true);
+    window.addEventListener("blur", finishAfterFocusLoss);
+    document.addEventListener("visibilitychange", finishAfterVisibilityLoss);
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLElement>) {
@@ -1513,20 +1940,28 @@ export function NodeCard({
       event.preventDefault();
       event.currentTarget.setPointerCapture(event.pointerId);
       drag.current.captured = true;
+      drag.current.captureTarget = event.currentTarget;
     }
     if (!drag.current.checkpointed) {
       drag.current.checkpointed = true;
       onMoveStart();
+      cardRef.current?.classList.add("is-dragging");
     }
     const scale = zoom / 100;
-    pendingMove.current = {
+    const nextMove = {
       x: drag.current.nodeX + (event.clientX - drag.current.startX) / scale,
       y: drag.current.nodeY + (event.clientY - drag.current.startY) / scale,
     };
+    pendingMove.current = nextMove;
+    latestMove.current = nextMove;
     if (moveFrame.current === null) {
       moveFrame.current = requestAnimationFrame(() => {
-        if (pendingMove.current) {
-          onMove(pendingMove.current.x, pendingMove.current.y);
+        const next = pendingMove.current;
+        const current = drag.current;
+        const card = cardRef.current;
+        if (next && current && card) {
+          card.style.transform = `translate3d(${next.x - current.nodeX}px, ${next.y - current.nodeY}px, 0)`;
+          onMovePreview(next.x, next.y);
         }
         pendingMove.current = null;
         moveFrame.current = null;
@@ -1535,13 +1970,7 @@ export function NodeCard({
   }
 
   function endDrag(event: React.PointerEvent<HTMLElement>) {
-    if (drag.current?.pointerId === event.pointerId) {
-      if (pendingMove.current) {
-        onMove(pendingMove.current.x, pendingMove.current.y);
-        pendingMove.current = null;
-      }
-      drag.current = null;
-    }
+    finishNodeDrag(event.pointerId);
   }
 
   if (role === "material") {
@@ -1583,6 +2012,7 @@ export function NodeCard({
           onPointerMove={handlePointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
+          onLostPointerCapture={endDrag}
         >
           {mediaUrl ? (
             <>
@@ -1614,9 +2044,148 @@ export function NodeCard({
           )}
         </div>
 
+        {selected && mediaUrl && (node.kind === "image" || node.kind === "video" || node.kind === "audio") && (
+          <nav
+            className="result-action-nav"
+            aria-label={node.kind === "video" ? "视频功能导航" : node.kind === "audio" ? "音频功能导航" : "图片功能导航"}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <AssetPluginMenu
+              plugins={mediaPlugins}
+              mediaKind={node.kind as MediaPluginType}
+              onSelect={onOpenMediaPlugin}
+            />
+            {node.kind === "audio" ? (
+              <button
+                type="button"
+                className={`result-text-action ${copyState === "copied" ? "is-success" : copyState === "failed" ? "is-error" : ""}`}
+                aria-label={copyState === "copied" ? "音频链接已复制" : "复制音频链接"}
+                title={copyState === "failed" ? "复制失败，请重试" : "复制音频链接"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void copyMediaLink(mediaUrl);
+                }}
+              >
+                {copyState === "copied" ? <Check size={14} /> : <Copy size={14} />}
+                <span>
+                  {copyState === "copied"
+                    ? "已复制"
+                    : copyState === "failed"
+                      ? "复制失败"
+                      : "复制"}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="result-text-action"
+                aria-label={node.kind === "video" ? "放大查看视频" : "放大查看图片"}
+                title="放大查看"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setViewerOpen(true);
+                }}
+              >
+                <Maximize2 size={14} />
+                <span>放大</span>
+              </button>
+            )}
+            <button
+              type="button"
+              className={`result-text-action ${downloadState === "downloaded" ? "is-success" : downloadState === "failed" ? "is-error" : ""}`}
+              aria-label={
+                downloadState === "downloaded"
+                  ? node.kind === "video"
+                    ? "视频已下载"
+                    : "图片已下载"
+                  : node.kind === "video"
+                    ? "下载视频"
+                    : "下载图片"
+              }
+              title={downloadState === "failed" ? "下载失败，请重试" : node.kind === "video" ? "下载视频" : "下载图片"}
+              onClick={(event) => {
+                event.stopPropagation();
+                void downloadMediaAsset(mediaUrl, assetDownloadUrl);
+              }}
+            >
+              {downloadState === "downloaded" ? (
+                <Check size={14} />
+              ) : (
+                <Download size={14} />
+              )}
+              <span>
+                {downloadState === "downloaded"
+                  ? "已下载"
+                  : downloadState === "failed"
+                    ? "下载失败"
+                    : "下载"}
+              </span>
+            </button>
+          </nav>
+        )}
+
+      {viewerOpen && mediaUrl
+        ? createPortal(
+            <div
+              className="media-viewer-overlay"
+              role="dialog"
+              aria-label={node.kind === "video" ? "放大查看视频" : "放大查看图片"}
+              onClick={() => setViewerOpen(false)}
+            >
+              {node.kind === "video" ? (
+                <div onClick={(event) => event.stopPropagation()}>
+                  <VideoPlayer src={mediaUrl} autoPlay title={`${node.title} 放大预览`} />
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={mediaUrl}
+                  alt={`${node.title} 放大预览`}
+                  onClick={(event) => event.stopPropagation()}
+                />
+              )}
+              <button
+                type="button"
+                className="media-viewer-close"
+                aria-label="关闭放大预览"
+                title="关闭"
+                onClick={() => setViewerOpen(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+
         {renderResizeHandle()}
 
-        {outputPorts.map((port, index) => {
+                {inputPorts.map((port, index) => {
+          const compatible =
+            Boolean(connectionDataType) &&
+            port.dataTypes.includes(connectionDataType as PortDataType);
+          const offset = (index - (inputPorts.length - 1) / 2) * 22;
+          return (
+            <button
+              type="button"
+              key={port.id}
+              className={`port port-input ${compatible ? "is-available" : connectionDataType ? "is-incompatible" : ""}`}
+              style={
+                {
+                  top: `calc(50% + ${offset}px)`,
+                  "--port-color": portColor(port.dataTypes[0]),
+                } as CSSProperties
+              }
+              data-node-id={node.id}
+              data-port-id={port.id}
+              data-port-types={port.dataTypes.join(",")}
+              title={`${port.label} · 输入 ${port.dataTypes.join(" / ")}`}
+              aria-label={`${port.label}输入端口`}
+              onPointerDown={(event) => event.stopPropagation()}
+            />
+          );
+        })}
+{outputPorts.map((port, index) => {
           const offset = (index - (outputPorts.length - 1) / 2) * 22;
           return (
             <button
@@ -1668,38 +2237,86 @@ export function NodeCard({
         aria-label={`插件 ${pluginName}`}
       >
         <div
-          className="plugin-launcher-surface"
+          className="plugin-canvas-toolbar"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
+          onLostPointerCapture={endDrag}
+          title="拖动插件卡片"
         >
-          <strong>{pluginName}</strong>
-          <div className="plugin-launcher-preview" aria-hidden="true">
-            {pluginPreview?.source === pluginRuntimeUrl ? (
-              <iframe
-                src={pluginPreview.url}
-                title={`${pluginName} 预览`}
-                sandbox="allow-scripts"
-                referrerPolicy="no-referrer"
-                tabIndex={-1}
-              />
-            ) : (
-              <span>插件预览</span>
-            )}
-          </div>
-          <button
-            type="button"
-            className="plugin-launcher-run-button"
+          <span className="plugin-canvas-drag-label">
+            <GripVertical size={16} aria-hidden="true" />
+            <strong>{pluginName}</strong>
+          </span>
+          <div
+            className="plugin-runtime-actions plugin-canvas-runtime-actions"
+            aria-label="插件显示方式"
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelect(false);
-              onOpenPlugin();
-            }}
           >
-            <span>启动插件</span>
-          </button>
+            <button
+              type="button"
+              title={`以小窗打开 ${pluginName}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(false);
+                onOpenPlugin("window");
+              }}
+            >
+              小窗
+            </button>
+            <button
+              type="button"
+              title={`全屏打开 ${pluginName}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(false);
+                onOpenPlugin("fullscreen");
+              }}
+            >
+              全屏
+            </button>
+            <button
+              type="button"
+              className="is-active"
+              aria-current="page"
+              title={`${pluginName} 当前显示在画布中`}
+              onClick={(event) => event.stopPropagation()}
+            >
+              画布
+            </button>
+          </div>
+        </div>
+
+        <div className="plugin-launcher-surface">
+          <div className="plugin-launcher-preview" ref={pluginPreviewHostRef}>
+            {pluginPreview?.source !== pluginRuntimeUrl ? (
+              pluginLaunchError ? (
+                <div className="plugin-launcher-state is-error" role="alert">
+                  <AlertCircle size={22} aria-hidden="true" />
+                  <strong>插件加载失败</strong>
+                  <span>{pluginLaunchError}</span>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPluginLaunchRevision((current) => current + 1);
+                    }}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" />
+                    重新加载
+                  </button>
+                </div>
+              ) : (
+                <div className="plugin-launcher-state is-loading" role="status">
+                  <LoaderCircle size={22} aria-hidden="true" />
+                  <span>
+                    {pluginLaunching ? "正在连接插件…" : "正在准备插件…"}
+                  </span>
+                </div>
+              )
+            ) : null}
+          </div>
         </div>
 
         {renderResizeHandle()}
@@ -1785,6 +2402,7 @@ export function NodeCard({
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onLostPointerCapture={endDrag}
       aria-label={
         isEmptyResultPlaceholder
           ? resultPlaceholderLabels[node.kind]
@@ -1859,6 +2477,181 @@ export function NodeCard({
           </button>
         </nav>
       )}
+
+        {hasMediaActions && (
+          <nav
+            className="result-action-nav"
+            aria-label={node.kind === "video" ? "视频功能导航" : node.kind === "audio" ? "音频功能导航" : "图片功能导航"}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <AssetPluginMenu
+              plugins={mediaPlugins}
+              mediaKind={node.kind as MediaPluginType}
+              onSelect={onOpenMediaPlugin}
+            />
+            {node.kind === "audio" ? (
+              <button
+                type="button"
+                className={`result-text-action ${copyState === "copied" ? "is-success" : copyState === "failed" ? "is-error" : ""}`}
+                aria-label={copyState === "copied" ? "音频链接已复制" : "复制音频链接"}
+                title={copyState === "failed" ? "复制失败，请重试" : "复制音频链接"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void copyMediaLink(mediaSourceUrl);
+                }}
+              >
+                {copyState === "copied" ? <Check size={14} /> : <Copy size={14} />}
+                <span>
+                  {copyState === "copied"
+                    ? "已复制"
+                    : copyState === "failed"
+                      ? "复制失败"
+                      : "复制"}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="result-text-action"
+                aria-label={node.kind === "video" ? "放大查看视频" : "放大查看图片"}
+                title="放大查看"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setViewerOpen(true);
+                }}
+              >
+                <Maximize2 size={14} />
+                <span>放大</span>
+              </button>
+            )}
+            <button
+              type="button"
+              className={`result-text-action ${downloadState === "downloaded" ? "is-success" : downloadState === "failed" ? "is-error" : ""}`}
+              aria-label={
+                downloadState === "downloaded"
+                  ? node.kind === "video"
+                    ? "视频已下载"
+                    : "图片已下载"
+                  : node.kind === "video"
+                    ? "下载视频"
+                    : "下载图片"
+              }
+              title={downloadState === "failed" ? "下载失败，请重试" : node.kind === "video" ? "下载视频" : "下载图片"}
+              onClick={(event) => {
+                event.stopPropagation();
+                void downloadMediaAsset(mediaSourceUrl, typeof node.parameters?.assetDownloadUrl === "string"
+                  ? node.parameters.assetDownloadUrl
+                  : undefined);
+              }}
+            >
+              {downloadState === "downloaded" ? (
+                <Check size={14} />
+              ) : (
+                <Download size={14} />
+              )}
+              <span>
+                {downloadState === "downloaded"
+                  ? "已下载"
+                  : downloadState === "failed"
+                    ? "下载失败"
+                    : "下载"}
+              </span>
+            </button>
+          </nav>
+        )}
+
+        {hasAudioActions && (
+          <nav
+            className="result-action-nav"
+            aria-label="音频功能导航"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <AssetPluginMenu
+              plugins={mediaPlugins}
+              mediaKind="audio"
+              onSelect={onOpenMediaPlugin}
+            />
+            <button
+              type="button"
+              className={`result-text-action ${copyState === "copied" ? "is-success" : copyState === "failed" ? "is-error" : ""}`}
+              aria-label={copyState === "copied" ? "音频链接已复制" : "复制音频链接"}
+              title={copyState === "failed" ? "复制失败，请重试" : "复制音频链接"}
+              onClick={(event) => {
+                event.stopPropagation();
+                void copyMediaLink(mediaSourceUrl);
+              }}
+            >
+              {copyState === "copied" ? <Check size={14} /> : <Copy size={14} />}
+              <span>
+                {copyState === "copied"
+                  ? "已复制"
+                  : copyState === "failed"
+                    ? "复制失败"
+                    : "复制"}
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`result-text-action ${downloadState === "downloaded" ? "is-success" : downloadState === "failed" ? "is-error" : ""}`}
+              aria-label={downloadState === "downloaded" ? "音频已下载" : "下载音频"}
+              title={downloadState === "failed" ? "下载失败，请重试" : "下载音频"}
+              onClick={(event) => {
+                event.stopPropagation();
+                void downloadMediaAsset(mediaSourceUrl, typeof node.parameters?.assetDownloadUrl === "string"
+                  ? node.parameters.assetDownloadUrl
+                  : undefined);
+              }}
+            >
+              {downloadState === "downloaded" ? (
+                <Check size={14} />
+              ) : (
+                <Download size={14} />
+              )}
+              <span>
+                {downloadState === "downloaded"
+                  ? "已下载"
+                  : downloadState === "failed"
+                    ? "下载失败"
+                    : "下载"}
+              </span>
+            </button>
+          </nav>
+        )}
+
+      {viewerOpen && mediaSourceUrl
+        ? createPortal(
+            <div
+              className="media-viewer-overlay"
+              role="dialog"
+              aria-label={node.kind === "video" ? "放大查看视频" : "放大查看图片"}
+              onClick={() => setViewerOpen(false)}
+            >
+              {node.kind === "video" ? (
+                <div onClick={(event) => event.stopPropagation()}>
+                  <VideoPlayer src={mediaSourceUrl} autoPlay title={`${node.title} 放大预览`} />
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={mediaSourceUrl}
+                  alt={`${node.title} 放大预览`}
+                  onClick={(event) => event.stopPropagation()}
+                />
+              )}
+              <button
+                type="button"
+                className="media-viewer-close"
+                aria-label="关闭放大预览"
+                title="关闭"
+                onClick={() => setViewerOpen(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+
       {isEmptyResultPlaceholder ? (
         <div className="result-placeholder-surface node-drag-handle">
           <header className="result-placeholder-header">
@@ -1923,7 +2716,8 @@ export function NodeCard({
             <NodeWorkbench node={node} />
           ) : null}
 
-          {role === "execution" && (
+          {role === "execution" &&
+            (node.kind !== "audio" || inputConstraints.maxTotal > 0) && (
             <NodeInputAssets
               assets={inputAssets}
               constraints={inputConstraints}
@@ -1958,12 +2752,12 @@ export function NodeCard({
                 </div>
                 <div className="node-fields node-fields-single">
                   <label>
-                    <span>能力</span>
-                    <select
-                      aria-label="能力"
+                    <Sparkles size={13} className="node-strip-icon" aria-hidden="true" />
+                    <span>skill</span>
+                    <SelectMenu
+                      ariaLabel="skill"
                       value={node.capabilityId}
-                      onChange={(event) => {
-                        const nextCapabilityId = event.target.value;
+                      onChange={(nextCapabilityId) => {
                         const capability =
                           nextCapabilityId === "none"
                             ? undefined
@@ -2018,19 +2812,22 @@ export function NodeCard({
                           },
                         });
                       }}
-                    >
-                      <option value="none">无</option>
-                      {!hasNoCapability && !activeCapability && (
-                        <option value={node.capabilityId}>
-                          缺失能力（历史节点只读）
-                        </option>
-                      )}
-                      {compatibleCapabilities.map((capability) => (
-                        <option key={capability.id} value={capability.id}>
-                          {capability.title}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: "none", label: "无" },
+                        ...(!hasNoCapability && !activeCapability
+                          ? [
+                              {
+                                value: node.capabilityId,
+                                label: "缺失能力（历史节点只读）",
+                              },
+                            ]
+                          : []),
+                        ...compatibleCapabilities.map((capability) => ({
+                          value: capability.id,
+                          label: capability.title,
+                        })),
+                      ]}
+                    />
                   </label>
                 </div>
 
@@ -2055,41 +2852,48 @@ export function NodeCard({
                 </div>
                 <div className="node-fields node-fields-single">
                   <label>
+                    <Cpu size={13} className="node-strip-icon" aria-hidden="true" />
                     <span>模型</span>
-                    <select
-                      aria-label="模型"
+                    <SelectMenu
+                      ariaLabel="模型"
                       value={selectedModelId}
                       disabled={
                         capabilityContract?.executionMode === "remote"
                       }
-                      onChange={(event) =>
+                      onChange={(nextModelId) =>
                         onUpdate({
-                          modelId: event.target.value,
+                          modelId: nextModelId,
                           parameters: {
                             ...node.parameters,
                             modelParameters: {},
                           },
                         })
                       }
-                    >
-                      {capabilityContract?.executionMode === "remote" && (
-                        <option value="skill-runtime">
-                          Skill 内置执行服务
-                        </option>
-                      )}
-                      {!compatibleModels.some(
-                        (model) => model.id === selectedModelId,
-                      ) && (
-                        <option value="unconfigured">
-                          未配置兼容模型
-                        </option>
-                      )}
-                      {compatibleModels.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.name}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        ...(capabilityContract?.executionMode === "remote"
+                          ? [
+                              {
+                                value: "skill-runtime",
+                                label: "Skill 内置执行服务",
+                              },
+                            ]
+                          : []),
+                        ...(!compatibleModels.some(
+                          (model) => model.id === selectedModelId,
+                        )
+                          ? [
+                              {
+                                value: "unconfigured",
+                                label: "未配置兼容模型",
+                              },
+                            ]
+                          : []),
+                        ...compatibleModels.map((model) => ({
+                          value: model.id,
+                          label: model.name,
+                        })),
+                      ]}
+                    />
                   </label>
                 </div>
 
@@ -2130,46 +2934,45 @@ export function NodeCard({
                 <div className="node-fields">
                   <label>
                     <span>失败策略</span>
-                    <select
-                      aria-label="失败策略"
+                    <SelectMenu
+                      ariaLabel="失败策略"
                       value={String(
                         node.parameters?.failurePolicy ?? "stop",
                       )}
-                      onChange={(event) =>
+                      onChange={(nextPolicy) =>
                         onUpdate({
                           parameters: {
                             ...node.parameters,
-                            failurePolicy: event.target.value,
+                            failurePolicy: nextPolicy,
                           },
                         })
                       }
-                    >
-                      <option value="stop">停止工作流</option>
-                      <option value="retry">自动重试</option>
-                      <option value="skip">跳过并继续</option>
-                    </select>
+                      options={[
+                        { value: "stop", label: "停止工作流" },
+                        { value: "retry", label: "自动重试" },
+                        { value: "skip", label: "跳过并继续" },
+                      ]}
+                    />
                   </label>
                   {node.parameters?.failurePolicy === "retry" && (
                     <label>
                       <span>最大尝试次数</span>
-                      <select
-                        aria-label="最大尝试次数"
+                      <SelectMenu
+                        ariaLabel="最大尝试次数"
                         value={String(node.parameters?.retryLimit ?? 3)}
-                        onChange={(event) =>
+                        onChange={(nextRetry) =>
                           onUpdate({
                             parameters: {
                               ...node.parameters,
-                              retryLimit: Number(event.target.value),
+                              retryLimit: Number(nextRetry),
                             },
                           })
                         }
-                      >
-                        {[2, 3, 4, 5].map((attempts) => (
-                          <option key={attempts} value={attempts}>
-                            {attempts} 次
-                          </option>
-                        ))}
-                      </select>
+                        options={[2, 3, 4, 5].map((attempts) => ({
+                          value: String(attempts),
+                          label: `${attempts} 次`,
+                        }))}
+                      />
                     </label>
                   )}
                 </div>
@@ -2182,6 +2985,13 @@ export function NodeCard({
       {(node.status === "running" || node.status === "queued") && (
         <div className="node-progress" aria-label={`进度 ${node.progress ?? 0}%`}>
           <span style={{ width: `${node.progress ?? 0}%` }} />
+        </div>
+      )}
+
+      {failureNotice && (
+        <div className="node-failure-notice" role="alert">
+          <AlertCircle size={13} aria-hidden="true" />
+          <span>{failureNotice}</span>
         </div>
       )}
 
@@ -2221,17 +3031,6 @@ export function NodeCard({
           <IconButton
             label={
               inputAssetValidation.valid
-                ? "运行节点"
-                : "输入素材超出当前模型限制"
-            }
-            onClick={onRun}
-            disabled={!inputAssetValidation.valid}
-          >
-            <Play size={15} />
-          </IconButton>
-          <IconButton
-            label={
-              inputAssetValidation.valid
                 ? "重试节点"
                 : "输入素材超出当前模型限制"
             }
@@ -2259,12 +3058,39 @@ export function NodeCard({
           >
             <ChevronDown size={15} />
           </IconButton>
+          <button
+            type="button"
+            className="node-run-button"
+            title={
+              !inputAssetValidation.valid
+                ? "输入素材超出当前模型限制"
+                : undefined
+            }
+            onClick={onRun}
+            onPointerDown={(event) => event.stopPropagation()}
+            disabled={
+              !inputAssetValidation.valid ||
+              node.status === "waiting" ||
+              node.status === "running" ||
+              node.status === "queued" ||
+              node.status === "paused"
+            }
+          >
+            {node.status === "waiting" || node.status === "running" ? (
+              <LoaderCircle size={13} className="spin" aria-hidden="true" />
+            ) : (
+              <Play size={13} aria-hidden="true" />
+            )}
+            运行节点
+          </button>
         </div>
       )}
         </>
       )}
 
-      {node.status !== "draft" && !hideSucceededResultStatus && (
+      {node.status !== "draft" &&
+        !hideSucceededResultStatus &&
+        !isGeneratingResultPlaceholder && (
         <span
           className={`node-status node-corner-status status-${node.status}`}
           role="status"

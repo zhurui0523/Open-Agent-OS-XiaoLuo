@@ -312,11 +312,10 @@ test("native Gemini output text is extracted from candidate parts", () => {
 });
 
 for (const protocol of [
-  "runninghub-sparkvideo-mini",
   "runninghub-sparkvideo-mini-multimodal",
-  "runninghub-sparkvideo",
   "runninghub-sparkvideo-multimodal",
   "runninghub-minimax-h3",
+  "runninghub-seedance",
 ]) {
   test(`${protocol} probe uses the non-generating RunningHub query endpoint`, async () => {
     const request = modelAdapterProbeRequest({
@@ -333,3 +332,17 @@ for (const protocol of [
     assert.deepEqual(await request.json(), { taskId: "0" });
   });
 }
+
+test("runninghub-suno-v5 probe uses the RunningHub ai query endpoint", async () => {
+  const request = modelAdapterProbeRequest({
+    protocol: "runninghub-suno-v5",
+    baseUrl: "https://www.runninghub.ai/openapi/v2/rhart-audio/suno-v5.5/custom",
+    modelName: "suno-v5.5",
+    modalities: ["audio"],
+    credential: "secret",
+  });
+
+  assert.equal(request.url, "https://www.runninghub.ai/openapi/v2/query");
+  assert.equal(request.method, "POST");
+  assert.deepEqual(await request.json(), { taskId: "0" });
+});

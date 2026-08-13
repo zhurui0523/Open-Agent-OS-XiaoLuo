@@ -24,23 +24,27 @@ test("text models only show text-compatible protocols", () => {
 });
 
 test("image models hide text-only and video-only protocols", () => {
-  assert.deepEqual(valuesFor("image"), ["gemini", "dall-e-3"]);
+  assert.deepEqual(valuesFor("image"), ["gemini", "dall-e-3", "runninghub-rh-image-2", "runninghub-nano-banana-2"]);
 });
 
 test("video models show the supported RunningHub providers", () => {
   assert.deepEqual(valuesFor("video"), [
-    "runninghub-sparkvideo-mini",
     "runninghub-sparkvideo-mini-multimodal",
-    "runninghub-sparkvideo",
     "runninghub-sparkvideo-multimodal",
     "runninghub-minimax-h3",
+    "runninghub-seedance",
   ]);
+});
+
+test("audio models show the RunningHub music provider", () => {
+  assert.deepEqual(valuesFor("audio"), ["runninghub-suno-v5"]);
+  assert.equal(defaultProtocolForModelType("audio"), "runninghub-suno-v5");
 });
 
 test("an incompatible protocol falls back to the type default", () => {
   assert.equal(protocolSupportsModelType("gemini", "video"), false);
   assert.equal(protocolSupportsModelType("ark", "text"), false);
-  assert.equal(defaultProtocolForModelType("video"), "runninghub-sparkvideo-mini");
+  assert.equal(defaultProtocolForModelType("video"), "runninghub-sparkvideo-mini-multimodal");
   assert.equal(defaultProtocolForModelType("image"), "dall-e-3");
   assert.equal(protocolSupportsModelType("dall-e-3", "image"), true);
   assert.equal(protocolSupportsModelType("dall-e-3", "text"), false);
@@ -78,14 +82,6 @@ test("video models do not expose placeholder parameter choices", () => {
 });
 
 test("RunningHub video providers expose their own fixed parameter choices", () => {
-  const mini = builtInModelParameterSchema(
-    "runninghub-sparkvideo-mini",
-    "video",
-  );
-  const standard = builtInModelParameterSchema(
-    "runninghub-sparkvideo",
-    "video",
-  );
   const miniMultimodal = builtInModelParameterSchema(
     "runninghub-sparkvideo-mini-multimodal",
     "video",
@@ -99,17 +95,6 @@ test("RunningHub video providers expose their own fixed parameter choices", () =
     "video",
   );
 
-  assert.deepEqual(mini.properties.resolution.enum, [
-    "480p",
-    "720p",
-    "1080p",
-    "2k",
-    "4k",
-  ]);
-  assert.equal(mini.properties.duration.default, "5");
-  assert.equal(mini.properties.ratio.default, "adaptive");
-  assert.equal(standard.properties.resolution.enum.includes("native1080p"), true);
-  assert.equal(standard.properties.resolution.enum.includes("native4k"), true);
   assert.deepEqual(miniMultimodal.properties.conversionSlots.enum, [
     "all",
     "image1",
@@ -136,4 +121,22 @@ test("RunningHub video providers expose their own fixed parameter choices", () =
   assert.deepEqual(minimax.properties.ratio.enum, [
     "adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16",
   ]);
+
+  const seedance = builtInModelParameterSchema("runninghub-seedance", "video");
+  assert.deepEqual(seedance.properties.resolution.enum, [
+    "480p",
+    "720p",
+    "1080p",
+    "2k",
+    "4k",
+  ]);
+  assert.equal(seedance.properties.duration.enum.length, 28);
+  assert.equal(seedance.properties.duration.enum[0], "-1");
+  assert.deepEqual(seedance.properties.bitrateMode.enum, ["standard", "high"]);
+  assert.equal(seedance.properties.conversionSlots.enum.length, 41);
+  assert.equal(seedance.properties.conversionSlots.enum[31], "video1");
+
+  const suno = builtInModelParameterSchema("runninghub-suno-v5", "audio");
+  assert.equal(suno.properties.title.maxLength, 80);
+  assert.equal(suno.properties.tags.maxLength, 1000);
 });

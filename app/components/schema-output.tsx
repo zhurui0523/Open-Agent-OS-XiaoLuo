@@ -1,5 +1,7 @@
 "use client";
 
+import { VideoPlayer } from "./video-player";
+
 interface JsonSchema {
   type?: string;
   title?: string;
@@ -24,7 +26,7 @@ function media(schema: JsonSchema, value: unknown) {
     );
   }
   if (schema.format === "video") {
-    return <video src={value} controls preload="metadata" />;
+    return <VideoPlayer src={value} title={schema.title} />;
   }
   if (schema.format === "audio") {
     return <audio src={value} controls preload="metadata" />;

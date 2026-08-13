@@ -16,6 +16,7 @@ import {
 import { dispatchKernelRun } from "../../../../lib/kernel-worker";
 import { pollGenerationJob } from "../../../../lib/model-async-jobs";
 import { mysqlNow } from "../../../../lib/mysql";
+import { purgeExpiredTrashedAssets } from "../../../../lib/asset-trash-cleanup";
 
 function authorizeWorker(request: Request) {
   const configured = process.env.RUNTIME_WORKER_TOKEN?.trim();
@@ -71,6 +72,10 @@ export async function POST(request: Request) {
     authorizeWorker(request);
     const db = await getDb();
     const now = mysqlNow();
+    const trashCleanup = await purgeExpiredTrashedAssets({
+      db,
+      batchSize: 500,
+    });
     const dueJobs = await db
       .select({
         id: generationJobs.id,
@@ -151,6 +156,8 @@ export async function POST(request: Request) {
       checkedAt: new Date().toISOString(),
       generationJobs: jobResults.length,
       kernelRuns: runResults.length,
+      expiredTrashAssets: trashCleanup.deletedAssets,
+      expiredTrashObjects: trashCleanup.deletedObjects,
       failed:
         jobResults.filter((item) => item.status === "failed").length +
         runResults.filter((item) => item.status === "failed").length,
@@ -160,6 +167,7 @@ export async function POST(request: Request) {
       checkedAt: new Date().toISOString(),
       jobs: jobResults,
       runs: runResults,
+      trashCleanup,
     });
   } catch (error) {
     if (error instanceof Response) return error;

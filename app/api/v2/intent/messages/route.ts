@@ -17,6 +17,7 @@ import {
   readIntentState,
 } from "../../../../lib/intent-store";
 import { mysqlNow } from "../../../../lib/mysql";
+import { packageAvailableToUser } from "../../../../lib/package-availability";
 import { planIntent } from "../../../../lib/server-intent-planner";
 import {
   detectIntentGaps,
@@ -124,7 +125,7 @@ export async function POST(request: Request) {
             and(
               eq(packageCapabilities.id, preferredCapabilityId),
               eq(packageCapabilities.enabled, true),
-              eq(packages.workspaceId, access.workspaceId),
+              packageAvailableToUser(access.workspaceId, user.id),
               eq(packages.enabled, true),
             ),
           )
