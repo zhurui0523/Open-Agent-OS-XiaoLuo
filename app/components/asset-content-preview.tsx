@@ -238,6 +238,14 @@ function FileFallback({
   );
 }
 
+export function resolveAssetContentUrl(url: string): string {
+  const match = /^asset:\/\/workspace\/(.+)$/.exec(url.trim());
+  if (match) {
+    return `/api/v2/files/content?assetId=${encodeURIComponent(match[1])}`;
+  }
+  return url;
+}
+
 export function AssetContentPreview({
   name,
   kind,
@@ -253,6 +261,8 @@ export function AssetContentPreview({
   downloadUrl?: string;
   compact?: boolean;
 }) {
+  // 兼容历史节点：asset:// 协议浏览器无法直接加载，转换为同源 HTTP 内容地址
+  contentUrl = resolveAssetContentUrl(contentUrl);
   const format = supportedFormatForName(name);
   if (kind === "image") {
     // The URL is an authenticated same-origin Asset Kernel route.

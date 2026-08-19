@@ -36,6 +36,7 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
+import { MediaViewer } from "./media-viewer";
 import type {
   CanvasAssetReference,
   CanvasNode,
@@ -57,8 +58,7 @@ import { portColor, portsForNode } from "../lib/node-ports";
 import { roleForNode } from "../lib/node-role";
 import {
   customWidthForNode,
-  EXECUTION_NODE_HEIGHT,
-  EXECUTION_NODE_WIDTH,
+  executionSizeForKind,
   heightForNode,
   MAX_NODE_HEIGHT,
   MAX_NODE_WIDTH,
@@ -479,6 +479,7 @@ export function NodePromptEditor({
   onAttach,
   onExpand,
   onSubmitShortcut,
+  onPasteFiles,
   ariaLabel = "节点任务描述",
   placeholder,
   autoFocus = false,
@@ -490,6 +491,8 @@ export function NodePromptEditor({
   onAttach: (sourceNodeId: string) => void;
   onExpand?: () => void;
   onSubmitShortcut?: () => void;
+  /** 粘贴文件（图片/视频/音频/任意文件）→ 转交宿主以附件上传 */
+  onPasteFiles?: (files: File[]) => void;
   ariaLabel?: string;
   placeholder?: string;
   autoFocus?: boolean;
@@ -595,6 +598,13 @@ export function NodePromptEditor({
           onExpand();
         }}
         onPaste={(event) => {
+          // 粘贴文件（图片/视频/音频/任意文件）→ 以附件形式上传，不作为文本插入
+          const pastedFiles = Array.from(event.clipboardData?.files ?? []);
+          if (pastedFiles.length && onPasteFiles) {
+            event.preventDefault();
+            onPasteFiles(pastedFiles);
+            return;
+          }
           event.preventDefault();
           insertPromptText(
             event.currentTarget,
@@ -1691,22 +1701,22 @@ export function NodeCard({
 
   const customWidth = customWidthForNode(node);
   const customHeight = heightForNode(node);
+  // 执行节点按类型使用独立最小尺寸：高度随内容自适应，选项再多也完整显示
+  const executionSize = executionSizeForKind(node.kind);
   const nodeSizeStyle: CSSProperties = {
     width:
       customWidth ??
       (isExecutionNode
-        ? EXECUTION_NODE_WIDTH
+        ? executionSize.width
         : isSizedTextResult
           ? TEXT_RESULT_NODE_WIDTH
           : undefined),
-    height:
-      customHeight ??
-      (isExecutionNode
-        ? EXECUTION_NODE_HEIGHT
-        : isSizedTextResult
-          ? TEXT_RESULT_NODE_HEIGHT
-          : undefined),
+    height: customHeight ?? (isSizedTextResult ? TEXT_RESULT_NODE_HEIGHT : undefined),
   };
+  // 仅在需要时写入 minHeight，避免 undefined 覆盖结果占位卡片的 minHeight
+  if (isExecutionNode && customHeight === undefined) {
+    nodeSizeStyle.minHeight = executionSize.height;
+  }
   const isUserSized = customWidth !== undefined || customHeight !== undefined;
 
   function commitResize() {
@@ -2124,39 +2134,14 @@ export function NodeCard({
           </nav>
         )}
 
-      {viewerOpen && mediaUrl
-        ? createPortal(
-            <div
-              className="media-viewer-overlay"
-              role="dialog"
-              aria-label={node.kind === "video" ? "放大查看视频" : "放大查看图片"}
-              onClick={() => setViewerOpen(false)}
-            >
-              {node.kind === "video" ? (
-                <div onClick={(event) => event.stopPropagation()}>
-                  <VideoPlayer src={mediaUrl} autoPlay title={`${node.title} 放大预览`} />
-                </div>
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={mediaUrl}
-                  alt={`${node.title} 放大预览`}
-                  onClick={(event) => event.stopPropagation()}
-                />
-              )}
-              <button
-                type="button"
-                className="media-viewer-close"
-                aria-label="关闭放大预览"
-                title="关闭"
-                onClick={() => setViewerOpen(false)}
-              >
-                <X size={18} />
-              </button>
-            </div>,
-            document.body,
-          )
-        : null}
+      {viewerOpen && mediaUrl ? (
+        <MediaViewer
+          url={mediaUrl}
+          kind={node.kind === "video" ? "video" : "image"}
+          title={`${node.title} 放大预览`}
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
 
         {renderResizeHandle()}
 
@@ -2618,39 +2603,14 @@ export function NodeCard({
           </nav>
         )}
 
-      {viewerOpen && mediaSourceUrl
-        ? createPortal(
-            <div
-              className="media-viewer-overlay"
-              role="dialog"
-              aria-label={node.kind === "video" ? "放大查看视频" : "放大查看图片"}
-              onClick={() => setViewerOpen(false)}
-            >
-              {node.kind === "video" ? (
-                <div onClick={(event) => event.stopPropagation()}>
-                  <VideoPlayer src={mediaSourceUrl} autoPlay title={`${node.title} 放大预览`} />
-                </div>
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={mediaSourceUrl}
-                  alt={`${node.title} 放大预览`}
-                  onClick={(event) => event.stopPropagation()}
-                />
-              )}
-              <button
-                type="button"
-                className="media-viewer-close"
-                aria-label="关闭放大预览"
-                title="关闭"
-                onClick={() => setViewerOpen(false)}
-              >
-                <X size={18} />
-              </button>
-            </div>,
-            document.body,
-          )
-        : null}
+      {viewerOpen && mediaSourceUrl ? (
+        <MediaViewer
+          url={mediaSourceUrl}
+          kind={node.kind === "video" ? "video" : "image"}
+          title={`${node.title} 放大预览`}
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
 
       {isEmptyResultPlaceholder ? (
         <div className="result-placeholder-surface node-drag-handle">
@@ -2890,7 +2850,9 @@ export function NodeCard({
                           : []),
                         ...compatibleModels.map((model) => ({
                           value: model.id,
-                          label: model.name,
+                          label: (model.capabilityTags ?? []).includes("local")
+                            ? "💻 " + model.name
+                            : model.name,
                         })),
                       ]}
                     />

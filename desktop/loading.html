@@ -64,10 +64,8 @@
         letter-spacing: -0.03em;
       }
 
-      .eyebrow {
-        margin: 9px 0 28px;
-        color: #5b6a86;
-        font-size: 14px;
+      h1 {
+        margin-bottom: 28px;
       }
 
       .progress {
@@ -164,7 +162,6 @@
         <img src="./assets/xiaoluo.png" alt="小逻" />
       </div>
       <h1>小逻工作台</h1>
-      <p class="eyebrow" id="eyebrow">桌面创作与智能画布</p>
       <div class="progress" aria-hidden="true"></div>
       <p class="status-title" id="status-title">正在检查小逻服务</p>
       <p class="status-detail" id="status-detail">请稍候…</p>
@@ -178,18 +175,16 @@
       const statusTitle = document.querySelector("#status-title");
       const statusDetail = document.querySelector("#status-detail");
       const retryButton = document.querySelector("#retry");
-      const eyebrow = document.querySelector("#eyebrow");
       const openSecondaryButton = document.querySelector("#open-secondary");
 
       function renderStatus(status) {
         shell.dataset.phase = status.phase || "checking";
-        statusTitle.textContent = status.title || "正在启动小逻工作台";
+        statusTitle.textContent = status.title || "正在启动中";
         statusDetail.textContent = status.detail || "请稍候…";
       }
 
       window.xiaoluoDesktop.getMeta().then((meta) => {
         const isProduction = meta.mode === "production";
-        eyebrow.textContent = isProduction ? "云端创作工作台" : "本地开发工作台";
         openSecondaryButton.textContent = isProduction ? "在浏览器中打开" : "查看日志";
         retryButton.textContent = isProduction ? "重新连接" : "重新启动";
       });

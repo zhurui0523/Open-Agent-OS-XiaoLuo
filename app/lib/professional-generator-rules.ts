@@ -10,7 +10,7 @@ import {
 
 export type ProfessionalGeneratorKind = Extract<
   NodeKind,
-  "text" | "image" | "video"
+  "text" | "image" | "video" | "audio"
 >;
 
 export function professionalGeneratorCapabilities(

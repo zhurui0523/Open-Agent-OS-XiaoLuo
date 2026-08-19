@@ -1,4 +1,4 @@
-import { readFile, access } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -16,7 +16,65 @@ const requiredDesktopFiles = [
   "desktop/package.json",
 ];
 
+const requiredPackagedFiles = [
+  "main.mjs",
+  "preload.cjs",
+  "loading.html",
+  "config.production.json",
+  "assets/**/*",
+  "package.json",
+];
+
+const textExtensions = new Set([
+  ".cjs",
+  ".css",
+  ".html",
+  ".js",
+  ".json",
+  ".md",
+  ".mjs",
+  ".svg",
+  ".txt",
+]);
+
+const forbiddenFilePatterns = [
+  /(^|[\\/])\.env(?:\.|$)/i,
+  /\.(?:key|pem|p12|pfx)$/i,
+  /(?:credentials|service-account|secrets?)\.json$/i,
+];
+
+const forbiddenContentPatterns = [
+  {
+    name: "服务端密钥字段",
+    pattern:
+      /(?:DB_PASSWORD|OSS_ACCESS_KEY_ID|OSS_ACCESS_KEY_SECRET|AUTH_SECRET|ACCESS_TOKEN_SECRET|PRIVATE_KEY)\s*[=:]/i,
+  },
+  {
+    name: "阿里云 AccessKey",
+    pattern: /(?:LTAI|STS\.)[A-Za-z0-9]{12,}/,
+  },
+  {
+    name: "私钥正文",
+    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  },
+  {
+    name: "带凭据的数据库连接串",
+    pattern: /(?:mysql|mariadb):\/\/[^\s:/]+:[^\s@]+@/i,
+  },
+];
+
 const errors = [];
+
+async function walk(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...(await walk(absolutePath)));
+    else if (entry.isFile()) files.push(absolutePath);
+  }
+  return files;
+}
 
 for (const relativePath of requiredDesktopFiles) {
   try {
@@ -100,12 +158,57 @@ if (packageJson) {
   if (build.asar !== true) {
     errors.push("正式安装包必须启用 asar");
   }
-  if (packagedFiles.some((entry) => String(entry).includes(".env"))) {
-    errors.push("安装包文件列表不能包含 .env 文件");
+
+  const normalizedPackagedFiles = packagedFiles.map((entry) =>
+    String(entry).replaceAll("\\", "/"),
+  );
+  for (const requiredFile of requiredPackagedFiles) {
+    if (!normalizedPackagedFiles.includes(requiredFile)) {
+      errors.push(`安装包文件列表缺少：${requiredFile}`);
+    }
   }
-  if (!packagedFiles.includes("config.production.json")) {
-    errors.push("安装包缺少生产地址配置");
+
+  for (const entry of normalizedPackagedFiles) {
+    if (entry.startsWith("../") || path.isAbsolute(entry)) {
+      errors.push(`安装包文件范围越界：${entry}`);
+    }
+    if (entry === "**/*" || entry === "../**/*" || entry.startsWith("app/")) {
+      errors.push(`安装包文件范围过宽：${entry}`);
+    }
+    if (forbiddenFilePatterns.some((pattern) => pattern.test(entry))) {
+      errors.push(`安装包文件列表包含敏感文件：${entry}`);
+    }
   }
+}
+
+try {
+  const desktopFiles = await walk(path.join(root, "desktop"));
+  const excludedDirectories = new Set(["dist", "node_modules"]);
+  const filesToScan = desktopFiles.filter((absolutePath) => {
+    const relativePath = path.relative(path.join(root, "desktop"), absolutePath);
+    const segments = relativePath.split(path.sep);
+    return !segments.some((segment) => excludedDirectories.has(segment));
+  });
+
+  for (const absolutePath of filesToScan) {
+    const relativePath = path
+      .relative(root, absolutePath)
+      .replaceAll(path.sep, "/");
+    if (forbiddenFilePatterns.some((pattern) => pattern.test(relativePath))) {
+      errors.push(`桌面端目录包含敏感文件：${relativePath}`);
+      continue;
+    }
+    if (!textExtensions.has(path.extname(absolutePath).toLowerCase())) continue;
+
+    const content = await readFile(absolutePath, "utf8");
+    for (const rule of forbiddenContentPatterns) {
+      if (rule.pattern.test(content)) {
+        errors.push(`${relativePath} 疑似包含${rule.name}`);
+      }
+    }
+  }
+} catch (error) {
+  errors.push(`无法扫描桌面端发布文件：${error.message}`);
 }
 
 if (errors.length > 0) {

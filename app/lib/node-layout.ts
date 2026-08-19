@@ -1,9 +1,26 @@
-import type { CanvasNode } from "../types";
+import type { CanvasNode, NodeKind } from "../types";
 import { roleForNode } from "./node-role";
 
 export const DEFAULT_NODE_WIDTH = 264;
 export const EXECUTION_NODE_WIDTH = 360;
 export const EXECUTION_NODE_HEIGHT = 300;
+
+/** 各类型执行节点的独立显示尺寸：未手动调整尺寸时按类型自适应，确保节点内选项完整显示 */
+export const EXECUTION_NODE_SIZES: Record<NodeKind, { width: number; height: number }> = {
+  text: { width: 360, height: 420 },
+  image: { width: 360, height: 455 },
+  video: { width: 360, height: 560 },
+  audio: { width: 360, height: 460 },
+  document: { width: 400, height: 400 },
+};
+export const EXECUTION_NODE_FALLBACK_SIZE = {
+  width: EXECUTION_NODE_WIDTH,
+  height: EXECUTION_NODE_HEIGHT,
+};
+
+export function executionSizeForKind(kind: NodeKind) {
+  return EXECUTION_NODE_SIZES[kind] ?? EXECUTION_NODE_FALLBACK_SIZE;
+}
 export const PLUGIN_NODE_WIDTH = 360;
 export const TEXT_RESULT_NODE_WIDTH = 360;
 export const TEXT_RESULT_NODE_HEIGHT = 400;
@@ -39,14 +56,15 @@ function textResultHasOutput(node: CanvasNode) {
 
 export function minWidthForNode(node: CanvasNode) {
   const role = roleForNode(node);
-  if (role === "execution") return 360;
+  if (role === "execution") return executionSizeForKind(node.kind).width;
   if (role === "plugin") return 240;
   return 120;
 }
 
 export function minHeightForNode(node: CanvasNode) {
   const role = roleForNode(node);
-  if (role === "execution" || role === "plugin") return 180;
+  if (role === "execution") return executionSizeForKind(node.kind).height;
+  if (role === "plugin") return 180;
   if (role === "material") return 80;
   return 120;
 }
@@ -69,7 +87,7 @@ export function widthForNode(node: CanvasNode) {
   const customWidth = customWidthForNode(node);
   if (customWidth !== undefined) return customWidth;
   const role = roleForNode(node);
-  if (role === "execution") return EXECUTION_NODE_WIDTH;
+  if (role === "execution") return executionSizeForKind(node.kind).width;
   if (role === "plugin") return PLUGIN_NODE_WIDTH;
   if (textResultHasOutput(node)) return TEXT_RESULT_NODE_WIDTH;
   return DEFAULT_NODE_WIDTH;
@@ -88,7 +106,7 @@ function autoLayoutHeightForNode(
   if (customHeight !== undefined) return customHeight;
 
   const role = roleForNode(node);
-  if (role === "execution") return EXECUTION_NODE_HEIGHT;
+  if (role === "execution") return executionSizeForKind(node.kind).height;
   if (role === "plugin") return 330;
   if (role === "result" && node.kind === "text" && textResultHasOutput(node)) {
     return TEXT_RESULT_NODE_HEIGHT;

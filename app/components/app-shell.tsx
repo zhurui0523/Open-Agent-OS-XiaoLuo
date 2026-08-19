@@ -29,6 +29,8 @@ function AuthenticatedShell({
   const [adminOpen, setAdminOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
+  /** 小逻结果面板开关：左侧工具栏与画布共享 */
+  const [brainDockOpen, setBrainDockOpen] = useState(false);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -86,6 +88,8 @@ function AuthenticatedShell({
     <div
       className={`app-shell theme-${os.preferences.canvasBackground} ${
         os.view === "canvas" ? "is-canvas-view" : ""
+      }${os.view === "canvas" && os.consoleOpen ? " is-intent-docked" : ""}${
+        brainDockOpen ? " is-brain-dock-open" : ""
       }`}
       data-theme={os.preferences.canvasBackground}
     >
@@ -119,7 +123,13 @@ function AuthenticatedShell({
           top: os.view === "canvas" ? 0 : "clamp(9px, 1.25vw, 16px)",
         }}
       >
-        {os.view === "canvas" && <CanvasView os={os} />}
+        {os.view === "canvas" && (
+          <CanvasView
+            os={os}
+            brainDockOpen={brainDockOpen}
+            onBrainDockOpenChange={setBrainDockOpen}
+          />
+        )}
         {os.view === "assets" && (
           <AssetsView
             workspaceId={os.workspaceId}

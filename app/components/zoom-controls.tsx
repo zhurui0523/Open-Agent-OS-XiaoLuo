@@ -1,6 +1,6 @@
 "use client";
 
-import { Focus, Map as MapIcon, Minus, Plus } from "lucide-react";
+import { AppWindow, Focus, Map as MapIcon, Minus, Plus } from "lucide-react";
 import { IconButton } from "./icon-button";
 
 interface ZoomControlsProps {
@@ -11,6 +11,8 @@ interface ZoomControlsProps {
   onReset: () => void;
   minimapOpen: boolean;
   onToggleMinimap: () => void;
+  brainDockOpen: boolean;
+  onToggleBrainDock: () => void;
 }
 
 export function ZoomControls({
@@ -21,6 +23,8 @@ export function ZoomControls({
   onReset,
   minimapOpen,
   onToggleMinimap,
+  brainDockOpen,
+  onToggleBrainDock,
 }: ZoomControlsProps) {
   return (
     <div className="zoom-controls" aria-label="无限画布缩放控制">
@@ -30,6 +34,14 @@ export function ZoomControls({
         onClick={onToggleMinimap}
       >
         <MapIcon size={16} />
+      </IconButton>
+      <span className="tool-separator" />
+      <IconButton
+        label={brainDockOpen ? "收起小逻结果面板" : "查看小逻结果面板"}
+        active={brainDockOpen}
+        onClick={onToggleBrainDock}
+      >
+        <AppWindow size={16} />
       </IconButton>
       <span className="tool-separator" />
       <IconButton label="适配所有节点" onClick={onFit}>

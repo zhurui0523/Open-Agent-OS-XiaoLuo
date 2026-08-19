@@ -12,9 +12,10 @@ import {
   MessageSquareText,
   PanelRightClose,
   Paperclip,
-  Plus,
   Pause,
+  Pencil,
   Play,
+  Quote,
   RotateCcw,
   Send,
   SlidersHorizontal,
@@ -24,7 +25,9 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { MediaViewer } from "./media-viewer";
 import { SelectMenu } from "./select-menu";
+import { SchemaFields } from "./schema-fields";
 import type {
   CanvasAssetReference,
   CanvasNode,
@@ -38,27 +41,23 @@ import type {
   NodeKind,
   RunState,
 } from "../types";
+import { AudioPlayer } from "./audio-player";
 import { IconButton } from "./icon-button";
+import { VideoPlayer } from "./video-player";
 import { InputAssetPreview, NodePromptEditor } from "./node-card";
+import { resolveAssetContentUrl } from "./asset-content-preview";
 import {
   normalizeModelInputConstraints,
   validateModelInputAssets,
 } from "../lib/model-input-constraints";
+import { XiaoluoBrainPanel } from "./xiaoluo-brain-panel";
+import type { BrainPanelHandle } from "./xiaoluo-brain-panel";
+import type { BrainResultSnapshot } from "./brain-result-dock";
+import type { ChatAdapters } from "../xiaoluo-brain/hooks/use-chat-agent";
 import { resolveProfessionalGeneratorRules } from "../lib/professional-generator-rules";
 
-const suggestions = [
-  "把当前脚本扩展成 30 秒品牌短片",
-  "为这个角色建立统一视觉 DNA",
-  "检查画布中可能失败的依赖",
-];
 
-const quickAnswerSuggestions = [
-  "解释一个我不熟悉的概念",
-  "帮我梳理这段文字的核心观点",
-  "回答一个通用知识问题",
-];
-
-type ComposerMode = "xiaoluo" | "quick" | "text" | "image" | "video";
+type ComposerMode = "brain" | "quick" | "text" | "image" | "video" | "audio";
 
 const XIAOLUO_INPUT_CONSTRAINTS: ModelInputConstraints = {
   maxTotal: 8,
@@ -78,15 +77,23 @@ function attachmentInputKind(attachment: ChatAttachment): ModelInputAssetKind {
     : "document";
 }
 
-function cloneIntentPlan(plan: IntentPlan): IntentPlan {
-  return {
-    ...plan,
-    tasks: plan.tasks.map((task) => ({
-      ...task,
-      dependsOn: [...task.dependsOn],
-      parameters: task.parameters ? { ...task.parameters } : undefined,
-    })),
-  };
+const ATTACHMENT_UUID_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// 附件展示名：系统生成的 UUID 文件名翻译为「图片/视频/音频/文件 · 扩展名」
+function attachmentLabel(attachment: ChatAttachment): string {
+  const dot = attachment.name.lastIndexOf(".");
+  const base = dot > 0 ? attachment.name.slice(0, dot) : attachment.name;
+  const ext = dot > 0 ? attachment.name.slice(dot + 1).toUpperCase() : "";
+  if (!ATTACHMENT_UUID_NAME.test(base)) return attachment.name;
+  const kindLabel =
+    attachment.kind === "image"
+      ? "图片"
+      : attachment.kind === "video"
+        ? "视频"
+        : attachment.kind === "audio"
+          ? "音频"
+          : "文件";
+  return ext ? kindLabel + " · " + ext : kindLabel;
 }
 
 interface IntentConsoleProps {
@@ -95,11 +102,21 @@ interface IntentConsoleProps {
   isPlanning: boolean;
   isQuickAnswering: boolean;
   runState: RunState;
+  planApplied?: boolean;
   onClose: () => void;
   capabilities: Capability[];
   models: ModelConnection[];
   canvasAssets: CanvasAssetReference[];
   nodes: CanvasNode[];
+  canvasId?: string;
+  /** 小逻大脑 generate_media 直派口（来自 useIntentOs.generateForBrain） */
+  onGenerateMedia?: ChatAdapters["generateMedia"];
+  /** 小逻大脑最新代码产物/预览上报（画布独立结果面板消费） */
+  onBrainResult?: (snapshot: BrainResultSnapshot) => void;
+  /** 程序库一键上画布（画布⇄代码）：透传给画布建节点 */
+  onPinProgram?: (p: { name: string; entry: string; artifact: NonNullable<BrainResultSnapshot["artifact"]> }) => void;
+  /** 时间线事件跳转：打开“小逻结果”面板并定位 Tab */
+  onOpenResult?: (tab: "code" | "preview") => void;
   onFocusNode?: (nodeId: string) => void;
   onSubmit: (
     value: string,
@@ -110,7 +127,7 @@ interface IntentConsoleProps {
   onQuickAnswer: (value: string, preferredModelId: string) => void;
   onGenerate: (
     value: string,
-    kind: Extract<NodeKind, "text" | "image" | "video">,
+    kind: Extract<NodeKind, "text" | "image" | "video" | "audio">,
     capabilityId?: string,
     modelId?: string,
     attachments?: ChatAttachment[],
@@ -123,8 +140,9 @@ interface IntentConsoleProps {
   onStart: () => void;
   onPause: () => void;
   onCancel: () => void;
-  onClearMessages?: () => void;
+  onDeleteConversation?: (id: string) => void | Promise<void>;
   onNewConversation?: () => void;
+  activeConversationId?: string;
   conversationHistory?: Array<{
     id: string;
     title: string;
@@ -132,8 +150,9 @@ interface IntentConsoleProps {
     createdAt: string;
     updatedAt: string;
   }>;
-  onFetchHistory?: () => void;
-  onRestoreConversation?: (id: string) => void;
+  onFetchHistory?: () => void | Promise<void>;
+  onRestoreConversation?: (id: string) => void | Promise<void>;
+  onRenameConversation?: (id: string, title: string) => void | Promise<void>;
 }
 
 export function IntentConsole({
@@ -142,11 +161,17 @@ export function IntentConsole({
   isPlanning,
   isQuickAnswering,
   runState,
+  planApplied = false,
   onClose,
   capabilities,
   models,
   canvasAssets,
   nodes,
+  canvasId,
+  onGenerateMedia,
+  onBrainResult,
+  onOpenResult,
+  onPinProgram,
   onFocusNode,
   onSubmit,
   onQuickAnswer,
@@ -158,18 +183,37 @@ export function IntentConsole({
   onStart,
   onPause,
   onCancel,
-  onClearMessages,
+  onDeleteConversation,
   onNewConversation,
+  activeConversationId,
   conversationHistory = [],
   onFetchHistory,
   onRestoreConversation,
+  onRenameConversation,
 }: IntentConsoleProps) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [editingPlan, setEditingPlan] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [historySelectingId, setHistorySelectingId] = useState("");
+  const [renamingId, setRenamingId] = useState("");
+  const [renameValue, setRenameValue] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [quotedId, setQuotedId] = useState<string | null>(null);
+  // 点击图片附件后的全屏放大预览（与画布素材同一组件：可关闭、滚轮缩放）
+  const [viewerImage, setViewerImage] = useState<{
+    url: string;
+    label: string;
+  } | null>(null);
+  const [quotedMessage, setQuotedMessage] = useState<{
+    id: string;
+    role: string;
+    content: string;
+    attachments?: ChatAttachment[];
+    resultNodeId?: string;
+  } | null>(null);
 
   function copyMessage(content: string, id: string) {
     void navigator.clipboard.writeText(content).then(() => {
@@ -177,19 +221,118 @@ export function IntentConsole({
       setTimeout(() => setCopiedId(null), 1500);
     });
   }
-  const [planDraft, setPlanDraft] = useState<IntentPlan | null>(null);
+
+  // 引用消息：输入框下方显示引用条（缩略展示），发送时以引用格式并入正文
+  function quoteMessage(message: ChatMessage) {
+    setQuotedMessage({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      ...(message.attachments?.length
+        ? { attachments: message.attachments }
+        : {}),
+      ...(message.resultNodeId ? { resultNodeId: message.resultNodeId } : {}),
+    });
+    setQuotedId(message.id);
+    setTimeout(() => setQuotedId(null), 1500);
+  }
+
+  // 引用条按类型展示：文本保留文本，图片附件与生成结果显示真实缩略图
+  const quotedPreviews: Array<{ key: string; url: string; label: string }> =
+    (() => {
+      if (!quotedMessage) return [];
+      const items: Array<{ key: string; url: string; label: string }> = [];
+      for (const attachment of quotedMessage.attachments ?? []) {
+        if (attachment.kind === "image") {
+          items.push({
+            key: attachment.id,
+            url: resolveAssetContentUrl(
+              attachment.previewUrl ?? attachment.uri,
+            ),
+            label: attachment.name,
+          });
+        }
+      }
+      if (quotedMessage.resultNodeId) {
+        const node = nodes.find(
+          (item) => item.id === quotedMessage.resultNodeId,
+        );
+        const kernelOutput = node?.parameters?.kernelOutput as
+          | { assetUrl?: string }
+          | undefined;
+        const assetUrl = kernelOutput?.assetUrl?.trim();
+        if (
+          node &&
+          assetUrl &&
+          (node.kind === "image" || node.kind === "video")
+        ) {
+          items.push({
+            key: `result:${node.id}`,
+            url: resolveAssetContentUrl(assetUrl),
+            label: node.title,
+          });
+        }
+      }
+      return items.slice(0, 4);
+    })();
+  const quotedFiles = (quotedMessage?.attachments ?? []).filter(
+    (attachment) => attachment.kind !== "image",
+  );
+
+  async function loadConversationHistory() {
+    if (!onFetchHistory) return;
+    setHistoryError("");
+    setHistoryLoading(true);
+    try {
+      await onFetchHistory();
+    } catch (error) {
+      setHistoryError(
+        error instanceof Error ? error.message : "历史记录加载失败，请稍后重试。",
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function toggleHistory() {
+    const opening = !showHistory;
+    setShowHistory(opening);
+    if (opening) void loadConversationHistory();
+  }
+
+  async function selectConversation(id: string) {
+    if (id === activeConversationId) {
+      setShowHistory(false);
+      return;
+    }
+    if (!onRestoreConversation || historySelectingId) return;
+    setHistoryError("");
+    setHistorySelectingId(id);
+    try {
+      await onRestoreConversation(id);
+      setShowHistory(false);
+    } catch (error) {
+      setHistoryError(
+        error instanceof Error ? error.message : "对话切换失败，请稍后重试。",
+      );
+    } finally {
+      setHistorySelectingId("");
+    }
+  }
   const [composerMode, setComposerMode] =
-    useState<ComposerMode>("xiaoluo");
+    useState<ComposerMode>("brain");
   const [preferredCapabilityId, setPreferredCapabilityId] = useState("none");
   const [preferredModelId, setPreferredModelId] = useState("");
   const [modelParameters, setModelParameters] = useState<Record<string, unknown>>({});
   const [showAdvancedComposerOptions, setShowAdvancedComposerOptions] =
     useState(false);
   const attachmentRef = useRef<HTMLInputElement>(null);
+  const brainSendRef = useRef<BrainPanelHandle | null>(null);
   const professionalMode =
     composerMode === "text" ||
     composerMode === "image" ||
-    composerMode === "video"
+    composerMode === "video" ||
+    composerMode === "audio"
       ? composerMode
       : null;
   const quickAnswerModels = [...models]
@@ -236,6 +379,8 @@ export function IntentConsole({
       : professionalMode
         ? Boolean(professionalRules?.model || professionalRules?.usesSkillRuntime)
         : true;
+  // 选中任意 Skill（含模型驱动型）即免提示词，素材为必填
+  const skillMode = Boolean(professionalMode && professionalRules?.capability);
   const composerModelParameterEntries = professionalRules?.model?.parameterSchema
     ? Object.entries(
         professionalRules.model.parameterSchema.properties ?? {},
@@ -244,14 +389,43 @@ export function IntentConsole({
         return Boolean(schema.enum?.length);
       })
     : [];
+  // 非枚举模型参数（如 Suno 的歌曲标题 / 风格标签）：用 SchemaFields 渲染完整交互
+  const composerModelExtraSchema = (() => {
+    const schema = professionalRules?.model?.parameterSchema;
+    if (!schema) return null;
+    const properties = Object.fromEntries(
+      Object.entries(
+        (schema as { properties?: Record<string, unknown> }).properties ?? {},
+      ).filter(
+        ([, field]) =>
+          !Boolean((field as { enum?: string[] }).enum?.length),
+      ),
+    );
+    if (!Object.keys(properties).length) return null;
+    return { ...(schema as Record<string, unknown>), properties };
+  })();
   const canAddInputAsset =
     inputConstraints.maxTotal > 0 &&
     attachments.length < inputConstraints.maxTotal;
-  const visibleMessages = messages.filter((message) =>
-    composerMode === "quick"
-      ? message.mode === "quick_answer"
-      : message.mode !== "quick_answer",
-  );
+  // 粘贴/选择文件 → 统一走上传链路（剩余名额受当前模型输入约束限制）
+  function addFilesAsAttachments(files: File[]) {
+    const remaining = Math.max(
+      0,
+      inputConstraints.maxTotal - attachments.length,
+    );
+    const picked = files.slice(0, remaining);
+    if (!picked.length) return;
+    setUploading(true);
+    void onUploadAttachments(picked)
+      .then((uploaded) =>
+        setAttachments((current) =>
+          [...current, ...uploaded].slice(0, inputConstraints.maxTotal),
+        ),
+      )
+      .finally(() => setUploading(false));
+  }
+  // 同一对话的所有消息统一展示：切换分类（小逻/快速问答/各节点）不拆分对话流
+  const visibleMessages = messages;
 
   const attachmentAssets: CanvasAssetReference[] = attachments.map((attachment) => ({
     sourceNodeId: attachment.sourceNodeId ?? `attachment:${attachment.id}`,
@@ -263,7 +437,7 @@ export function IntentConsole({
       attachment.kind === "audio"
         ? attachment.kind
         : "document",
-    url: attachment.previewUrl ?? attachment.uri,
+    url: resolveAssetContentUrl(attachment.previewUrl ?? attachment.uri),
     mimeType: attachment.mimeType,
     status: "succeeded" as const,
   }));
@@ -322,14 +496,42 @@ export function IntentConsole({
   }
 
   function submit() {
-    if (!draft.trim()) return;
-    if (composerMode === "quick") {
-      if (!quickAnswerModel) return;
-      onQuickAnswer(draft, quickAnswerModel.id);
+    // 本地模型：通知嵌入式引擎"有活动"，重置空闲自动停止计时
+    {
+      const activeModel =
+        quickAnswerModels.find((model) => model.id === preferredModelId) ??
+        professionalRules?.model ??
+        null;
+      if (activeModel && (activeModel.capabilityTags ?? []).includes("local")) {
+        const bridge = (
+          window as unknown as {
+            xiaoluoDesktop?: { localAi?: (payload: { action: string }) => unknown };
+          }
+        ).xiaoluoDesktop;
+        void bridge?.localAi?.({ action: "notify-activity" });
+      }
+    }
+    // 有引用条时：引用内容按行加前缀并入正文
+    const quoteBlock = quotedMessage
+      ? quotedMessage.content
+          .split("\n")
+          .map((line) => (line ? "> " + line : ">"))
+          .join("\n") +
+        "\n\n"
+      : "";
+    const outgoing = quoteBlock + draft;
+    if (composerMode === "brain") {
+      // brain 模式：底部输入条驱动小逻大脑面板发送
+      if (!draft.trim()) return;
+      // 附件随正文交给大脑面板：面板负责物化进工作区 uploads/ 并注入【附件】段（二进制不塞正文）
+      brainSendRef.current?.send(outgoing, attachments);
     } else if (professionalMode) {
+      // Skill 模式：提示词可留空，素材为必填
+      if (!draft.trim() && !skillMode) return;
+      if (skillMode && attachments.length === 0) return;
       if (!generatorReady || !attachmentValidation.valid) return;
       onGenerate(
-        draft,
+        outgoing,
         professionalMode,
         preferredCapabilityId,
         professionalRules?.model?.id,
@@ -337,10 +539,20 @@ export function IntentConsole({
         modelParameters,
       );
     } else {
-      onSubmit(draft, attachments);
+      if (!draft.trim()) return;
+      // 小逻模式：显式选定的大模型随请求下发（未选则由服务端按健康度自动选）
+      onSubmit(
+        outgoing,
+        attachments,
+        undefined,
+        quickAnswerModels.some((model) => model.id === preferredModelId)
+          ? preferredModelId
+          : undefined,
+      );
     }
     setDraft("");
     setAttachments([]);
+    setQuotedMessage(null);
   }
 
   return (
@@ -348,53 +560,182 @@ export function IntentConsole({
       <aside className="intent-console" aria-label="Intent Console">
       <div className="console-header">
         <div className="console-title">
-          <span className="console-logo">
-            <Sparkles size={17} />
-          </span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            className="console-logo"
+            src="/xiaoluo-mascot.jpg"
+            alt="小逻"
+            width={33}
+            height={33}
+            draggable={false}
+          />
           <div>
             <strong>小逻</strong>
-            <small>
-              <i className="online-dot" />
-              {composerMode === "xiaoluo"
-                ? "小逻大脑在线"
-                : composerMode === "quick"
-                  ? "通用文本问答"
-                  : "专业生成器"}
-            </small>
+            <small>智能创作在线</small>
           </div>
         </div>
         <div className="console-header-actions">
-          {onClearMessages && (
-            <IconButton label="清空对话" onClick={onClearMessages}>
-              <Trash2 size={17} />
-            </IconButton>
+          {showHistory && (
+            <div
+              id="intent-history-panel"
+              className="intent-history-panel"
+              role="dialog"
+              aria-label="最近对话"
+            >
+              <div className="intent-history-header">
+                <span>最近对话</span>
+                <button
+                  type="button"
+                  className="intent-history-close"
+                  aria-label="关闭最近对话"
+                  onClick={() => setShowHistory(false)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="intent-history-list" aria-busy={historyLoading}>
+                {historyLoading ? (
+                  <div className="intent-history-state">
+                    <span className="intent-history-loading" aria-hidden="true" />
+                    <strong>正在加载最近对话</strong>
+                    <small>请稍候…</small>
+                  </div>
+                ) : historyError ? (
+                  <div className="intent-history-state is-error" role="alert">
+                    <AlertTriangle size={20} />
+                    <strong>最近对话加载失败</strong>
+                    <small>{historyError}</small>
+                    <button type="button" onClick={() => void loadConversationHistory()}>
+                      重新加载
+                    </button>
+                  </div>
+                ) : conversationHistory.length === 0 ? (
+                  <div className="intent-history-state">
+                    <Clock size={20} />
+                    <strong>暂无最近对话</strong>
+                    <small>新建的对话会显示在这里。</small>
+                  </div>
+                ) : (
+                  conversationHistory.map((conv) => {
+                    const isCurrent = conv.id === activeConversationId;
+                    const isSelecting = conv.id === historySelectingId;
+                    const isRenaming = conv.id === renamingId;
+                    return (
+                      <div
+                        key={conv.id}
+                        className={`intent-history-item${isCurrent ? " is-active" : ""}`}
+                        aria-current={isCurrent ? "true" : undefined}
+                      >
+                        {isRenaming ? (
+                          <input
+                            className="intent-history-rename-input"
+                            value={renameValue}
+                            autoFocus
+                            aria-label="对话名称"
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => setRenameValue(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                const nextTitle = renameValue.trim();
+                                if (nextTitle && onRenameConversation) {
+                                  void onRenameConversation(conv.id, nextTitle);
+                                }
+                                setRenamingId("");
+                              } else if (event.key === "Escape") {
+                                setRenamingId("");
+                              }
+                            }}
+                            onBlur={() => {
+                              const nextTitle = renameValue.trim();
+                              if (nextTitle && nextTitle !== conv.title && onRenameConversation) {
+                                void onRenameConversation(conv.id, nextTitle);
+                              }
+                              setRenamingId("");
+                            }}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            className="intent-history-item-main"
+                            aria-busy={isSelecting}
+                            disabled={Boolean(historySelectingId)}
+                            onClick={() => void selectConversation(conv.id)}
+                          >
+                            <span className="intent-history-title">{conv.title}</span>
+                          </button>
+                        )}
+                        <div className="intent-history-item-actions">
+                          <button
+                            type="button"
+                            className="intent-history-action"
+                            title="重命名对话"
+                            aria-label="重命名对话"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setRenamingId(conv.id);
+                              setRenameValue(conv.title);
+                            }}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          {onDeleteConversation && (
+                            <button
+                              type="button"
+                              className="intent-history-action is-danger"
+                              title="删除对话"
+                              aria-label="删除对话"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void onDeleteConversation(conv.id);
+                              }}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           )}
-          {onNewConversation && (
-            <IconButton label="新建对话" onClick={onNewConversation}>
-              <Plus size={17} />
-            </IconButton>
-          )}
-          <IconButton
-            label="历史对话"
-            onClick={() => {
-              setShowHistory(!showHistory);
-              if (!showHistory && onFetchHistory) onFetchHistory();
-            }}
-          >
-            <Clock size={17} />
-          </IconButton>
           <IconButton label="折叠 Intent Console" onClick={onClose}>
             <PanelRightClose size={17} />
           </IconButton>
         </div>
       </div>
 
-      <div className="console-messages" aria-live="polite">
+      {composerMode === "brain" && canvasId && (
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <XiaoluoBrainPanel
+            canvasId={canvasId}
+            models={models}
+            onGenerateMedia={onGenerateMedia}
+            onBrainResult={onBrainResult}
+            onOpenResult={onOpenResult}
+            onPinProgram={onPinProgram}
+            selectedModelId={preferredModelId || undefined}
+            sendRef={brainSendRef}
+          />
+        </div>
+      )}
+      <div
+        className="console-messages"
+        aria-live="polite"
+        style={composerMode === "brain" ? { display: "none" } : undefined}
+      >
         {composerMode === "quick" && visibleMessages.length === 0 && (
           <div className="message message-assistant">
-            <span className="message-avatar">
-              <Sparkles size={14} />
-            </span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              className="message-avatar"
+              src="/xiaoluo-mascot.jpg"
+              alt="小逻"
+              width={27}
+              height={27}
+              draggable={false}
+            />
             <div className="message-bubble">
               <p>这里是快速问答。我只回答通用文本问题，不读取或修改当前画布。</p>
             </div>
@@ -403,9 +744,17 @@ export function IntentConsole({
         {visibleMessages.map((message) => (
           <div key={message.id} className={`message message-${message.role}`}>
             {message.role === "assistant" && (
-              <span className="message-avatar">
-                <Sparkles size={14} />
-              </span>
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  className="message-avatar"
+                  src="/xiaoluo-mascot.jpg"
+                  alt="小逻"
+                  width={27}
+                  height={27}
+                  draggable={false}
+                />
+              </>
             )}
             <div className="message-bubble">
               <p>{message.content}</p>
@@ -420,14 +769,79 @@ export function IntentConsole({
               )}
               {!!message.attachments?.length && (
                 <div className="message-attachments">
-                  {message.attachments.map((attachment) => (
-                    <span key={attachment.id}>
-                      <Paperclip size={11} /> {attachment.name}
-                    </span>
-                  ))}
+                  {message.attachments.map((attachment) => {
+                    const url = resolveAssetContentUrl(
+                      attachment.previewUrl ?? attachment.uri,
+                    );
+                    const label = attachmentLabel(attachment);
+                    if (attachment.kind === "image") {
+                      return (
+                        <button
+                          key={attachment.id}
+                          type="button"
+                          className="message-attachment-media"
+                          title={label}
+                          onClick={() => setViewerImage({ url, label })}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={url}
+                            alt={label}
+                            width={96}
+                            height={96}
+                            loading="lazy"
+                            decoding="async"
+                            draggable={false}
+                          />
+                        </button>
+                      );
+                    }
+                    if (attachment.kind === "video") {
+                      return (
+                        <div
+                          key={attachment.id}
+                          className="message-attachment-media message-attachment-video"
+                        >
+                          <VideoPlayer src={url} title={label} />
+                        </div>
+                      );
+                    }
+                    if (attachment.kind === "audio") {
+                      return (
+                        <div
+                          key={attachment.id}
+                          className="message-attachment-media message-attachment-audio"
+                        >
+                          <AudioPlayer src={url} title={label} />
+                        </div>
+                      );
+                    }
+                    return (
+                      <span key={attachment.id} title={attachment.name}>
+                        <Paperclip size={11} /> {label}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
               <div className="message-actions">
+                <button
+                  className="message-copy-btn"
+                  title="引用内容"
+                  onClick={() => quoteMessage(message)}
+                >
+                  {quotedId === message.id ? (
+                    <>
+                      <Check size={12} />
+                      <span>已引用</span>
+                    </>
+                  ) : (
+                    <>
+                      <Quote size={12} />
+                      <span>引用</span>
+                    </>
+                  )}
+                </button>
                 <button
                   className="message-copy-btn"
                   title="复制内容"
@@ -451,16 +865,6 @@ export function IntentConsole({
           </div>
         ))}
 
-        {composerMode === "xiaoluo" && isPlanning && (
-          <div className="planning-state">
-            <span className="planning-orbit" />
-            <div>
-              <strong>正在理解意图并检查能力…</strong>
-              <small>生成目标、任务依赖与成本估计</small>
-            </div>
-          </div>
-        )}
-
         {composerMode === "quick" && isQuickAnswering && (
           <div className="planning-state" aria-label="快速问答生成中">
             <span className="planning-orbit" />
@@ -470,158 +874,6 @@ export function IntentConsole({
             </div>
           </div>
         )}
-
-        {composerMode === "xiaoluo" && plan && (
-          <section className="plan-card" aria-label="待确认计划">
-            <div className="plan-heading">
-              <span>
-                <ListChecks size={17} /> 执行计划
-              </span>
-              <span className="plan-badge">待确认</span>
-            </div>
-            <h3>{plan.goal}</h3>
-            <div className="plan-tasks">
-              {plan.tasks.map((task, index) => (
-                <div key={task.id} className="plan-task">
-                  <span>{index + 1}</span>
-                  <div>
-                    <b>{task.title}</b>
-                    <small>
-                      {task.capability} · {KIND_LABEL[task.kind] ?? task.kind} · {task.duration}
-                    </small>
-                    <small>
-                      依赖：{task.dependsOn.length ? task.dependsOn.join("、") : "无（起点）"}
-                    </small>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {plan.warning && (
-              <p className="plan-warning">
-                <AlertTriangle size={14} /> {plan.warning}
-              </p>
-            )}
-            <div className="plan-summary">
-              <span>{plan.estimate}</span>
-              <button
-                type="button"
-                className="danger-text-button"
-                onClick={() => void onRejectPlan()}
-              >
-                取消计划
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  setPlanDraft(cloneIntentPlan(plan));
-                  setEditingPlan(true);
-                }}
-              >
-                调整计划
-              </button>
-              <button type="button" className="primary-button" onClick={onConfirmPlan}>
-                <Check size={15} /> 确认并写入画布
-              </button>
-            </div>
-          </section>
-        )}
-
-        {composerMode === "xiaoluo" && runState === "ready" && (
-          <div className="run-ready-card">
-            <span className="run-ready-icon">
-              <Check size={18} />
-            </span>
-            <div>
-              <strong>计划已写入画布</strong>
-              <small>你可以先编辑任意节点，也可以直接运行。</small>
-            </div>
-            <button type="button" className="primary-button" onClick={onStart}>
-              <Play size={15} /> 运行
-            </button>
-          </div>
-        )}
-
-        {composerMode === "xiaoluo" &&
-          (runState === "running" ||
-            runState === "waiting" ||
-            runState === "paused") && (
-          <div className="run-control-card">
-            <div>
-              <span className={`run-pulse ${runState === "paused" ? "is-paused" : ""}`} />
-              <div>
-                <strong>
-                  {runState === "waiting"
-                    ? "等待第三方模型结果"
-                    : runState === "running"
-                      ? "工作流执行中"
-                      : "工作流已暂停"}
-                </strong>
-                <small>
-                  {runState === "waiting"
-                    ? "异步任务完成后会自动继续执行下游节点"
-                    : "运行状态来自当前 Run 投影"}
-                </small>
-              </div>
-            </div>
-            <div>
-              {runState === "running" || runState === "waiting" ? (
-                <button type="button" className="secondary-button" onClick={onPause}>
-                  <Pause size={14} /> 暂停
-                </button>
-              ) : (
-                <button type="button" className="secondary-button" onClick={onStart}>
-                  <RotateCcw size={14} /> 恢复
-                </button>
-              )}
-              <button type="button" className="danger-text-button" onClick={onCancel}>
-                <CircleStop size={14} /> 取消
-              </button>
-            </div>
-          </div>
-        )}
-
-        {composerMode === "xiaoluo" &&
-          (runState === "succeeded" ||
-            runState === "failed" ||
-            runState === "canceled") && (
-          <div className={`run-ready-card run-result-${runState}`}>
-            <span className="run-ready-icon">
-              {runState === "succeeded" ? (
-                <Check size={18} />
-              ) : runState === "failed" ? (
-                <AlertTriangle size={18} />
-              ) : (
-                <CircleStop size={18} />
-              )}
-            </span>
-            <div>
-              <strong>
-                {runState === "succeeded"
-                  ? "AI 微内核执行完成"
-                  : runState === "failed"
-                    ? "工作流执行失败"
-                    : "工作流已取消"}
-              </strong>
-              <small>
-                {runState === "succeeded"
-                  ? "节点结果已按连线完成传递并记录"
-                  : "可检查失败节点后重新运行"}
-              </small>
-            </div>
-            <button type="button" className="secondary-button" onClick={onStart}>
-              <RotateCcw size={14} /> 重新运行
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="suggestion-row" aria-label="意图建议">
-        {(composerMode === "quick" ? quickAnswerSuggestions : suggestions).map((suggestion) => (
-          <button key={suggestion} type="button" onClick={() => setDraft(suggestion)}>
-            {suggestion}
-          </button>
-        ))}
       </div>
 
       <div className="composer-wrap">
@@ -660,7 +912,9 @@ export function IntentConsole({
                       attachment.kind === "audio"
                         ? attachment.kind
                         : "document",
-                    url: attachment.previewUrl ?? attachment.uri,
+                    url: resolveAssetContentUrl(
+                      attachment.previewUrl ?? attachment.uri,
+                    ),
                     mimeType: attachment.mimeType,
                     status: "succeeded",
                   }}
@@ -711,18 +965,63 @@ export function IntentConsole({
             onChange={setDraft}
             onAttach={attachCanvasAsset}
             onSubmitShortcut={submit}
+            onPasteFiles={addFilesAsAttachments}
             aria-label={
               composerMode === "quick"
                 ? "输入快速问答问题"
                 : "描述你的创作目标"
             }
             placeholder={
-              composerMode === "quick"
-                ? "输入问题，直接获得回答…"
-                : "描述你想完成的目标…"
+              composerMode === "brain"
+                ? "让小逻写代码 / 出预览 / 做任何事…"
+                  : skillMode
+                    ? "已选 Skill，输入素材后可直接执行（提示词可选）"
+                    : "描述你想完成的目标…"
             }
           />
           </div>
+          {quotedMessage && (
+            <div className="composer-quote-bar">
+              <span className="composer-quote-text" title={quotedMessage.content}>
+                {quotedMessage.role === "assistant" ? "小逻: " : "我: "}
+                {quotedMessage.content.replace(/\s+/g, " ").trim() ||
+                  (quotedPreviews.length || quotedFiles.length
+                    ? "（媒体消息）"
+                    : "")}
+              </span>
+              {quotedPreviews.map((preview) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={preview.key}
+                  className="composer-quote-thumb"
+                  src={preview.url}
+                  alt={preview.label}
+                  title={preview.label}
+                  width={30}
+                  height={30}
+                  draggable={false}
+                />
+              ))}
+              {quotedFiles.map((attachment) => (
+                <span
+                  key={attachment.id}
+                  className="composer-quote-file"
+                  title={attachment.name}
+                >
+                  <Paperclip size={11} />
+                </span>
+              ))}
+              <button
+                type="button"
+                className="composer-quote-close"
+                aria-label="取消引用"
+                title="取消引用"
+                onClick={() => setQuotedMessage(null)}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
           <div className="composer-footer">
             <div>
               <IconButton
@@ -745,11 +1044,11 @@ export function IntentConsole({
               className="send-button"
               aria-label="发送意图"
               disabled={
-                !draft.trim() ||
                 isPlanning ||
                 isQuickAnswering ||
                 !generatorReady ||
-                !attachmentValidation.valid
+                !attachmentValidation.valid ||
+                (skillMode ? attachments.length === 0 : !draft.trim())
               }
               onClick={submit}
             >
@@ -760,17 +1059,16 @@ export function IntentConsole({
         <div className="composer-options" aria-label="生成选项">
           <div className="composer-options-primary">
             <label className="composer-skill">
-              <Sparkles size={15} />
               <span>
-                {composerMode === "xiaoluo"
-                  ? "小逻"
-                  : composerMode === "quick"
-                    ? "快速问答"
+                {composerMode === "brain"
+                  ? "智能创作"
                   : composerMode === "text"
-                    ? "文本生成"
-                    : composerMode === "image"
-                      ? "图片生成"
-                      : "视频生成"}
+                      ? "文本节点"
+                      : composerMode === "image"
+                        ? "图片节点"
+                        : composerMode === "video"
+                          ? "视频节点"
+                          : "音频节点"}
               </span>
               <SelectMenu
                 ariaLabel="工作模式"
@@ -782,24 +1080,25 @@ export function IntentConsole({
                   setPreferredCapabilityId("none");
                   setPreferredModelId("");
                   setModelParameters({});
-                  setShowAdvancedComposerOptions(false);
+                  // 音频模式的风格标签为必填参数，默认展开高级选项
+                  setShowAdvancedComposerOptions(mode === "audio");
                 }}
                 options={[
-                  { value: "xiaoluo", label: "小逻" },
-                  { value: "quick", label: "快速问答" },
-                  { value: "text", label: "文本生成" },
-                  { value: "image", label: "图片生成" },
-                  { value: "video", label: "视频生成" },
+                  { value: "brain", label: "智能创作" },
+                  { value: "text", label: "文本节点" },
+                  { value: "image", label: "图片节点" },
+                  { value: "video", label: "视频节点" },
+                  { value: "audio", label: "音频节点" },
                 ]}
               />
               <ChevronDown size={13} />
             </label>
-            {composerMode === "quick" && (
+            {(composerMode === "brain" || composerMode === "quick") && (
               <label className="composer-skill composer-model">
                 <Cpu size={15} />
                 <span>{quickAnswerModel?.name ?? "暂无通用文本模型"}</span>
                 <SelectMenu
-                  ariaLabel="快速问答模型"
+                  ariaLabel="通用文本模型"
                   value={quickAnswerModel?.id ?? ""}
                   onChange={setPreferredModelId}
                   options={
@@ -870,14 +1169,16 @@ export function IntentConsole({
                       ...(professionalRules?.compatibleModels ?? []).map(
                         (model) => ({
                           value: model.id,
-                          label: model.name,
+                          label: (model.capabilityTags ?? []).includes("local")
+                            ? "💻 " + model.name
+                            : model.name,
                         }),
                       ),
                     ]}
                   />
                   <ChevronDown size={13} />
                 </label>
-                {composerModelParameterEntries.length > 0 && (
+                {(composerModelParameterEntries.length > 0 || composerModelExtraSchema) && (
                   <button
                     type="button"
                     className="composer-more-options"
@@ -899,7 +1200,7 @@ export function IntentConsole({
           </div>
           {professionalMode &&
             showAdvancedComposerOptions &&
-            composerModelParameterEntries.length > 0 && (
+            (composerModelParameterEntries.length > 0 || composerModelExtraSchema) && (
               <div className="composer-options-advanced">
                 {composerModelParameterEntries.map(([paramKey, paramSchema]) => {
                   const ps = paramSchema as {
@@ -938,6 +1239,15 @@ export function IntentConsole({
                     </label>
                   );
                 })}
+                {composerModelExtraSchema && (
+                  <SchemaFields
+                    title="模型参数"
+                    schema={composerModelExtraSchema}
+                    uiSchema={professionalRules?.model?.uiSchema ?? {}}
+                    value={modelParameters}
+                    onChange={setModelParameters}
+                  />
+                )}
               </div>
             )}
         </div>
@@ -948,309 +1258,28 @@ export function IntentConsole({
           multiple
           disabled={uploading || !canAddInputAsset}
           onChange={(event) => {
-            const remaining = Math.max(
-              0,
-              inputConstraints.maxTotal - attachments.length,
-            );
-            const files = [...(event.target.files ?? [])].slice(0, remaining);
+            const files = [...(event.target.files ?? [])];
             event.currentTarget.value = "";
             if (!files.length) return;
-            setUploading(true);
-            void onUploadAttachments(files)
-              .then((uploaded) =>
-                setAttachments((current) =>
-                  [...current, ...uploaded].slice(0, inputConstraints.maxTotal),
-                ),
-              )
-              .finally(() => setUploading(false));
+            addFilesAsAttachments(files);
           }}
         />
         <small className="composer-note">
-          {composerMode === "xiaoluo"
-            ? "小逻会先生成可检查计划，不会未经确认直接执行。"
-            : composerMode === "quick"
-              ? "快速问答只调用通用文本模型，不读取或修改当前画布。"
-              : "专业生成会直接创建并运行当前画布节点，不经过 Agent 规划。"}
+          {composerMode === "brain"
+            ? "智能创作：对话驱动，写代码、出预览、深度思考按需自动切换。"
+            : "专业生成会直接创建并运行当前画布节点，不经过 Agent 规划。"}
         </small>
       </div>
       </aside>
-      {editingPlan && planDraft && typeof document !== "undefined"
-        ? createPortal(
-            <IntentPlanEditorDialog
-              draft={planDraft}
-              onChange={setPlanDraft}
-              onClose={() => {
-                setEditingPlan(false);
-                setPlanDraft(null);
-              }}
-              onSave={() => {
-                void onUpdatePlan(planDraft);
-                setEditingPlan(false);
-                setPlanDraft(null);
-              }}
-            />,
-            document.body,
-          )
-        : null}
-      {showHistory && conversationHistory.length > 0 && (
-        <div className="intent-history-panel">
-          <div className="intent-history-header">
-            <span>历史对话</span>
-            <button
-              className="intent-history-close"
-              onClick={() => setShowHistory(false)}
-            >
-              <X size={14} />
-            </button>
-          </div>
-          <div className="intent-history-list">
-            {conversationHistory.map((conv) => (
-              <div
-                key={conv.id}
-                className={`intent-history-item${conv.status === "active" ? " is-active" : ""}`}
-                onClick={() => {
-                  if (conv.status === "archived" && onRestoreConversation) {
-                    onRestoreConversation(conv.id);
-                    setShowHistory(false);
-                  }
-                }}
-              >
-                <div className="intent-history-title">{conv.title}</div>
-                <div className="intent-history-meta">
-                  <span className={`intent-history-badge ${conv.status}`}>
-                    {conv.status === "active" ? "进行中" : "已归档"}
-                  </span>
-                  <span className="intent-history-date">
-                    {new Date(conv.updatedAt).toLocaleDateString("zh-CN")}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+            {viewerImage && (
+        <MediaViewer
+          url={viewerImage.url}
+          kind="image"
+          title={viewerImage.label}
+          onClose={() => setViewerImage(null)}
+        />
       )}
     </>
-  );
-}
-
-function IntentPlanEditorDialog({
-  draft,
-  onChange,
-  onClose,
-  onSave,
-}: {
-  draft: IntentPlan;
-  onChange: (next: IntentPlan) => void;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [onClose]);
-
-  const updateTask = (
-    index: number,
-    patch: Partial<IntentPlan["tasks"][number]>,
-  ) => {
-    onChange({
-      ...draft,
-      tasks: draft.tasks.map((task, taskIndex) =>
-        taskIndex === index ? { ...task, ...patch } : task,
-      ),
-    });
-  };
-
-  const removeTask = (index: number) => {
-    const removedId = draft.tasks[index]?.id;
-    if (!removedId) return;
-    onChange({
-      ...draft,
-      tasks: draft.tasks
-        .filter((_, taskIndex) => taskIndex !== index)
-        .map((task) => ({
-          ...task,
-          dependsOn: task.dependsOn.filter((id) => id !== removedId),
-        })),
-    });
-  };
-
-  const canSave =
-    Boolean(draft.goal.trim()) &&
-    draft.tasks.length > 0 &&
-    draft.tasks.every(
-      (task) => task.title.trim() && task.capability.trim() && task.duration.trim(),
-    );
-
-  return (
-    <div
-      className="intent-plan-dialog-backdrop"
-      onMouseDown={(event) => {
-        if (event.currentTarget === event.target) onClose();
-      }}
-    >
-      <section
-        className="intent-plan-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="intent-plan-dialog-title"
-        onKeyDown={(event) => event.stopPropagation()}
-      >
-        <header className="intent-plan-dialog-header">
-          <div>
-            <span className="intent-plan-dialog-kicker">PLAN EDITOR</span>
-            <h2 id="intent-plan-dialog-title">调整执行计划</h2>
-            <p>在写入画布前检查目标、任务类型、执行能力、时长与依赖关系。</p>
-          </div>
-          <button type="button" aria-label="关闭计划编辑" onClick={onClose}>
-            <X size={20} />
-          </button>
-        </header>
-
-        <div className="intent-plan-dialog-body">
-          <div className="intent-plan-dialog-overview">
-            <span>{draft.tasks.length} 个任务</span>
-            <span>{draft.estimate}</span>
-            {draft.warning && (
-              <span className="is-warning">
-                <AlertTriangle size={14} /> {draft.warning}
-              </span>
-            )}
-          </div>
-
-          <label className="intent-plan-dialog-field is-goal">
-            <span>计划目标</span>
-            <textarea
-              autoFocus
-              aria-label="计划目标"
-              value={draft.goal}
-              onChange={(event) => onChange({ ...draft, goal: event.target.value })}
-            />
-          </label>
-
-          <div className="intent-plan-dialog-tasks-heading">
-            <div>
-              <h3>任务步骤</h3>
-              <p>调整每个步骤的内容与依赖顺序。</p>
-            </div>
-            <span>{draft.tasks.length} 项</span>
-          </div>
-
-          <div className="intent-plan-dialog-task-list">
-            {draft.tasks.map((task, index) => (
-              <article className="intent-plan-dialog-task" key={task.id}>
-                <div className="intent-plan-dialog-task-header">
-                  <span className="intent-plan-dialog-task-number">{index + 1}</span>
-                  <strong>{task.title || `任务 ${index + 1}`}</strong>
-                  {draft.tasks.length > 1 && (
-                    <button
-                      type="button"
-                      aria-label={`删除任务 ${index + 1}`}
-                      onClick={() => removeTask(index)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  )}
-                </div>
-
-                <div className="intent-plan-dialog-task-grid">
-                  <label className="intent-plan-dialog-field">
-                    <span>任务名称</span>
-                    <input
-                      value={task.title}
-                      onChange={(event) => updateTask(index, { title: event.target.value })}
-                    />
-                  </label>
-                  <label className="intent-plan-dialog-field">
-                    <span>执行能力</span>
-                    <input
-                      value={task.capability}
-                      onChange={(event) =>
-                        updateTask(index, { capability: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label className="intent-plan-dialog-field">
-                    <span>内容类型</span>
-                    <SelectMenu
-                      ariaLabel={`任务 ${index + 1} 内容类型`}
-                      value={task.kind}
-                      onChange={(kind) => updateTask(index, { kind: kind as NodeKind })}
-                      options={[
-                        { value: "text", label: "文本" },
-                        { value: "image", label: "图片" },
-                        { value: "video", label: "视频" },
-                        { value: "audio", label: "音频" },
-                        { value: "document", label: "文档" },
-                      ]}
-                    />
-                  </label>
-                  <label className="intent-plan-dialog-field">
-                    <span>预计时长</span>
-                    <input
-                      value={task.duration}
-                      placeholder="例如：5 分钟"
-                      onChange={(event) =>
-                        updateTask(index, { duration: event.target.value })
-                      }
-                    />
-                  </label>
-                  <fieldset className="intent-plan-dialog-dependencies">
-                    <legend>依赖任务（可多选）</legend>
-                    <div className="intent-plan-dialog-dependency-options">
-                      {draft.tasks.filter((candidate) => candidate.id !== task.id).length ? (
-                        draft.tasks
-                          .filter((candidate) => candidate.id !== task.id)
-                          .map((candidate) => (
-                            <label key={candidate.id}>
-                              <input
-                                type="checkbox"
-                                checked={task.dependsOn.includes(candidate.id)}
-                                onChange={(event) => {
-                                  const dependsOn = event.target.checked
-                                    ? [...task.dependsOn, candidate.id]
-                                    : task.dependsOn.filter((id) => id !== candidate.id);
-                                  updateTask(index, { dependsOn });
-                                }}
-                              />
-                              <span>{candidate.title}</span>
-                            </label>
-                          ))
-                      ) : (
-                        <small>当前只有一个任务，无需设置依赖。</small>
-                      )}
-                    </div>
-                  </fieldset>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-
-        <footer className="intent-plan-dialog-footer">
-          <span>保存后可继续确认并写入画布。</span>
-          <button type="button" className="secondary-button" onClick={onClose}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={!canSave}
-            onClick={onSave}
-          >
-            <Check size={16} /> 保存调整
-          </button>
-        </footer>
-      </section>
-    </div>
   );
 }
 

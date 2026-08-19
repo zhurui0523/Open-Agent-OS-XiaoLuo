@@ -4,6 +4,7 @@
   "description": "小逻云端智能画布桌面工作台",
   "author": "XiaoLuo",
   "private": true,
+  "packageManager": "pnpm@11.9.0",
   "type": "module",
   "main": "main.mjs",
   "build": {
@@ -11,12 +12,14 @@
     "productName": "小逻",
     "electronVersion": "43.3.0",
     "asar": true,
+    "npmRebuild": false,
     "directories": {
       "output": "dist",
       "buildResources": "assets"
     },
     "files": [
       "main.mjs",
+      "local-runtime.mjs",
       "preload.cjs",
       "loading.html",
       "config.production.json",

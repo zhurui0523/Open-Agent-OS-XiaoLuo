@@ -1,4 +1,4 @@
 {
   "appUrl": "https://xiaoluo-intent-os-v2-0722.shanhaiyixiang.chatgpt.site/",
-  "healthPath": "/api/v2/health/live"
+  "healthPath": "/api/v2/health/ready"
 }

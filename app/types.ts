@@ -275,6 +275,7 @@ export type ModelProtocol =
   | "runninghub-nano-banana-2"
   | "ark"
   | "async-video"
+  | "local-diffusion"
   | "generic-rest";
 
 export interface InstalledPackage {

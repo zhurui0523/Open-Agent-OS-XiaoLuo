@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AppWindow,
   Check,
   CircleAlert,
   Layers3,
@@ -17,6 +18,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import type { IntentOSController } from "../hooks/use-intent-os";
@@ -31,11 +34,11 @@ import {
 } from "../lib/canvas-geometry";
 import { CanvasSpatialIndex } from "../lib/canvas-spatial-index";
 import {
-  EXECUTION_NODE_HEIGHT,
-  EXECUTION_NODE_WIDTH,
+  executionSizeForKind,
   widthForNode,
 } from "../lib/node-layout";
 import { compatibleInputPorts } from "../lib/node-ports";
+import { resolveAssetContentUrl } from "./asset-content-preview";
 import type {
   CanvasAssetReference,
   CanvasEdge,
@@ -77,6 +80,8 @@ import {
   pluginTextContextsFromNodes,
 } from "../lib/plugin-reference-context";
 import { ZoomControls } from "./zoom-controls";
+import { BrainResultDock } from "./brain-result-dock";
+import type { BrainResultSnapshot } from "./brain-result-dock";
 
 const NODE_FIT_HEIGHT = 220;
 const MINIMAP_WIDTH = 200;
@@ -87,6 +92,18 @@ const CONTEXT_MENU_HEIGHT = 500;
 const MATERIAL_NODE_COLUMN_GAP = 300;
 const MATERIAL_NODE_ROW_GAP = 300;
 const MATERIAL_NODES_PER_COLUMN = 3;
+const INTENT_DOCK_DEFAULT_WIDTH = 420;
+const INTENT_DOCK_MIN_WIDTH = 360;
+const INTENT_DOCK_MAX_WIDTH = 680;
+const INTENT_DOCK_OPEN_STORAGE_KEY = "xiaoluo.intent-dock.open";
+const INTENT_DOCK_WIDTH_STORAGE_KEY = "xiaoluo.intent-dock.width";
+
+function clampIntentDockWidth(width: number) {
+  return Math.min(
+    INTENT_DOCK_MAX_WIDTH,
+    Math.max(INTENT_DOCK_MIN_WIDTH, Math.round(width)),
+  );
+}
 
 function canvasAssetReference(node: CanvasNode): CanvasAssetReference | null {
   if (!["image", "video", "audio", "document"].includes(node.kind)) {
@@ -119,7 +136,8 @@ function canvasAssetReference(node: CanvasNode): CanvasAssetReference | null {
           : undefined,
     title: node.title,
     kind: node.kind as ModelInputAssetKind,
-    url,
+    // asset:// 协议浏览器无法加载，统一转为同源 HTTP 内容地址
+    url: resolveAssetContentUrl(url),
     mimeType:
       typeof parameters.mimeType === "string"
         ? parameters.mimeType
@@ -149,6 +167,9 @@ interface ConnectionDraft {
 
 interface CanvasViewProps {
   os: IntentOSController;
+  /** 小逻结果面板开关（宿主受控，左侧工具栏与画布共享） */
+  brainDockOpen: boolean;
+  onBrainDockOpenChange: (open: boolean) => void;
 }
 
 function expandBounds(bounds: WorldBounds, amount: number): WorldBounds {
@@ -169,7 +190,7 @@ export function CanvasView(props: CanvasViewProps) {
   );
 }
 
-function CanvasWorkspace({ os }: CanvasViewProps) {
+function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasViewProps) {
   const dialog = useAppDialog();
   const {
     addNode,
@@ -200,6 +221,12 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const intentDockResizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+  const intentDockPreferencesReadyRef = useRef(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const uploadAnchorRef = useRef({ x: 0, y: 0 });
   const [pan, setPan] = useState({
@@ -210,8 +237,26 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
   const [isPanning, setIsPanning] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
+  /** 小逻大脑结果面板：最新代码产物/预览快照 + 开关 */
+  const [brainResult, setBrainResult] = useState<BrainResultSnapshot | null>(null);
+  /** 是否已有结果：仅无结果→有结果的第一次自动弹面板，之后更新快照不打扰老板 */
+  const hadBrainResultRef = useRef(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [intentDockWidth, setIntentDockWidth] = useState(() => {
+    if (typeof window === "undefined") return INTENT_DOCK_DEFAULT_WIDTH;
+    try {
+      const storedWidth = Number(
+        window.localStorage.getItem(INTENT_DOCK_WIDTH_STORAGE_KEY),
+      );
+      return Number.isFinite(storedWidth) && storedWidth > 0
+        ? clampIntentDockWidth(storedWidth)
+        : INTENT_DOCK_DEFAULT_WIDTH;
+    } catch {
+      return INTENT_DOCK_DEFAULT_WIDTH;
+    }
+  });
+  const [intentDockResizing, setIntentDockResizing] = useState(false);
   const [distributionTarget, setDistributionTarget] = useState<{
     id: string;
     title: string;
@@ -279,6 +324,45 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     canvasRevision: os.canvasRevision,
     cursorRef: collaborationCursorRef,
   });
+  /** 小逻大脑产出新结果时自动弹出独立面板 */
+  const [dockFocus, setDockFocus] = useState<{ tab: "preview" | "code"; nonce: number } | null>(null);
+  const openBrainDock = useCallback(
+    (tab?: "preview" | "code") => {
+      onBrainDockOpenChange(true);
+      if (tab) setDockFocus((prev) => ({ tab, nonce: (prev?.nonce ?? 0) + 1 }));
+      // 跳转落地后清空 focus：残留的 focus 会让后续快照更新把页签抢回（原“点代码没反应”根因）
+      window.setTimeout(() => setDockFocus(null), 0);
+    },
+    [onBrainDockOpenChange],
+  );
+
+  /** 程序库 → 画布节点（画布⇄代码）：document 节点承载入口文件内容 */
+  const handlePinProgram = (p: { name: string; entry: string; artifact: NonNullable<BrainResultSnapshot["artifact"]> }) => {
+    const entryFile = p.artifact.files.find((f) => f.path === (p.artifact.entryFile ?? p.entry)) ?? p.artifact.files[0];
+    const text = entryFile ? entryFile.content.slice(0, 6000) : "（无可读入口文件）";
+    os.addNode("document", undefined, {
+      role: "result",
+      title: p.name,
+      prompt: "小逻程序库产出（入口：" + p.entry + "）",
+      result: text,
+      parameters: { nodeRole: "result", source: "brain-program" },
+    });
+  };
+
+  const handleBrainResult = useCallback((snapshot: BrainResultSnapshot) => {
+    // 空快照不覆盖已有结果：Agent 重建/历史恢复时预览会暂时丢失，
+    // 直接覆盖会出现“结果预览几秒后消失”
+    if (snapshot.artifact || snapshot.preview) {
+      setBrainResult(snapshot);
+      // 仅无结果→有结果的第一次自动弹面板：后续快照更新不再强制打开，
+      // 老板点×关闭后不会被下一轮结果上报立刻重开（原“关闭没反应”根因）
+      if (!hadBrainResultRef.current) {
+        hadBrainResultRef.current = true;
+        onBrainDockOpenChange(true);
+      }
+    }
+  }, []);
+
   const previewViewport = useCallback((next: ViewportTransform) => {
     const scale = next.zoom / 100;
     const grid = gridRef.current;
@@ -472,6 +556,74 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
   }, []);
 
   useEffect(() => {
+    let storedOpen: string | null = null;
+    try {
+      storedOpen = window.localStorage.getItem(
+        INTENT_DOCK_OPEN_STORAGE_KEY,
+      );
+    } catch {
+      // Storage can be unavailable in privacy-restricted browser contexts.
+      intentDockPreferencesReadyRef.current = true;
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      os.setConsoleOpen(storedOpen === "true");
+      intentDockPreferencesReadyRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [os.setConsoleOpen]);
+
+  useEffect(() => {
+    if (!intentDockPreferencesReadyRef.current) return;
+    try {
+      window.localStorage.setItem(
+        INTENT_DOCK_OPEN_STORAGE_KEY,
+        String(os.consoleOpen),
+      );
+    } catch {
+      // Keep the dock usable even when local persistence is unavailable.
+    }
+  }, [os.consoleOpen]);
+
+  useEffect(() => {
+    if (!intentDockPreferencesReadyRef.current) return;
+    try {
+      window.localStorage.setItem(
+        INTENT_DOCK_WIDTH_STORAGE_KEY,
+        String(intentDockWidth),
+      );
+    } catch {
+      // Keep the dock usable even when local persistence is unavailable.
+    }
+  }, [intentDockWidth]);
+
+  useEffect(() => {
+    document.body.style.setProperty(
+      "--intent-dock-width",
+      `${intentDockWidth}px`,
+    );
+    return () => {
+      document.body.style.removeProperty("--intent-dock-width");
+    };
+  }, [intentDockWidth]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [intentDockWidth, os.consoleOpen]);
+
+  useEffect(() => {
+    document.body.classList.toggle(
+      "is-resizing-intent-dock",
+      intentDockResizing,
+    );
+    return () => document.body.classList.remove("is-resizing-intent-dock");
+  }, [intentDockResizing]);
+
+  useEffect(() => {
     if (!os.cloudError) return;
     const timer = window.setTimeout(() => {
       os.clearCloudError();
@@ -512,7 +664,7 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, input, textarea, select",
+          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select",
         )
       ) {
         return;
@@ -680,9 +832,10 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           { x: stageSize.width / 2, y: stageSize.height / 2 },
           viewportRef.current,
         );
+        const spawnSize = executionSizeForKind(kind);
         addNode(kind, {
-          x: center.x - EXECUTION_NODE_WIDTH / 2,
-          y: center.y - EXECUTION_NODE_HEIGHT / 2,
+          x: center.x - spawnSize.width / 2,
+          y: center.y - spawnSize.height / 2,
         });
       }
       if (event.key === "=" || event.key === "+") {
@@ -1455,9 +1608,78 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
     .filter(Boolean)
     .join(" ");
 
+  const startIntentDockResize = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      intentDockResizeRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startWidth: intentDockWidth,
+      };
+      setIntentDockResizing(true);
+    },
+    [intentDockWidth],
+  );
+
+  const moveIntentDockResize = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const activeResize = intentDockResizeRef.current;
+      if (!activeResize || activeResize.pointerId !== event.pointerId) return;
+      setIntentDockWidth(
+        clampIntentDockWidth(
+          activeResize.startWidth + activeResize.startX - event.clientX,
+        ),
+      );
+    },
+    [],
+  );
+
+  const stopIntentDockResize = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const activeResize = intentDockResizeRef.current;
+      if (!activeResize || activeResize.pointerId !== event.pointerId) return;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      intentDockResizeRef.current = null;
+      setIntentDockResizing(false);
+    },
+    [],
+  );
+
+  const handleIntentDockResizeKey = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setIntentDockWidth((width) => clampIntentDockWidth(width + 16));
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setIntentDockWidth((width) => clampIntentDockWidth(width - 16));
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        setIntentDockWidth(INTENT_DOCK_DEFAULT_WIDTH);
+      }
+    },
+    [],
+  );
+
   return (
-    <div className={`canvas-view canvas-background-${canvasBackground}`}>
-      <CanvasDrawer
+    <div
+      className={`canvas-view canvas-background-${canvasBackground}${
+        os.consoleOpen ? " is-intent-docked" : ""
+      }`}
+      style={
+        os.consoleOpen
+          ? ({
+              "--intent-dock-width": `${intentDockWidth}px`,
+            } as CSSProperties)
+          : undefined
+      }
+    >
+      <div className="canvas-main-pane">
+        <CanvasDrawer
         open={os.drawerOpen}
         activeCanvasId={os.activeCanvasId}
         canvases={os.canvases}
@@ -1909,7 +2131,17 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             onReset={() => zoomAtCenter(100)}
             onZoomIn={() => zoomAtCenter(viewportRef.current.zoom + 10)}
             onZoomOut={() => zoomAtCenter(viewportRef.current.zoom - 10)}
+            brainDockOpen={brainDockOpen}
+            onToggleBrainDock={() => onBrainDockOpenChange(!brainDockOpen)}
           />
+
+          {brainDockOpen && (
+            <BrainResultDock
+              snapshot={brainResult}
+              onClose={() => onBrainDockOpenChange(false)}
+              focus={dockFocus}
+            />
+          )}
 
           <input
             ref={uploadInputRef}
@@ -2072,6 +2304,16 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
             />
           )}
 
+          <button
+            type="button"
+            className={"brain-dock-float" + (brainDockOpen ? " is-active" : "")}
+            title={brainDockOpen ? "收起小逻结果面板" : "查看小逻结果面板"}
+            aria-label={brainDockOpen ? "收起小逻结果面板" : "查看小逻结果面板"}
+            onClick={() => onBrainDockOpenChange(!brainDockOpen)}
+          >
+            <AppWindow size={15} />
+          </button>
+
           {!os.consoleOpen && (
             <button
               type="button"
@@ -2090,58 +2332,80 @@ function CanvasWorkspace({ os }: CanvasViewProps) {
           )}
         </div>
       </section>
+      </div>
 
       {os.consoleOpen && (
-        <IntentConsole
-          messages={os.messages}
-          plan={os.plan}
-          isPlanning={os.isPlanning}
-          isQuickAnswering={os.isQuickAnswering}
-          runState={os.runState}
-          capabilities={os.capabilities}
-          models={os.models}
-          canvasAssets={canvasAssets}
-          nodes={os.nodes}
-          onFocusNode={focusNodeOnCanvas}
-          onClose={() => os.setConsoleOpen(false)}
-          onSubmit={os.submitIntent}
-          onQuickAnswer={os.submitQuickAnswer}
-          onGenerate={os.generateDirectly}
-          onUploadAttachments={os.uploadIntentAttachments}
-          onConfirmPlan={os.confirmPlan}
-          onUpdatePlan={os.updatePlan}
-          onRejectPlan={os.rejectPlan}
-          onStart={os.startRun}
-          onPause={os.pauseRun}
-          onCancel={os.cancelRun}
-          onClearMessages={() => {
-            void dialog
-              .confirm("确定清空当前对话的所有消息？此操作不可恢复。", {
-                tone: "danger",
-                title: "清空对话",
-                confirmText: "清空",
-                cancelText: "取消",
-              })
-              .then((ok) => {
-                if (ok) os.clearMessages();
-              });
-          }}
-          onNewConversation={() => {
-            void dialog
-              .confirm("结束当前对话并新建一个？当前对话将归档保存。", {
-                tone: "warning",
-                title: "新建对话",
-                confirmText: "确定",
-                cancelText: "取消",
-              })
-              .then((ok) => {
-                if (ok) os.startNewConversation();
-              });
-          }}
-          conversationHistory={os.conversationHistory}
-          onFetchHistory={os.fetchConversationHistory}
-          onRestoreConversation={os.restoreConversation}
-        />
+        <div className="intent-dock" aria-label="Intent 工作台">
+          <button
+            type="button"
+            className="intent-dock-resizer"
+            aria-label="调整 Intent 工作台宽度"
+            title="拖动调整宽度，方向键微调，Home 恢复默认宽度"
+            onPointerDown={startIntentDockResize}
+            onPointerMove={moveIntentDockResize}
+            onPointerUp={stopIntentDockResize}
+            onPointerCancel={stopIntentDockResize}
+            onKeyDown={handleIntentDockResizeKey}
+          />
+          <IntentConsole
+            messages={os.messages}
+            plan={os.plan}
+            isPlanning={os.isPlanning}
+            isQuickAnswering={os.isQuickAnswering}
+            runState={os.runState}
+            planApplied={os.planApplied}
+            capabilities={os.capabilities}
+            models={os.models}
+            canvasAssets={canvasAssets}
+            nodes={os.nodes}
+            canvasId={os.activeCanvasId}
+            onFocusNode={focusNodeOnCanvas}
+            onClose={() => os.setConsoleOpen(false)}
+            onSubmit={os.submitIntent}
+            onQuickAnswer={os.submitQuickAnswer}
+            onGenerate={os.generateDirectly}
+            onGenerateMedia={os.generateForBrain}
+            onBrainResult={handleBrainResult}
+            onPinProgram={handlePinProgram}
+            onOpenResult={openBrainDock}
+            onUploadAttachments={os.uploadIntentAttachments}
+            onConfirmPlan={os.confirmPlan}
+            onUpdatePlan={os.updatePlan}
+            onRejectPlan={os.rejectPlan}
+            onStart={os.startRun}
+            onPause={os.pauseRun}
+            onCancel={os.cancelRun}
+            onDeleteConversation={(id) => {
+              void dialog
+                .confirm("确定删除该对话？对话中的消息和计划将永久删除，此操作不可恢复。", {
+                  tone: "danger",
+                  title: "删除对话",
+                  confirmText: "删除",
+                  cancelText: "取消",
+                })
+                .then((ok) => {
+                  if (ok) void os.deleteConversation(id);
+                });
+            }}
+            onNewConversation={() => {
+              void dialog
+                .confirm("结束当前对话并新建一个？当前对话将归档保存。", {
+                  tone: "warning",
+                  title: "新建对话",
+                  confirmText: "确定",
+                  cancelText: "取消",
+                })
+                .then((ok) => {
+                  if (ok) os.startNewConversation();
+                });
+            }}
+            activeConversationId={os.conversationId}
+            conversationHistory={os.conversationHistory}
+            onFetchHistory={os.fetchConversationHistory}
+            onRestoreConversation={os.restoreConversation}
+            onRenameConversation={os.renameConversation}
+          />
+        </div>
       )}
       {shareOpen && (
         <CanvasShareDialog

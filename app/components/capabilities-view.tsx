@@ -303,6 +303,7 @@ export function CapabilitiesView({ os, user }: CapabilitiesViewProps) {
         os={os}
         dialog={dialog}
         isSystemAdmin={user.platformRole === "system_admin"}
+        userId={user.id}
         workflows={workflows}
         marketplacePackages={marketplacePackages}
         status={marketplaceStatus}
@@ -514,10 +515,21 @@ function PluginCardQuickSettings({
   );
 }
 
+/** 技能市场条目（小逻工作区 SKILL.md 流通层；与 Package 契约不同） */
+interface SkillMarketListing {
+  name: string;
+  description: string;
+  publisherId: string;
+  publisherName: string;
+  publishedAt: string;
+  localCopy: boolean;
+}
+
 function MarketplacePanel({
   os,
   dialog,
   isSystemAdmin,
+  userId,
   workflows,
   marketplacePackages,
   status,
@@ -530,6 +542,7 @@ function MarketplacePanel({
   os: IntentOSController;
   dialog: ReturnType<typeof useAppDialog>;
   isSystemAdmin: boolean;
+  userId: string;
   workflows: WorkflowMarketplaceItem[];
   marketplacePackages: MarketplacePackage[];
   status: "loading" | "ready" | "error";
@@ -546,14 +559,85 @@ function MarketplacePanel({
     "skill",
   );
   const [source, setSource] = useState<
-    "installed" | "private" | "shared"
+    "installed" | "private" | "shared" | "market"
   >("installed");
+  // ---- 技能市场（小逻工作区 SKILL.md 流通层；与 Package 体系不同契约，独立子页签承载） ----
+  const [skillMarketListings, setSkillMarketListings] = useState<
+    SkillMarketListing[]
+  >([]);
+  const [marketStatus, setMarketStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
+  const [marketError, setMarketError] = useState("");
   const [busyId, setBusyId] = useState("");
   const myPackageItems = os.packages.filter(
     (item) =>
       item.packageType === category &&
       item.lifecycleState !== "uninstalled",
   );
+
+  async function loadSkillMarket() {
+    setMarketStatus("loading");
+    setMarketError("");
+    try {
+      const resp = await fetch("/api/v2/brain/skill-market");
+      const payload = (await resp.json().catch(() => ({}))) as {
+        listings?: SkillMarketListing[];
+        error?: string;
+      };
+      if (!resp.ok) {
+        throw new Error(payload.error ?? "读取技能市场失败 (" + resp.status + ")");
+      }
+      setSkillMarketListings(payload.listings ?? []);
+      setMarketStatus("ready");
+    } catch (reason) {
+      setMarketError(reason instanceof Error ? reason.message : "读取技能市场失败");
+      setMarketStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    if (category === "skill" && source === "market") void loadSkillMarket();
+  }, [category, source]);
+
+  async function marketAct(
+    listing: SkillMarketListing,
+    action: "install" | "unpublish",
+  ) {
+    if (action === "unpublish") {
+      const confirmed = await dialog.confirm(
+        "下架该技能后，它将不再出现在其他用户的技能市场；已安装到别人工作区的副本不受影响。确认下架 " + listing.name + " ？",
+        { title: "下架技能", confirmText: "确认下架", tone: "danger" },
+      );
+      if (!confirmed) return;
+    }
+    setBusyId("market:" + listing.publisherId + "/" + listing.name);
+    try {
+      const resp = await fetch("/api/v2/brain/skill-market", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          action === "install"
+            ? { action, name: listing.name, publisherId: listing.publisherId }
+            : { action, name: listing.name },
+        ),
+      });
+      const payload = (await resp.json().catch(() => ({}))) as { error?: string };
+      if (!resp.ok) {
+        throw new Error(payload.error ?? (action === "install" ? "安装失败" : "下架失败"));
+      }
+      if (action === "install") {
+        onNotice(listing.name + " 已安装到小逻工作区技能库。");
+      } else {
+        onNotice(listing.name + " 已下架。");
+      }
+      await loadSkillMarket();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "操作失败", "error");
+    } finally {
+      setBusyId("");
+    }
+  }
   const publicPackageItems = marketplacePackages.filter(
     (item) => item.packageType === category,
   );
@@ -775,7 +859,10 @@ function MarketplacePanel({
               aria-selected={category === value}
               className={category === value ? "is-active" : ""}
               key={value}
-              onClick={() => setCategory(value)}
+              onClick={() => {
+                setCategory(value);
+                if (value !== "skill" && source === "market") setSource("installed");
+              }}
             >
               {value === "workflow" ? (
                 <Workflow size={15} />
@@ -826,6 +913,17 @@ function MarketplacePanel({
           >
             {category === "skill" ? "共享 Skill" : "共享插件"}
           </button>
+          {category === "skill" && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={source === "market"}
+              className={source === "market" ? "is-active" : ""}
+              onClick={() => setSource("market")}
+            >
+              技能市场
+            </button>
+          )}
         </div>
       )}
 
@@ -1261,6 +1359,80 @@ function MarketplacePanel({
             </article>
           ))}
         </div>
+      ) : source === "market" && category === "skill" ? (
+        marketStatus === "loading" ? (
+          <RegistryLoading label="正在读取技能市场" />
+        ) : marketStatus === "error" ? (
+          <div className="registry-banner is-error">
+            <CircleAlert size={16} />
+            <span>{marketError}</span>
+            <button type="button" onClick={() => void loadSkillMarket()}>
+              重试
+            </button>
+          </div>
+        ) : skillMarketListings.length ? (
+          <div className="workflow-market-grid">
+            {skillMarketListings.map((item) => {
+              const key = item.publisherId + "/" + item.name;
+              const mine = item.publisherId === userId;
+              return (
+                <article className="workflow-market-card package-market-card" key={key}>
+                  <header>
+                    <span>
+                      <Code2 size={19} />
+                    </span>
+                    <div>
+                      <h3>{item.name}</h3>
+                      <small>
+                        @{item.publisherName || "匿名"} · {item.publishedAt.slice(0, 10)}
+                      </small>
+                    </div>
+                    <b>{mine ? "我发布的" : item.localCopy ? "已安装" : "技能市场"}</b>
+                  </header>
+                  <p>{item.description || "未填写说明"}</p>
+                  <div className="workflow-card-tags">
+                    <span>SKILL.md</span>
+                    {item.localCopy ? <span>本地已有</span> : null}
+                  </div>
+                  <footer>
+                    <button
+                      type="button"
+                      className="primary-button compact"
+                      disabled={item.localCopy || busyId === key}
+                      onClick={() => void marketAct(item, "install")}
+                    >
+                      {busyId === key ? (
+                        <LoaderCircle size={14} className="spin" />
+                      ) : (
+                        <PackagePlus size={14} />
+                      )}
+                      {item.localCopy ? "已安装" : "安装到小逻工作区"}
+                    </button>
+                    {mine ? (
+                      <button
+                        type="button"
+                        className="danger-text-button"
+                        disabled={busyId === key}
+                        onClick={() => void marketAct(item, "unpublish")}
+                      >
+                        <Trash2 size={14} />
+                        下架
+                      </button>
+                    ) : null}
+                  </footer>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="extension-empty">
+            <span>
+              <Code2 size={24} />
+            </span>
+            <h3>技能市场还是空的</h3>
+            <p>在小逻面板展开技能市场，把自己的技能发布出去，就会出现在这里，别的小逻可以一键安装。</p>
+          </div>
+        )
       ) : (
         <div className="extension-empty">
           <span>{category === "skill" ? <Code2 size={24} /> : <PlugZap size={24} />}</span>

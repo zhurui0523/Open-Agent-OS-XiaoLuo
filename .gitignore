@@ -57,3 +57,14 @@ next-env.d.ts
 /mysql-local-status.png
 /desktop/node_modules/
 /desktop/dist/
+
+# 用户运行时数据（工作区/市场/DB）不入库
+/.data/
+
+# 桌面包构建产物与日志（数百 MB 安装包，不入库）
+/desktop/release-*/
+/desktop/current-package-*/
+/desktop/builder-*.log
+/desktop/builder-*.err.log
+/desktop/builder-*.out.log
+*.broken-backup

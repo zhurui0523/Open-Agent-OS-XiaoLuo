@@ -16,6 +16,7 @@ import { getDb } from "../../db";
 import type { XiaoLuoPackageManifest } from "./package-contract";
 import {
   fetchExternalEndpoint,
+  readResponseBytesLimited,
   readResponseJsonLimited,
   validateExternalEndpoint,
 } from "./model-adapters";
@@ -28,7 +29,8 @@ import { packageSignaturesRequired } from "./server-runtime-config";
 import { roleForNode } from "./node-role";
 import { modelResponseAssetUrl, modelResponseText } from "./model-response";
 import { parseModelInputConstraints } from "./model-input-constraints";
-import { externalAssetAccessUrl } from "./asset-kernel";
+import { externalAssetAccessUrl, getFileBucket, storeAsset } from "./asset-kernel";
+import { artifactFormat, artifactName } from "./artifact-format";
 import {
   inspectIsolatedExecution,
   isolatedExecutionPolicy,
@@ -993,6 +995,330 @@ export function executeBuiltin(
   };
 }
 
+// ============ local-diffusion：本地扩散引擎执行器（回环直连、免 Key） ============
+// 本地引擎并发队列：同一引擎端口 FIFO 深度上限 3，超出直接 LOCAL_ENGINE_BUSY
+const LOCAL_DIFFUSION_QUEUE_DEPTH = 3;
+const localDiffusionInFlight = new Map<string, number>();
+
+function acquireLocalDiffusionSlot(baseUrl: string) {
+  const current = localDiffusionInFlight.get(baseUrl) ?? 0;
+  if (current >= LOCAL_DIFFUSION_QUEUE_DEPTH) {
+    throw new ModelExecutionError("本地引擎正在生成中，请稍候重试", {
+      status: 503,
+      code: "LOCAL_ENGINE_BUSY",
+    });
+  }
+  localDiffusionInFlight.set(baseUrl, current + 1);
+}
+
+function releaseLocalDiffusionSlot(baseUrl: string) {
+  const current = localDiffusionInFlight.get(baseUrl) ?? 0;
+  if (current <= 1) localDiffusionInFlight.delete(baseUrl);
+  else localDiffusionInFlight.set(baseUrl, current - 1);
+}
+
+function localDiffusionTimeoutMs(kind: NodeKind) {
+  return kind === "video" ? 20 * 60_000 : 5 * 60_000;
+}
+
+function localDiffusionParameters(parameters: Record<string, unknown> | undefined) {
+  const picked: Record<string, unknown> = {};
+  for (const key of [
+    "width",
+    "height",
+    "steps",
+    "guidanceScale",
+    "cfgScale",
+    "seed",
+    "negativePrompt",
+    "duration",
+    "fps",
+  ]) {
+    const value = parameters?.[key];
+    if (value === undefined || value === null || value === "") continue;
+    picked[key] = value;
+  }
+  return picked;
+}
+
+function isLocalDiffusionModel(model: ModelRow) {
+  if (model.protocol === "local-diffusion") return true;
+  try {
+    const ui = JSON.parse(model.uiSchemaJson || "{}") as Record<string, unknown>;
+    return ui.provider === "local" && ui.engine === "diffusion";
+  } catch {
+    return false;
+  }
+}
+
+function localBusyFailure(status: number, bodyText: string) {
+  return (
+    status === 429 ||
+    status === 503 ||
+    /busy|already generating|queue is full/i.test(bodyText)
+  );
+}
+
+// 提取 b64_json / url（OpenAI 风格与 A1111 风格响应均可命中）
+function localDiffusionArtifactBytes(payload: unknown): {
+  b64?: string;
+  url?: string;
+} {
+  let b64: string | undefined;
+  let url: string | undefined;
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 5 || (b64 && url)) return;
+    if (typeof value === "string") return;
+    if (Array.isArray(value)) {
+      const first = value[0];
+      if (typeof first === "string" && first.length > 64 && !/^https?:\/\//.test(first)) {
+        b64 = first;
+        return;
+      }
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      for (const key of ["b64_json", "b64", "image", "video", "video_b64_json", "data_base64"]) {
+        if (typeof record[key] === "string" && (record[key] as string).length > 64) {
+          b64 = record[key] as string;
+          return;
+        }
+      }
+      for (const key of ["url", "video_url", "output_url"]) {
+        if (typeof record[key] === "string" && /^https?:\/\//.test(record[key] as string)) {
+          url = record[key] as string;
+          return;
+        }
+      }
+      for (const value2 of Object.values(record)) visit(value2, depth + 1);
+    }
+  };
+  visit(payload, 0);
+  return { b64, url };
+}
+
+// 回环 fetch 封装：本地引擎是既定通道，不走 fetchExternalEndpoint 的外网端点校验
+async function fetchLocalDiffusion(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await fetch(url, { ...init, redirect: "manual", signal: controller.signal });
+  } catch (error) {
+    const aborted = signal?.aborted || controller.signal.aborted;
+    throw new ModelExecutionError(
+      aborted
+        ? "本地引擎生成超时，可尝试降低分辨率/步数后重试"
+        : "无法连接本地扩散引擎，请在设置页确认引擎已启动",
+      {
+        status: aborted ? 504 : 502,
+        code: aborted ? "PROVIDER_TIMEOUT" : "LOCAL_ENGINE_UNREACHABLE",
+      },
+    );
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+// 端点协商缓存：sd-server 真实 API 以拿到二进制探测为准（先 OpenAI 风格，回退 A1111）
+const localDiffusionStyleCache = new Map<string, "openai" | "a1111">();
+
+async function postLocalDiffusionJson(
+  baseUrl: string,
+  path: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ payload: unknown; status: number }> {
+  const response = await fetchLocalDiffusion(
+    baseUrl + path,
+    {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    timeoutMs,
+    signal,
+  );
+  const bodyText = await response.text();
+  if (!response.ok) {
+    if (localBusyFailure(response.status, bodyText)) {
+      throw new ModelExecutionError("本地引擎正在生成中，请稍候重试", {
+        status: 503,
+        code: "LOCAL_ENGINE_BUSY",
+      });
+    }
+    throw new ModelExecutionError(
+      "本地扩散引擎返回失败（HTTP " + response.status + "）：" + bodyText.slice(0, 300),
+      { status: response.status, code: "HTTP_" + response.status },
+    );
+  }
+  try {
+    return { payload: JSON.parse(bodyText) as unknown, status: response.status };
+  } catch {
+    throw new ModelExecutionError("本地扩散引擎返回了非 JSON 响应", {
+      status: 502,
+      code: "LOCAL_ENGINE_BAD_RESPONSE",
+    });
+  }
+}
+
+async function executeLocalDiffusionModel(
+  model: ModelRow,
+  node: KernelNodeRequest,
+  inputs: KernelUpstreamInput[],
+  signal?: AbortSignal,
+  context?: ModelExecutionContext,
+): Promise<ExecutorResult> {
+  if (node.kind !== "image" && node.kind !== "video") {
+    throw new ModelExecutionError("本地扩散引擎仅支持图片/视频节点", {
+      status: 400,
+      code: "MODEL_INPUT_FORMAT_UNSUPPORTED",
+    });
+  }
+  if (modelInputAssetReferences(inputs).length) {
+    throw new ModelExecutionError(
+      "本地扩散引擎当前仅支持文生图/文生视频，暂不接受参考素材输入",
+      { status: 400, code: "MODEL_INPUT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  const baseUrl = (model.baseUrl || "").replace(/\/+$/, "");
+  const prompt = executionPrompt(node, inputs);
+  const params = localDiffusionParameters(node.parameters);
+  const timeoutMs = localDiffusionTimeoutMs(node.kind);
+  acquireLocalDiffusionSlot(baseUrl);
+  try {
+    const cachedStyle = localDiffusionStyleCache.get(baseUrl);
+    let payload: unknown;
+    if (node.kind === "image") {
+      const openAiBody = {
+        model: model.modelName,
+        prompt,
+        n: 1,
+        response_format: "b64_json",
+        ...params,
+      };
+      const a1111Body = {
+        prompt,
+        negative_prompt: params.negativePrompt,
+        steps: params.steps,
+        width: params.width,
+        height: params.height,
+        cfg_scale: params.cfgScale ?? params.guidanceScale,
+        seed: params.seed,
+      };
+      if (cachedStyle === "a1111") {
+        ({ payload } = await postLocalDiffusionJson(
+          baseUrl,
+          "/sdapi/v1/txt2img",
+          a1111Body,
+          timeoutMs,
+          signal,
+        ));
+      } else {
+        const attempt = await postLocalDiffusionJson(
+          baseUrl,
+          "/v1/images/generations",
+          openAiBody,
+          timeoutMs,
+          signal,
+        ).catch((error) =>
+          error instanceof ModelExecutionError && /^HTTP_404$/.test(error.code)
+            ? null
+            : Promise.reject(error),
+        );
+        if (attempt) {
+          payload = attempt.payload;
+          localDiffusionStyleCache.set(baseUrl, "openai");
+        } else {
+          ({ payload } = await postLocalDiffusionJson(
+            baseUrl,
+            "/sdapi/v1/txt2img",
+            a1111Body,
+            timeoutMs,
+            signal,
+          ));
+          localDiffusionStyleCache.set(baseUrl, "a1111");
+        }
+      }
+    } else {
+      ({ payload } = await postLocalDiffusionJson(
+        baseUrl,
+        "/v1/videos",
+        { model: model.modelName, prompt, ...params },
+        timeoutMs,
+        signal,
+      ));
+    }
+    const artifact = localDiffusionArtifactBytes(payload);
+    if (!artifact.b64 && !artifact.url) {
+      throw new ModelExecutionError("本地扩散引擎未返回可用的图片/视频数据", {
+        status: 502,
+        code: "LOCAL_ENGINE_BAD_RESPONSE",
+      });
+    }
+    let bytes: ArrayBuffer;
+    let contentType: string | null = null;
+    if (artifact.b64) {
+      const raw = artifact.b64.replace(/^data:[^;]+;base64,/, "");
+      const binary = atob(raw);
+      const view = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) view[i] = binary.charCodeAt(i);
+      bytes = view.buffer;
+    } else {
+      const response = await fetchLocalDiffusion(
+        artifact.url as string,
+        { method: "GET" },
+        120_000,
+        signal,
+      );
+      if (!response.ok) {
+        throw new ModelExecutionError(
+          "无法读取本地引擎产物：HTTP " + response.status,
+          { status: 502, code: "LOCAL_ENGINE_BAD_RESPONSE" },
+        );
+      }
+      contentType = response.headers.get("content-type");
+      bytes = await readResponseBytesLimited(response, 512 * 1024 * 1024);
+    }
+    const mimeType = artifactFormat(node.kind, contentType).mimeType;
+    const db = await getDb();
+    const asset = await storeAsset(db, await getFileBucket(), {
+      workspaceId: context?.workspaceId ?? model.workspaceId,
+      name: artifactName(node.title, node.kind, mimeType),
+      mimeType,
+      bytes,
+      tags: [node.kind, "AI 生成", "本地模型"],
+      description: prompt.slice(0, 500),
+      sourceType: "kernel-output",
+      sourceRef: "model:" + model.id,
+      metadata: { executor: "local-diffusion", localModelId: model.modelName },
+    });
+    const executor = "local-diffusion:" + model.id;
+    return {
+      executor,
+      result: (node.kind === "video" ? "视频" : "图像") + "结果已生成",
+      output: {
+        type: node.kind,
+        assetUrl: asset.contentUrl,
+        data: { assetId: asset.id, assetUri: asset.uri },
+        executor,
+      },
+    };
+  } finally {
+    releaseLocalDiffusionSlot(baseUrl);
+  }
+}
+
 export async function executeModel(
   model: ModelRow,
   node: KernelNodeRequest,
@@ -1010,6 +1336,10 @@ export async function executeModel(
     ...node,
     parameters: capabilityExecutionParameters(node.parameters),
   };
+  // 本地扩散引擎：回环是本地引擎既定通道（豁免外网端点校验），免 API Key
+  if (isLocalDiffusionModel(model)) {
+    return executeLocalDiffusionModel(model, node, inputs, signal, context);
+  }
   const endpoint = validateExternalEndpoint(model.baseUrl);
   const credential = (await modelCredential(model))?.trim();
   if (!credential) {

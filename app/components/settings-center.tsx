@@ -4,6 +4,7 @@ import {
   Building2,
   Check,
   ChevronRight,
+  Cpu,
   CircleAlert,
   KeyRound,
   Keyboard,
@@ -62,6 +63,7 @@ import {
 } from "../lib/model-input-constraints";
 import { useAppDialog } from "./app-dialog";
 import { IconButton } from "./icon-button";
+import { LocalAiSettings } from "./local-ai-settings";
 import { PersonalSettings } from "./personal-settings";
 
 type SettingsTab =
@@ -69,6 +71,7 @@ type SettingsTab =
   | "appearance"
   | "api"
   | "gesture"
+  | "local-ai"
   | "shortcuts";
 
 const emptyDraft: ModelConnectionDraft = {
@@ -649,6 +652,15 @@ export function SettingsCenter({
               <span>快捷键</span>
               <ChevronRight size={14} />
             </button>
+            <button
+              type="button"
+              className={tab === "local-ai" ? "active" : ""}
+              onClick={() => selectTab("local-ai")}
+            >
+              <Cpu size={17} />
+              <span>本地 AI</span>
+              <ChevronRight size={14} />
+            </button>
             {user.platformRole === "system_admin" && (
               <button
                 type="button"
@@ -703,6 +715,13 @@ export function SettingsCenter({
                 <Check size={15} />
                 <span>{notice}</span>
               </div>
+            )}
+
+            {tab === "local-ai" && (
+              <LocalAiSettings
+                workspaceId={os.workspaceId}
+                onModelsChanged={() => void os.refreshRegistry()}
+              />
             )}
 
             {tab === "account" && (

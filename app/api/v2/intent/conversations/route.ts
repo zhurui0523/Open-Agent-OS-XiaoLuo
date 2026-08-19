@@ -30,7 +30,12 @@ export async function GET(request: Request) {
       const conversations = await db
         .select()
         .from(intentConversations)
-        .where(eq(intentConversations.canvasId, canvasId))
+        .where(
+          and(
+            eq(intentConversations.canvasId, canvasId),
+            eq(intentConversations.createdBy, user.id),
+          ),
+        )
         .orderBy(desc(intentConversations.updatedAt));
       return Response.json({ conversations });
     }
@@ -164,5 +169,55 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "未知 action" }, { status: 400 });
   } catch (error) {
     return jsonError(error, "操作 Intent 会话失败");
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const user = await requireUser(request);
+    const payload = (await request.json()) as {
+      canvasId?: string;
+      conversationId?: string;
+    };
+    const canvasId = payload.canvasId?.trim();
+    const conversationId = payload.conversationId?.trim();
+    if (!canvasId || !conversationId) {
+      return Response.json(
+        { error: "canvasId 和 conversationId 必填" },
+        { status: 400 },
+      );
+    }
+
+    const access = await requireCanvasAccess(user.id, canvasId, "edit");
+    const db = await getDb();
+    const conversationFilter = and(
+      eq(intentConversations.id, conversationId),
+      eq(intentConversations.canvasId, canvasId),
+      eq(intentConversations.createdBy, user.id),
+    );
+    const [conversationToDelete] = await db
+      .select({ id: intentConversations.id })
+      .from(intentConversations)
+      .where(conversationFilter)
+      .limit(1);
+
+    if (!conversationToDelete) {
+      return Response.json({ error: "对话不存在或无权删除" }, { status: 404 });
+    }
+
+    await db.delete(intentConversations).where(conversationFilter);
+    const conversation = await getOrCreateConversation({
+      workspaceId: access.workspaceId,
+      canvasId,
+      userId: user.id,
+    });
+
+    return Response.json({
+      ok: true,
+      deletedConversationId: conversationId,
+      conversation,
+    });
+  } catch (error) {
+    return jsonError(error, "删除 Intent 对话失败");
   }
 }

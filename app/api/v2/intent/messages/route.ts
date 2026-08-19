@@ -53,6 +53,49 @@ export async function GET(request: Request) {
   }
 }
 
+export async function PATCH(request: Request) {
+  try {
+    const user = await requireUser(request);
+    const payload = (await request.json()) as {
+      canvasId?: string;
+      content?: string;
+      metadata?: Record<string, unknown>;
+    };
+    const canvasId = payload.canvasId?.trim();
+    const content = payload.content?.trim().slice(0, 20_000);
+    if (!canvasId || !content) {
+      return Response.json(
+        { error: "canvasId 和 content 必填" },
+        { status: 400 },
+      );
+    }
+    const access = await requireCanvasAccess(user.id, canvasId, "edit");
+    const conversation = await getOrCreateConversation({
+      workspaceId: access.workspaceId,
+      canvasId,
+      userId: user.id,
+    });
+    const db = await getDb();
+    const now = mysqlNow();
+    const message = {
+      id: `message_${crypto.randomUUID()}`,
+      conversationId: conversation.id,
+      role: "assistant" as const,
+      content,
+      metadataJson: JSON.stringify(payload.metadata ?? {}).slice(0, 8_000),
+      createdAt: now,
+    };
+    await db.insert(intentMessages).values(message);
+    await db
+      .update(intentConversations)
+      .set({ updatedAt: now })
+      .where(eq(intentConversations.id, conversation.id));
+    return Response.json({ conversation, message });
+  } catch (error) {
+    return jsonError(error, "保存 Intent 消息失败");
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const user = await requireUser(request);

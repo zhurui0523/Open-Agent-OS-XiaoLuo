@@ -5,6 +5,8 @@ import {
   coreCapabilities,
   initialModels,
 } from "../data";
+import type { GenerateMediaArgs } from "../xiaoluo-brain/lib/brain/chat-tools";
+import type { NodeRunResult } from "../xiaoluo-brain/lib/brain/types";
 import type {
   AppView,
   CanvasEdge,
@@ -253,6 +255,7 @@ export function useIntentOS() {
   );
   const [zoom, setZoom] = useState(DEFAULT_CANVAS_ZOOM);
   const [runState, setRunState] = useState<RunState>("ready");
+  const [planApplied, setPlanApplied] = useState(false);
   const [preferences, setPreferences] = useState<UserPreferences>({
     canvasBackground: "day",
     gesturePreset: "figma",
@@ -899,7 +902,8 @@ export function useIntentOS() {
     )
       .then((state) => {
         if (disposed) return;
-        if (state.conversation?.id) setConversationId(state.conversation.id);
+        // 每个画布的对话器独立：无会话时清空会话 id，避免新画布消息写入旧会话
+        setConversationId(state.conversation?.id ?? "");
         const restored = state.messages
           .filter(
             (message): message is typeof message & {
@@ -909,16 +913,26 @@ export function useIntentOS() {
           .map((message) => {
             let attachments: ChatAttachment[] = [];
             let mode: ChatMessage["mode"];
+            let resultNodeId: string | undefined;
+            let resultKind: ChatMessage["resultKind"];
             try {
               const metadata = JSON.parse(message.metadataJson) as {
                 attachments?: ChatAttachment[];
                 mode?: string;
+                resultNodeId?: string;
+                resultKind?: string;
               };
               if (Array.isArray(metadata.attachments)) {
                 attachments = metadata.attachments;
               }
               if (metadata.mode === "quick_answer") {
                 mode = "quick_answer";
+              }
+              if (typeof metadata.resultNodeId === "string" && metadata.resultNodeId) {
+                resultNodeId = metadata.resultNodeId;
+              }
+              if (typeof metadata.resultKind === "string" && metadata.resultKind) {
+                resultKind = metadata.resultKind as ChatMessage["resultKind"];
               }
             } catch {
               attachments = [];
@@ -930,9 +944,15 @@ export function useIntentOS() {
               time: messageTime(),
               ...(mode ? { mode } : {}),
               ...(attachments.length ? { attachments } : {}),
+              ...(resultNodeId ? { resultNodeId } : {}),
+              ...(resultKind ? { resultKind } : {}),
             };
           });
-        if (restored.length) setMessages(restored);
+        // 每个画布的对话器独立：切换画布时无条件替换消息（空画布即清空旧消息），
+        // 并复位运行/计划状态，避免上一个画布的对话残留
+        setMessages(restored);
+        setPlanApplied(false);
+        setRunState("ready");
         if (state.plan?.status === "awaiting_confirmation") {
           try {
             setPlan(JSON.parse(state.plan.planJson) as IntentPlan);
@@ -1230,7 +1250,9 @@ export function useIntentOS() {
             source: "asset-kernel",
             assetId: attachment.id,
             assetUri: attachment.uri,
-            assetContentUrl: attachment.previewUrl ?? attachment.uri,
+            assetContentUrl:
+              attachment.previewUrl ??
+              `/api/v2/files/content?assetId=${encodeURIComponent(attachment.id)}`,
             fileName: attachment.name,
             mimeType: attachment.mimeType,
             sourceType: "intent-attachment",
@@ -1665,25 +1687,36 @@ export function useIntentOS() {
   }
 
 
-  async function clearMessages() {
-    if (!activeCanvasId || !conversationId) return;
+  async function deleteConversation(targetId?: string) {
+    const deletedConversationId = targetId ?? conversationId;
+    if (!activeCanvasId || !deletedConversationId) return;
     try {
       const response = await fetch("/api/v2/intent/conversations", {
-        method: "PATCH",
+        method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           canvasId: activeCanvasId,
-          conversationId,
-          action: "clear",
+          conversationId: deletedConversationId,
         }),
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error ?? "清空对话失败");
+        throw new Error(payload.error ?? "删除对话失败");
       }
-      setMessages([]);
-      setPlan(null);
-      setActivePlanId("");
+      const result = (await response.json()) as { conversation?: { id: string } };
+      // 仅当删除的是当前对话时才切换并清空状态
+      if (deletedConversationId === conversationId) {
+        if (result.conversation?.id) setConversationId(result.conversation.id);
+        setMessages([]);
+        setPlan(null);
+        setActivePlanId("");
+        setRunState("ready");
+        setPlanApplied(false);
+      }
+      setConversationHistory((current) =>
+        current.filter((item) => item.id !== deletedConversationId),
+      );
+      await fetchConversationHistory();
     } catch (error) {
       console.error(error);
     }
@@ -1710,6 +1743,7 @@ export function useIntentOS() {
       setMessages([]);
       setPlan(null);
       setActivePlanId("");
+      setPlanApplied(false);
     } catch (error) {
       console.error(error);
     }
@@ -1717,12 +1751,19 @@ export function useIntentOS() {
 
 
   async function fetchConversationHistory() {
-    if (!activeCanvasId) return;
+    if (!activeCanvasId) {
+      throw new Error("当前画布尚未准备完成，暂时无法读取历史记录。");
+    }
     try {
       const response = await fetch(
         `/api/v2/intent/conversations?canvasId=${encodeURIComponent(activeCanvasId)}&list=true`,
       );
-      if (!response.ok) return;
+      if (!response.ok) {
+        const result = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(result?.error || `历史记录请求失败（HTTP ${response.status}）`);
+      }
       const result = (await response.json()) as {
         conversations?: Array<{
           id: string;
@@ -1735,6 +1776,7 @@ export function useIntentOS() {
       if (result.conversations) setConversationHistory(result.conversations);
     } catch (error) {
       console.error(error);
+      throw error;
     }
   }
 
@@ -1750,7 +1792,12 @@ export function useIntentOS() {
           action: "restore",
         }),
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(errorBody?.error || "对话切换失败，请稍后重试。");
+      }
       const result = (await response.json()) as {
         conversation?: { id: string };
         messages?: Array<{
@@ -1772,16 +1819,26 @@ export function useIntentOS() {
           .map((m) => {
             let attachments: ChatAttachment[] = [];
             let mode: ChatMessage["mode"];
+            let resultNodeId: string | undefined;
+            let resultKind: ChatMessage["resultKind"];
             try {
               const metadata = JSON.parse(m.metadataJson) as {
                 attachments?: ChatAttachment[];
                 mode?: string;
+                resultNodeId?: string;
+                resultKind?: string;
               };
               if (Array.isArray(metadata.attachments)) {
                 attachments = metadata.attachments;
               }
               if (metadata.mode === "quick_answer") {
                 mode = "quick_answer";
+              }
+              if (typeof metadata.resultNodeId === "string" && metadata.resultNodeId) {
+                resultNodeId = metadata.resultNodeId;
+              }
+              if (typeof metadata.resultKind === "string" && metadata.resultKind) {
+                resultKind = metadata.resultKind as ChatMessage["resultKind"];
               }
             } catch {
               attachments = [];
@@ -1793,6 +1850,8 @@ export function useIntentOS() {
               time: messageTime(),
               ...(mode ? { mode } : {}),
               ...(attachments.length ? { attachments } : {}),
+              ...(resultNodeId ? { resultNodeId } : {}),
+              ...(resultKind ? { resultKind } : {}),
             };
           });
         setMessages(restored);
@@ -1810,9 +1869,11 @@ export function useIntentOS() {
         setPlan(null);
         setActivePlanId("");
       }
+      setPlanApplied(false);
       await fetchConversationHistory();
     } catch (error) {
       console.error(error);
+      throw error;
     }
   }
 
@@ -2095,6 +2156,7 @@ export function useIntentOS() {
     setSelectedNodeIds(plannedNodes[0] ? [plannedNodes[0].id] : []);
     setPlan(null);
     setRunState("ready");
+    setPlanApplied(true);
   }
 
   async function confirmPlan() {
@@ -2619,6 +2681,15 @@ export function useIntentOS() {
               (kernelOutput as { data?: unknown }).data !== undefined)) ||
           Boolean(node.result?.trim());
         if (!hasOutput) return node;
+        // 没有真实 kernelOutput 快照的素材节点（如对话器附件新建的素材）
+        // 若回退为文本复用会丢失素材地址，导致下游模型报"参考素材无可用地址"；
+        // 让它参与运行、由 kernel.material-source 内建执行产出含地址的正确输出
+        if (
+          roleForNode(node) === "material" &&
+          !(kernelOutput && typeof kernelOutput === "object")
+        ) {
+          return node;
+        }
         return {
           ...node,
           parameters: {
@@ -2738,16 +2809,40 @@ export function useIntentOS() {
     }
   }
 
+  // 对话器生成的结果消息持久化到会话，切换画布/刷新后恢复时不丢失结果缩略图
+  async function persistIntentMessage(
+    content: string,
+    metadata: Record<string, unknown>,
+  ) {
+    if (!activeCanvasId) return;
+    try {
+      const result = await requestJson<{ conversation?: { id: string } }>(
+        "/api/v2/intent/messages",
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            canvasId: activeCanvasId,
+            content,
+            metadata,
+          }),
+        },
+      );
+      if (result.conversation?.id) setConversationId(result.conversation.id);
+    } catch {
+      // 消息已在本地对话器展示，持久化失败不阻断生成流程
+    }
+  }
+
   function generateDirectly(
     value: string,
-    kind: Extract<NodeKind, "text" | "image" | "video">,
+    kind: Extract<NodeKind, "text" | "image" | "video" | "audio">,
     requestedCapabilityId?: string,
     requestedModelId?: string,
     attachments: ChatAttachment[] = [],
     modelParameters?: Record<string, unknown>,
   ) {
     const prompt = value.trim();
-    if (!prompt || isPlanning || activeRun.current) return;
+    if (isPlanning || activeRun.current) return null;
     const rules = resolveProfessionalGeneratorRules({
       capabilities,
       models,
@@ -2755,9 +2850,11 @@ export function useIntentOS() {
       requestedCapabilityId,
       requestedModelId,
     });
+    // 选中任意 Skill（含模型驱动型）允许空提示词，直接根据输入素材执行
+    if (!prompt && !rules.capability) return null;
     if (!rules.model && !rules.usesSkillRuntime) {
-      setCloudError(`当前没有可用的${kind === "text" ? "文本" : kind === "image" ? "图片" : "视频"}模型`);
-      return;
+      setCloudError(`当前没有可用的${kind === "text" ? "文本" : kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}模型`);
+      return null;
     }
     const inputConstraints = normalizeModelInputConstraints(
       rules.model?.inputConstraints,
@@ -2778,14 +2875,16 @@ export function useIntentOS() {
     );
     if (!inputValidation.valid) {
       setCloudError(inputValidation.errors.join("；"));
-      return;
+      return null;
     }
     const title =
       kind === "image"
         ? "专业图片生成"
         : kind === "video"
           ? "专业视频生成"
-          : "专业文本生成";
+          : kind === "audio"
+            ? "专业音频生成"
+            : "专业文本生成";
 
     // Pre-calculate positions so execution and result nodes are placed together
     const execX = 320 + (nodes.length % 3) * 72;
@@ -2876,7 +2975,9 @@ export function useIntentOS() {
             source: "asset-kernel",
             assetId: attachment.id,
             assetUri: attachment.uri,
-            assetContentUrl: attachment.previewUrl ?? attachment.uri,
+            assetContentUrl:
+              attachment.previewUrl ??
+              `/api/v2/files/content?assetId=${encodeURIComponent(attachment.id)}`,
             fileName: attachment.name,
             mimeType: attachment.mimeType,
             sourceType: "intent-attachment",
@@ -2972,23 +3073,113 @@ export function useIntentOS() {
     setSelectedNodeIds([execId]);
 
     pendingDirectRunNodeId.current = execId;
+    const generatorNotice = `已创建${title}节点，正在使用 ${rules.usesSkillRuntime ? `${rules.capability?.title ?? "Skill"} 内置服务` : rules.model?.name ?? "模型"} 直接生成。`;
     setMessages((current) => [
       ...current,
       {
         id: `msg_${Date.now()}`,
         role: "user",
-        content: prompt,
+        content: prompt || `执行 Skill：${rules.capability?.title ?? "Skill"}（输入素材 ${attachments.length} 个）`,
         time: messageTime(),
       },
       {
         id: `msg_${Date.now()}_generator`,
         role: "assistant",
-        content: `已创建${title}节点，正在使用 ${rules.usesSkillRuntime ? `${rules.capability?.title ?? "Skill"} 内置服务` : rules.model?.name ?? "模型"} 直接生成。`,
+        content: generatorNotice,
         time: messageTime(),
         resultNodeId: resultId,
         resultKind: kind,
       },
     ]);
+    void persistIntentMessage(generatorNotice, {
+      resultNodeId: resultId,
+      resultKind: kind,
+      generator: true,
+    });
+    return { execId, resultId };
+  }
+
+  // ---------- 小逻大脑 generate_media 直派桥接 ----------
+  /** 等待结果占位卡跑完后 resolve generateForBrain 的 Promise */
+  const brainMediaWaiters = useRef(new Map<string, (result: NodeRunResult) => void>());
+
+  function nodeToBrainResult(node: CanvasNode): NodeRunResult {
+    const output = node.parameters?.kernelOutput as StoredKernelNodeOutput | undefined;
+    const assetUrl =
+      typeof output?.assetUrl === "string" && output.assetUrl.trim()
+        ? output.assetUrl
+        : undefined;
+    const summary = (
+      node.result?.trim() ||
+      output?.result?.trim() ||
+      output?.text?.trim() ||
+      ""
+    ).slice(0, 500);
+    return {
+      stepId: node.id,
+      nodeId: node.id,
+      status:
+        node.status === "succeeded"
+          ? "succeeded"
+          : node.status === "canceled"
+            ? "cancelled"
+            : "failed",
+      outputSummary: summary || assetUrl || "",
+      assetUrl,
+      error:
+        node.status === "succeeded"
+          ? undefined
+          : node.result?.trim() || "画布节点执行失败",
+    };
+  }
+
+  // 结果占位卡到达终态时 resolve 对应 generateForBrain 的等待
+  useEffect(() => {
+    const waiters = brainMediaWaiters.current;
+    if (waiters.size === 0) return;
+    for (const node of nodes) {
+      const waiter = waiters.get(node.id);
+      if (!waiter) continue;
+      if (
+        node.status !== "succeeded" &&
+        node.status !== "failed" &&
+        node.status !== "canceled"
+      )
+        continue;
+      waiters.delete(node.id);
+      waiter(nodeToBrainResult(node));
+    }
+  }, [nodes]);
+
+  /** 小逻大脑 generate_media：复用直派链路建节点并执行，等结果后返回（面板 ChatAdapters 用） */
+  async function generateForBrain(args: GenerateMediaArgs): Promise<NodeRunResult> {
+    const kind: Extract<NodeKind, "text" | "image" | "video" | "audio"> =
+      args.modality === "document" ? "text" : args.modality;
+    const created = generateDirectly(args.prompt, kind, args.skillId, args.modelId);
+    if (!created) {
+      return {
+        stepId: "",
+        nodeId: "",
+        status: "failed",
+        outputSummary: "",
+        error: "当前无法创建生成节点（可能正在规划或已有任务在跑）",
+      };
+    }
+    return await new Promise<NodeRunResult>((resolve) => {
+      brainMediaWaiters.current.set(created.resultId, resolve);
+      window.setTimeout(() => {
+        const waiter = brainMediaWaiters.current.get(created.resultId);
+        if (!waiter) return;
+        brainMediaWaiters.current.delete(created.resultId);
+        waiter({
+          stepId: created.resultId,
+          nodeId: created.resultId,
+          status: "failed",
+          outputSummary: "",
+          error: "生成超时（超过 10 分钟）",
+        });
+      }, 600_000);
+    });
   }
 
   // Use a ref to track whether we have already scheduled the run for the current pending node.
@@ -3400,6 +3591,7 @@ export function useIntentOS() {
     zoom,
     setZoom,
     runState,
+    planApplied,
     preferences,
     isPlanning,
     isQuickAnswering,
@@ -3430,7 +3622,7 @@ export function useIntentOS() {
     copySelected,
     pasteCopied,
     arrangeNodes,
-    clearMessages,
+    deleteConversation,
     startNewConversation,
     fetchConversationHistory,
     restoreConversation,
@@ -3438,6 +3630,7 @@ export function useIntentOS() {
     submitIntent: submitIntentServer,
     submitQuickAnswer,
     generateDirectly,
+  generateForBrain,
     uploadIntentAttachments,
     confirmPlan,
     updatePlan,
