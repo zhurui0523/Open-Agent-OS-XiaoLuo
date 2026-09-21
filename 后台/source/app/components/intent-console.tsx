@@ -212,6 +212,10 @@ export function IntentConsole({
   const [brainBusy, setBrainBusy] = useState(false);
   /** QUEUE-TURN：小逻执行中排队的新任务（大脑面板上报） */
   const [brainQueue, setBrainQueue] = useState<Array<{ id: number; text: string }>>([]);
+  /** 大脑面板上报的技能目录：输入条 / 斜杠补全 + 发送期显式引用指令 */
+  const [brainSkillCatalog, setBrainSkillCatalog] = useState<
+    Array<{ name: string; description: string }>
+  >([]);
   /** 权限模式：default 仅工作区 / auto 越界只读自动放行 / full 本机任意读写（高风险命令仍确认） */
   const [permissionMode, setPermissionMode] = useState<"default" | "auto" | "full">(() => {
     try {
@@ -607,8 +611,26 @@ export function IntentConsole({
     if (composerMode === "brain") {
       // brain 模式：底部输入条驱动小逻大脑面板发送
       if (!draft.trim()) return;
+      // /技能名 显式引用：前置 load_skill 指令，大脑按技能正文执行
+      const referenced = Array.from(
+        new Set(
+          (draft.match(/(?:^|\s)\/([^\s/]+)(?=\s|$)/g) ?? [])
+            .map((token) => token.trim().slice(1))
+            .filter((name) =>
+              brainSkillCatalog.some((skill) => skill.name === name),
+            ),
+        ),
+      );
+      const directive = referenced.length
+        ? referenced
+            .map(
+              (name) =>
+                `【明确引用技能：/${name}】请先 load_skill("${name}") 并严格按其正文执行下述任务。`,
+            )
+            .join("\n") + "\n"
+        : "";
       // 附件随正文交给大脑面板：面板负责物化进工作区 uploads/ 并注入【附件】段（二进制不塞正文）
-      brainSendRef.current?.send(outgoing, attachments);
+      brainSendRef.current?.send(directive + outgoing, attachments);
     } else if (professionalMode) {
       // Skill 模式：提示词可留空，素材为必填
       if (!draft.trim() && !skillMode) return;
@@ -953,6 +975,7 @@ export function IntentConsole({
             sendRef={brainSendRef}
             onBusyChange={setBrainBusy}
             onQueueChange={setBrainQueue}
+            onSkillCatalogChange={setBrainSkillCatalog}
             permissionMode={permissionMode}
             externalItems={externalItems}
             externalFooter={externalFooter}
@@ -1101,6 +1124,7 @@ export function IntentConsole({
             onChange={setDraft}
             onAttach={attachCanvasAsset}
             onSubmitShortcut={submit}
+            slashSkills={composerMode === "brain" ? brainSkillCatalog : []}
             onPasteFiles={addFilesAsAttachments}
             aria-label={
               composerMode === "quick"

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Xiaoluo Brain panel - the chat-driven "xiaoluo brain" composer mode inside
  * the intent console: writes code, renders previews, asks back before acting.
  * Runtime lives in app/xiaoluo-brain (ChatAgent); LLM calls are proxied by
@@ -385,6 +385,8 @@ interface XiaoluoBrainPanelProps {
   onBusyChange?: (busy: boolean) => void;
   /** QUEUE-TURN：待发送任务队列上报（宿主输入条显示「等待发送 N」） */
   onQueueChange?: (items: Array<{ id: number; text: string }>) => void;
+  /** 技能目录（工作区技能+插件技能）上报宿主，供输入条 / 斜杠补全与显式引用 */
+  onSkillCatalogChange?: (items: Array<{ name: string; description: string }>) => void;
   /** 权限模式：default=仅工作区 / auto=越界只读自动放行 / full=本机任意读写 */
   permissionMode?: "default" | "auto" | "full";
   /** 最新代码产物/预览上报口（画布独立结果面板） */
@@ -909,6 +911,7 @@ export function XiaoluoBrainPanel({
   onQuoteText,
   onBusyChange,
   onQueueChange,
+  onSkillCatalogChange,
   permissionMode = "default",
 }: XiaoluoBrainPanelProps) {
   const [askDraft, setAskDraft] = useState("");
@@ -2375,6 +2378,12 @@ export function XiaoluoBrainPanel({
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
+
+  // 技能目录上报宿主：对话输入条的 / 斜杠补全菜单与发送期显式引用消费
+  useEffect(() => {
+    onSkillCatalogChange?.(skillCatalog);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skillCatalog]);
 
 
 

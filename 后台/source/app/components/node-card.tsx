@@ -472,6 +472,18 @@ function activeAssetMention(value: string, caret: number) {
   } satisfies ActiveAssetMention;
 }
 
+function activeSlashSkill(value: string, caret: number) {
+  const beforeCaret = value.slice(0, caret);
+  const match = beforeCaret.match(/(?:^|\s)\/([^\s/]*)$/u);
+  if (!match) return null;
+  const start = beforeCaret.lastIndexOf("/");
+  return {
+    start,
+    end: caret,
+    query: match[1] ?? "",
+  };
+}
+
 export function NodePromptEditor({
   value,
   assets,
@@ -481,6 +493,7 @@ export function NodePromptEditor({
   onExpand,
   onSubmitShortcut,
   onPasteFiles,
+  slashSkills,
   ariaLabel = "节点任务描述",
   placeholder,
   autoFocus = false,
@@ -494,6 +507,8 @@ export function NodePromptEditor({
   onSubmitShortcut?: () => void;
   /** 粘贴文件（图片/视频/音频/任意文件）→ 转交宿主以附件上传 */
   onPasteFiles?: (files: File[]) => void;
+  /** 斜杠技能引用：编辑器内输入 / 弹出技能补全菜单（对话 brain 模式由宿主注入技能目录） */
+  slashSkills?: { name: string; description: string }[];
   ariaLabel?: string;
   placeholder?: string;
   autoFocus?: boolean;
@@ -501,7 +516,13 @@ export function NodePromptEditor({
   const editorRef = useRef<HTMLDivElement>(null);
   const pendingCaretRef = useRef<number | null>(null);
   const [mention, setMention] = useState<ActiveAssetMention | null>(null);
+  const [slash, setSlash] = useState<{
+    start: number;
+    end: number;
+    query: string;
+  } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [slashIndex, setSlashIndex] = useState(0);
   const query = mention?.query.trim().toLocaleLowerCase() ?? "";
   const queryMatches = (asset: CanvasAssetReference) =>
     asset.title.toLocaleLowerCase().includes(query);
@@ -515,6 +536,13 @@ export function NodePromptEditor({
     ...matchingAttachedAssets,
     ...matchingCanvasAssets,
   ];
+  const slashQuery = slash?.query.trim().toLocaleLowerCase() ?? "";
+  const matchingSkills = (slashSkills ?? []).filter(
+    (skill) =>
+      !slashQuery ||
+      skill.name.toLocaleLowerCase().includes(slashQuery) ||
+      skill.description.toLocaleLowerCase().includes(slashQuery),
+  );
   useLayoutEffect(() => {
     const editor = editorRef.current;
     const pendingCaret = pendingCaretRef.current;
@@ -538,6 +566,8 @@ export function NodePromptEditor({
   function refreshMention(nextValue: string, caret: number) {
     setMention(activeAssetMention(nextValue, caret));
     setActiveIndex(0);
+    setSlash(slashSkills?.length ? activeSlashSkill(nextValue, caret) : null);
+    setSlashIndex(0);
   }
 
   function chooseAsset(asset: CanvasAssetReference) {
@@ -552,6 +582,21 @@ export function NodePromptEditor({
       onAttach(asset.sourceNodeId);
     }
     setMention(null);
+    requestAnimationFrame(() => {
+      editorRef.current?.focus();
+      if (editorRef.current) setPromptCaretOffset(editorRef.current, nextCaret);
+    });
+  }
+
+  function chooseSkill(skill: { name: string; description: string }) {
+    if (!slash) return;
+    const inserted = `/${skill.name} `;
+    const nextValue =
+      value.slice(0, slash.start) + inserted + value.slice(slash.end);
+    const nextCaret = slash.start + inserted.length;
+    pendingCaretRef.current = nextCaret;
+    onChange(nextValue);
+    setSlash(null);
     requestAnimationFrame(() => {
       editorRef.current?.focus();
       if (editorRef.current) setPromptCaretOffset(editorRef.current, nextCaret);
@@ -647,13 +692,43 @@ export function NodePromptEditor({
               return;
             }
           }
+          if (slash) {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setSlash(null);
+              return;
+            }
+            if (
+              matchingSkills.length &&
+              (event.key === "ArrowDown" || event.key === "ArrowUp")
+            ) {
+              event.preventDefault();
+              const direction = event.key === "ArrowDown" ? 1 : -1;
+              setSlashIndex((current) =>
+                (current + direction + matchingSkills.length) %
+                matchingSkills.length,
+              );
+              return;
+            }
+            if (
+              matchingSkills.length &&
+              (event.key === "Enter" || event.key === "Tab")
+            ) {
+              event.preventDefault();
+              chooseSkill(matchingSkills[slashIndex] ?? matchingSkills[0]);
+              return;
+            }
+          }
           if (event.key === "Enter") {
             event.preventDefault();
             insertPromptText(event.currentTarget, "\n");
             syncEditorValue(event.currentTarget);
           }
         }}
-        onBlur={() => setMention(null)}
+        onBlur={() => {
+          setMention(null);
+          setSlash(null);
+        }}
       >
       </div>
 
@@ -717,6 +792,37 @@ export function NodePromptEditor({
           ) : (
             <p>暂无匹配素材</p>
           )}
+        </div>
+      )}
+
+      {slash && (
+        <div className="node-asset-mention-menu" role="listbox" aria-label="引用技能">
+          <section className="node-asset-mention-group" aria-label="工作区技能">
+            <strong>技能（回车选用）</strong>
+            {matchingSkills.length ? (
+              matchingSkills.slice(0, 8).map((skill, index) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={index === slashIndex}
+                  className={index === slashIndex ? "is-active" : ""}
+                  key={skill.name}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onClick={() => chooseSkill(skill)}
+                >
+                  <span>{skill.name}</span>
+                  <small style={{ color: "#9ca3af", marginLeft: 6 }}>
+                    {skill.description}
+                  </small>
+                </button>
+              ))
+            ) : (
+              <p>暂无匹配技能</p>
+            )}
+          </section>
         </div>
       )}
     </div>

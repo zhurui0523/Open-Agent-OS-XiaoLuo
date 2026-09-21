@@ -560,6 +560,110 @@ function MarketplacePanel({
   const [source, setSource] = useState<
     "installed" | "private" | "shared" | "market"
   >("installed");
+  const [workspaceSkills, setWorkspaceSkills] = useState<
+    Array<{ name: string; description: string; source: string }>
+  >([]);
+
+  // 工作区技能扫描（工作区 skills/ + 插件自带技能）：能力中心显示便于管理，对话 /名字 引用
+  useEffect(() => {
+    if (category !== "skill") return;
+    let live = true;
+    type FsEntry = { path: string; isDir?: boolean };
+    const fsAction = async (action: "list" | "read", path: string) => {
+      const bridge = (
+        window as unknown as {
+          xiaoluoDesktop?: {
+            fsAction?: (payload: unknown) => Promise<{
+              error?: string;
+              entries?: FsEntry[];
+              content?: string;
+            }>;
+          };
+        }
+      ).xiaoluoDesktop;
+      if (bridge && typeof bridge.fsAction === "function") {
+        const res = await bridge.fsAction({ action, path, mode: "default" });
+        if (res.error) throw new Error(res.error);
+        return res;
+      }
+      const resp = await fetch("/api/v2/brain/fs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, path, mode: "default" }),
+      });
+      const data = (await resp.json().catch(() => ({}))) as {
+        error?: string;
+        entries?: FsEntry[];
+        content?: string;
+      };
+      if (!resp.ok) throw new Error(data.error ?? "读取失败");
+      return data;
+    };
+    const readDescription = async (rel: string) => {
+      try {
+        const res = await fsAction("read", rel);
+        const matched = /description:\s*(.+)/.exec(res.content ?? "");
+        return matched ? matched[1].trim() : "";
+      } catch {
+        return "";
+      }
+    };
+    void (async () => {
+      try {
+        const items: Array<{ name: string; description: string; source: string }> = [];
+        const dirs = ((await fsAction("list", "skills")).entries ?? [])
+          .filter((entry) => entry.isDir)
+          .slice(0, 50);
+        for (const dir of dirs) {
+          const name = String(dir.path).split("/").pop() ?? "";
+          if (!name) continue;
+          items.push({
+            name,
+            description: await readDescription(`skills/${name}/SKILL.md`),
+            source: "工作区",
+          });
+        }
+        try {
+          const pluginDirs = ((await fsAction("list", "plugins")).entries ?? [])
+            .filter((entry) => entry.isDir)
+            .slice(0, 5);
+          for (const pluginDir of pluginDirs) {
+            const pluginName = String(pluginDir.path).split("/").pop() ?? "";
+            if (!pluginName) continue;
+            try {
+              const skillDirs = (
+                (await fsAction("list", `plugins/${pluginName}/skills`))
+                  .entries ?? []
+              )
+                .filter((entry) => entry.isDir)
+                .slice(0, 20);
+              for (const skillDir of skillDirs) {
+                const skillName = String(skillDir.path).split("/").pop() ?? "";
+                if (!skillName) continue;
+                items.push({
+                  name: skillName,
+                  description: await readDescription(
+                    `plugins/${pluginName}/skills/${skillName}/SKILL.md`,
+                  ),
+                  source: `插件 ${pluginName}`,
+                });
+              }
+            } catch {
+              /* 插件无 skills 目录跳过 */
+            }
+          }
+        } catch {
+          /* plugins 目录不存在跳过 */
+        }
+        if (live) setWorkspaceSkills(items);
+      } catch {
+        /* 工作区不存在按空库处理 */
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [category]);
   // ---- 技能市场（小逻工作区 SKILL.md 流通层；与 Package 体系不同契约，独立子页签承载） ----
   const [skillMarketListings, setSkillMarketListings] = useState<
     SkillMarketListing[]
@@ -925,6 +1029,48 @@ function MarketplacePanel({
           )}
         </div>
       )}
+
+      {category === "skill" &&
+        source === "installed" &&
+        workspaceSkills.length > 0 && (
+          <section aria-label="工作区技能" style={{ marginBottom: 18 }}>
+            <div className="section-title-row">
+              <div>
+                <h2>工作区技能</h2>
+                <p>
+                  小逻对话工作区沉淀与插件自带的技能；对话输入框键入 / 加名字即可引用。
+                </p>
+              </div>
+              <span className="registry-version">
+                {workspaceSkills.length} 个
+              </span>
+            </div>
+            <div className="workflow-market-grid">
+              {workspaceSkills.map((skill) => (
+                <article
+                  className="workflow-market-card package-market-card"
+                  key={`${skill.source}/${skill.name}`}
+                >
+                  <header>
+                    <span>
+                      <Code2 size={19} />
+                    </span>
+                    <div>
+                      <h3>{skill.name}</h3>
+                      <small>{skill.source}</small>
+                    </div>
+                    <b>工作区</b>
+                  </header>
+                  <p>{skill.description || "未填写说明"}</p>
+                  <div className="workflow-card-tags">
+                    <span>/{skill.name}</span>
+                    <span>对话输入 / 引用</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
 
       {category === "workflow" ? (
         status === "loading" ? (
