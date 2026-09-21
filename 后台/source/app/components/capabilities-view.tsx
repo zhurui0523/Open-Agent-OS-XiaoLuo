@@ -787,7 +787,7 @@ function MarketplacePanel({
         }
       }
       if (action === "install") {
-        onNotice(listing.name + " 已私有化一份到你的工作区（共享原版无需安装即可直接用）。");
+        onNotice(listing.name + " 已安装为私有技能（仅你可用）。");
         setWorkspaceScanTick((tick) => tick + 1);
       } else {
         onNotice(listing.name + " 已下架。");
@@ -1134,7 +1134,7 @@ function MarketplacePanel({
               <div>
                 <h2>私有技能</h2>
                 <p>
-                  你自己工作区沉淀与插件自带的技能，私有仅自己可见，对话输入框键入 / 加名字即可引用，也可一键发布到共享；共享技能无需安装、所有用户直接可用，"安装为私有"只是私有化一份自己改。
+                  你从共享库安装的与你自己工作区沉淀的技能，都是私有、仅自己可见；对话输入框键入 / 加名字即可引用，也可一键发布到共享。共享技能需先安装才能使用。
                 </p>
               </div>
               <span className="registry-version">
@@ -1652,7 +1652,7 @@ function MarketplacePanel({
                         @{item.publisherName || "匿名"} · {item.publishedAt.slice(0, 10)}
                       </small>
                     </div>
-                    <b>{mine ? "我发布的" : installed ? "已私有化" : "共享技能库"}</b>
+                    <b>{mine ? "我发布的" : installed ? "已安装" : "共享技能库"}</b>
                   </header>
                   <p>{item.description || "未填写说明"}</p>
                   <div className="workflow-card-tags">
@@ -1672,7 +1672,7 @@ function MarketplacePanel({
                       ) : (
                         <PackagePlus size={14} />
                       )}
-                      {installed ? "已私有化" : "安装为私有"}
+                      {installed ? "已安装" : "安装"}
                     </button>
                     {mine ? (
                       <button
