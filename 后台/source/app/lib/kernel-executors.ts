@@ -13,6 +13,8 @@ import type {
   packages,
 } from "../../db/schema";
 import { getDb } from "../../db";
+import { assets, assetVersions } from "../../db/schema";
+import { and, eq } from "drizzle-orm";
 import type { XiaoLuoPackageManifest } from "./package-contract";
 import {
   fetchExternalEndpoint,
@@ -31,6 +33,7 @@ import { modelResponseAssetUrl, modelResponseText } from "./model-response";
 import { parseModelInputConstraints } from "./model-input-constraints";
 import { externalAssetAccessUrl, getFileBucket, storeAsset } from "./asset-kernel";
 import { artifactFormat, artifactName } from "./artifact-format";
+import { extractDocumentText, MAX_DOCUMENT_BYTES } from "./document-text";
 import {
   inspectIsolatedExecution,
   isolatedExecutionPolicy,
@@ -116,10 +119,10 @@ async function providerReadyInputs(
   const assetInputs = inputs.filter((input) =>
     ["image", "video", "audio", "document"].includes(input.kind ?? ""),
   );
-  if (!assetInputs.length) return inputs;
+  if (!assetInputs.length) return withDocumentText(inputs, context);
   const db = await getDb();
   const resolved = new Map<string, Promise<string>>();
-  return Promise.all(
+  const publicInputs = await Promise.all(
     inputs.map(async (input) => {
       const assetUrl = modelResponseAssetUrl(input.output);
       if (!assetUrl) return input;
@@ -152,17 +155,118 @@ async function providerReadyInputs(
       };
     }),
   );
+  return withDocumentText(publicInputs, context);
 }
+
+async function withDocumentText(
+  inputs: KernelUpstreamInput[],
+  context?: ModelExecutionContext,
+) {
+  if (!inputs.some((input) => input.kind === "document")) return inputs;
+  const db = await getDb();
+  return Promise.all(
+    inputs.map(async (input) => {
+      if (input.kind !== "document") return input;
+      const assetId = inputAssetId(input);
+      if (!assetId || !context?.workspaceId) return input;
+      const text = await readDocumentAssetText(
+        db,
+        assetId,
+        context.workspaceId,
+      );
+      if (!text) return input;
+      const output = input.output as Record<string, unknown>;
+      return { ...input, output: { ...output, documentText: text } };
+    }),
+  );
+}
+
+async function readDocumentAssetText(
+  db: Awaited<ReturnType<typeof getDb>>,
+  assetId: string,
+  workspaceId: string,
+) {
+  const [asset] = await db
+    .select({
+      blobKey: assetVersions.blobKey,
+      size: assetVersions.size,
+      name: assets.name,
+      mimeType: assetVersions.mimeType,
+    })
+    .from(assets)
+    .innerJoin(assetVersions, eq(assetVersions.id, assets.currentVersionId))
+    .where(and(eq(assets.id, assetId), eq(assets.workspaceId, workspaceId)))
+    .limit(1);
+  if (!asset || asset.size > MAX_DOCUMENT_BYTES) return null;
+  try {
+    const object = await (await getFileBucket()).get(asset.blobKey);
+    if (!object?.body) return null;
+    const bytes = await new Response(object.body).arrayBuffer();
+    return extractDocumentText(bytes, asset.name, asset.mimeType);
+  } catch {
+    return null;
+  }
+}
+
+function inputDocumentText(input: KernelUpstreamInput) {
+  if (!input.output || typeof input.output !== "object") return null;
+  const output = input.output as Record<string, unknown>;
+  return typeof output.documentText === "string" && output.documentText.trim()
+    ? output.documentText
+    : null;
+}
+
+function assertDocumentTextReadable(
+  inputs: KernelUpstreamInput[],
+  formatLabel: string,
+) {
+  const unreadable = inputs.find(
+    (input) => input.kind === "document" && !inputDocumentText(input),
+  );
+  if (!unreadable) return;
+  throw new ModelExecutionError(
+    `${formatLabel} 无法读取文档素材“${unreadable.title ?? unreadable.nodeId}”的文本（支持 txt/md/docx/pptx/xlsx）；请转换格式后重新连接`,
+    { status: 400, code: "MODEL_INPUT_FORMAT_UNSUPPORTED" },
+  );
+}
+
+const upstreamAssetLabels: Record<string, string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+  document: "文档",
+};
 
 function upstreamText(inputs: KernelUpstreamInput[]) {
   if (!inputs.length) return "无上游输入";
+  let documentBudget = 60_000;
   return inputs
     .map((input) => {
+      const label = input.title ?? input.nodeId;
+      const documentText = inputDocumentText(input);
+      if (documentText) {
+        const slice = documentText.slice(
+          0,
+          Math.max(0, Math.min(20_000, documentBudget)),
+        );
+        documentBudget -= slice.length;
+        return `${label}（文档内容，作为用户提供的提示词素材）：\n${slice}`;
+      }
+      const assetLabel = input.kind
+        ? upstreamAssetLabels[input.kind]
+        : undefined;
+      if (assetLabel) {
+        const note =
+          input.kind === "document"
+            ? "，文本提取失败或格式不受支持"
+            : "，二进制内容不在文本中展开";
+        return `${label}:（${assetLabel}素材${note}）`;
+      }
       const value =
         typeof input.output === "string"
           ? input.output
-          : JSON.stringify(input.output);
-      return `${input.title ?? input.nodeId}: ${value?.slice(0, 1600) ?? ""}`;
+          : modelResponseText(input.output) ?? JSON.stringify(input.output);
+      return `${label}: ${value?.slice(0, 1600) ?? ""}`;
     })
     .join("\n");
 }
@@ -207,8 +311,15 @@ function sunoLyricsPrompt(
   inputs: KernelUpstreamInput[],
 ) {
   const upstreamLyrics = inputs
-    .filter((input) => !input.kind || input.kind === "text")
-    .map((input) => modelResponseText(input.output)?.trim())
+    .filter(
+      (input) =>
+        !input.kind || input.kind === "text" || input.kind === "document",
+    )
+    .map((input) =>
+      input.kind === "document"
+        ? inputDocumentText(input)?.trim()
+        : modelResponseText(input.output)?.trim(),
+    )
     .filter((value): value is string => Boolean(value));
 
   if (upstreamLyrics.length) {
@@ -534,15 +645,19 @@ function onlyImageReferences(
   inputs: KernelUpstreamInput[],
   formatLabel: string,
 ) {
+  // 文档素材的文本已由 upstreamText 并入提示词，这里只校验并返回图片等二进制引用
+  assertDocumentTextReadable(inputs, formatLabel);
   const references = modelInputAssetReferences(inputs);
-  const unsupported = references.find((reference) => reference.kind !== "image");
+  const unsupported = references.find(
+    (reference) => reference.kind !== "image" && reference.kind !== "document",
+  );
   if (unsupported) {
     throw new ModelExecutionError(
-      `${formatLabel} 当前只支持图片参考素材，不能提交${unsupported.kind}素材`,
+      `${formatLabel} 当前只支持图片与文档参考素材，不能提交${unsupported.kind}素材`,
       { status: 400, code: "MODEL_INPUT_FORMAT_UNSUPPORTED" },
     );
   }
-  return references;
+  return references.filter((reference) => reference.kind === "image");
 }
 
 function openAIChatContent(prompt: string, inputs: KernelUpstreamInput[]) {
@@ -582,7 +697,10 @@ const defaultAssetMimeTypes: Record<ModelInputAssetReference["kind"], string> = 
 };
 
 function geminiInputParts(prompt: string, inputs: KernelUpstreamInput[]) {
-  const references = modelInputAssetReferences(inputs);
+  assertDocumentTextReadable(inputs, "Gemini");
+  const references = modelInputAssetReferences(inputs).filter(
+    (reference) => reference.kind !== "document",
+  );
   return [
     { text: prompt },
     ...references.map((reference) => {
@@ -1185,12 +1303,17 @@ async function executeLocalDiffusionModel(
       code: "MODEL_INPUT_FORMAT_UNSUPPORTED",
     });
   }
-  if (modelInputAssetReferences(inputs).length) {
+  if (
+    modelInputAssetReferences(inputs).some(
+      (reference) => reference.kind !== "document",
+    )
+  ) {
     throw new ModelExecutionError(
-      "本地扩散引擎当前仅支持文生图/文生视频，暂不接受参考素材输入",
+      "本地扩散引擎当前仅支持文生图/文生视频，暂不接受图片等二进制参考素材",
       { status: 400, code: "MODEL_INPUT_FORMAT_UNSUPPORTED" },
     );
   }
+  inputs = await withDocumentText(inputs, context);
   const baseUrl = (model.baseUrl || "").replace(/\/+$/, "");
   const prompt = executionPrompt(node, inputs);
   const params = localDiffusionParameters(node.parameters);
@@ -1353,7 +1476,7 @@ export async function executeModel(
   }
   const providerInputs = await providerReadyInputs(inputs, context);
   const headers = credentialHeaders(model, credential);
-  const prompt = executionPrompt(node, inputs);
+  const prompt = executionPrompt(node, providerInputs);
   const base = endpoint.toString();
   let url = base;
   let body: Record<string, unknown>;
@@ -1505,9 +1628,13 @@ export async function executeModel(
         ],
       };
     } else {
-      if (modelInputAssetReferences(providerInputs).length) {
+      if (
+        modelInputAssetReferences(providerInputs).some(
+          (reference) => reference.kind !== "document",
+        )
+      ) {
         throw new ModelExecutionError(
-          "当前图片生成接口不支持参考素材；请改用支持多模态输入的完整接口地址",
+          "当前图片生成接口不支持图片等二进制参考素材；请改用支持多模态输入的完整接口地址",
           {
             status: 400,
             code: "MODEL_INPUT_FORMAT_UNSUPPORTED",

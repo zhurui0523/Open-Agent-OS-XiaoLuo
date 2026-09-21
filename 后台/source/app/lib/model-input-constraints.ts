@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   KernelUpstreamInput,
   ModelInputAssetKind,
   ModelInputConstraints,
@@ -107,6 +107,8 @@ export function validateModelInputAssets(
 ): ModelInputValidation {
   const counts = emptyTypeLimits();
   for (const input of inputs) {
+    // 文档素材在执行期被提取为提示词文本，不占用模型参考素材配额
+    if (input.kind === "document") continue;
     if (
       input.kind &&
       MODEL_INPUT_ASSET_KINDS.includes(input.kind as ModelInputAssetKind)
