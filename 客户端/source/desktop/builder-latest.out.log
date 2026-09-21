@@ -1,0 +1,17 @@
+  • electron-builder  version=26.15.3 os=10.0.26200
+  • loaded configuration  file=package.json ("build" field)
+  • skipped dependencies rebuild  reason=npmRebuild is set to false
+  • packaging       platform=win32 arch=x64 electron=43.3.0 appOutDir=desktop\release-latest\win-unpacked
+  • downloaded      label=electron progress=100%
+  ⨯ read ECONNRESET  failedTask=build stackTrace=RequestError: read ECONNRESET
+    at ClientRequest.<anonymous> (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\got@11.8.6\node_modules\got\dist\source\core\index.js:970:111)
+    at Object.onceWrapper (node:events:631:26)
+    at ClientRequest.emit (node:events:521:24)
+    at ClientRequest.origin.emit (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\@szmarczak+http-timer@4.0.6\node_modules\@szmarczak\http-timer\dist\source\index.js:43:20)
+    at emitErrorEvent (node:_http_client:112:11)
+    at TLSSocket.socketErrorListener (node:_http_client:745:5)
+    at TLSSocket.emit (node:events:509:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at processTicksAndRejections (node:internal/process/task_queues:90:21)
+    at TLSWrap.onStreamRead (node:internal/stream_base_commons:216:20)

@@ -1,9 +1,0 @@
-view,entry,primary_component,data_source,status
-灵境画布,/,CanvasView,/api/v2/bootstrap,implemented
-Intent控制台,画布右下,IntentPanel,/api/v2/intent,implemented
-画布管理,Dock画布入口,CanvasDrawer,/api/v2/canvases,implemented
-资产中心,Dock资产入口,AssetsView,/api/v2/files,implemented
-能力中心,Dock能力入口,CapabilitiesView,/api/v2/registry,implemented
-账户中心,顶部账户入口,AccountCenter,/api/v2/auth/session,implemented
-系统管理,账户中心管理员页,AccountCenter,/api/v2/admin,implemented
-任务中心,Dock运行入口,CanvasView,/api/v2/tasks,implemented

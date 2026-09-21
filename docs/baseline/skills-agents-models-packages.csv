@@ -1,9 +1,0 @@
-id,kind,decision,contract,requirement,evidence,test_id,status
-EXT-001,core-capability,保留文本图像视频系统能力壳,"Capability+InputSchema+OutputSchema+UiSchema",REQ-024,app/data.ts,E2E-006,verified
-EXT-002,skill,不预装文档中的14个具体Skill由项目方后续导入,"Package Manifest+Schema+permission snapshot",REQ-030,app/lib/package-contract.ts,E2E-019,user_excluded
-EXT-003,agent,通过统一Package和Capability Registry接入不建立第二套私有注册表,"Package lifecycle+capability projection",REQ-026,app/api/v2/packages/route.ts,E2E-006,contract_ready
-EXT-004,workflow,画布可分享为Workflow模板并保留版本快照,"share token+canvas snapshot",REQ-018,app/api/v2/canvases/share/route.ts,E2E-011,verified
-EXT-005,plugin,支持声明式沙盒UI和远程API运行时权限校验,"sandbox iframe without same-origin+network allowlist",REQ-009,app/lib/package-contract.ts,E2E-006,verified
-EXT-006,model-provider,"OpenAI Compatible|Gemini|Anthropic|Ark|async-video|generic-rest","ModelProviderAdapter+catalog+router",REQ-022,app/lib/model-adapters.ts,E2E-016,verified
-EXT-007,custom-http-ui,按产品决定不提供自定义接口编辑器,none,REQ-031,app/components/settings-center.tsx,E2E-007,user_excluded
-EXT-008,marketplace,需要发布者身份签名审核撤回和恶意包处置基础设施,Marketplace trust contract,REQ-028,docs/implementation-status.md,E2E-020,external_blocked

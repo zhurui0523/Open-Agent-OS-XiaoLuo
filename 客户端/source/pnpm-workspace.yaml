@@ -1,0 +1,15 @@
+packages:
+  - "."
+  - "desktop"
+
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+  unrs-resolver: true
+  workerd: true
+
+overrides:
+  postcss: 8.5.18
+  sharp: 0.35.0
