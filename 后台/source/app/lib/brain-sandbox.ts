@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 小逻大脑受控执行沙箱（fs / command / git 服务端实现共用）。
  *
  * isolated-worker 走 package 管线（需 package key + 完整性校验，ephemeral
@@ -921,6 +921,17 @@ export async function unpublishSkillFromMarket(userId: string, skillName: string
   const name = (skillName || "").trim();
   if (!SKILL_MARKET_NAME_RE.test(name)) throw new Error("技能名非法");
   await fs.rm(marketSkillDir(userId, name), { recursive: true, force: true });
+}
+
+/** 读取：返回共享技能库某条 listing 的 SKILL.md 正文（对话器 install_skill 直接安装用） */
+export async function readSkillListingContent(publisherId: string, skillName: string): Promise<string> {
+  const name = (skillName || "").trim();
+  if (!SKILL_MARKET_NAME_RE.test(name)) throw new Error("技能名非法");
+  const owner = sanitizeOwner(publisherId);
+  const source = path.join(MARKET_ROOT, owner, name, "SKILL.md");
+  const raw = await fs.readFile(source, "utf8").catch(() => "");
+  if (!raw) throw new Error("共享技能库中不存在该技能（可能已被发布者下架）");
+  return raw;
 }
 
 /** 安装：市场 SKILL.md → 本人工作区 skills/<name>/；本地已有同名拒绝（与 install_plugin 一致） */

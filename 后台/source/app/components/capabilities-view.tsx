@@ -558,7 +558,7 @@ function MarketplacePanel({
     "skill",
   );
   const [source, setSource] = useState<
-    "installed" | "private" | "shared" | "market"
+    "installed" | "private" | "shared"
   >("installed");
   const [workspaceSkills, setWorkspaceSkills] = useState<
     Array<{ name: string; description: string; source: string }>
@@ -664,7 +664,7 @@ function MarketplacePanel({
       live = false;
     };
   }, [category]);
-  // ---- 技能市场（小逻工作区 SKILL.md 流通层；与 Package 体系不同契约，独立子页签承载） ----
+  // ---- 共享技能库（小逻工作区 SKILL.md 流通层；listings 并入共享 Skill 页签统一展示） ----
   const [skillMarketListings, setSkillMarketListings] = useState<
     SkillMarketListing[]
   >([]);
@@ -700,7 +700,7 @@ function MarketplacePanel({
   }
 
   useEffect(() => {
-    if (category === "skill" && source === "market") void loadSkillMarket();
+    if (category === "skill") void loadSkillMarket();
   }, [category, source]);
 
   async function marketAct(
@@ -709,7 +709,7 @@ function MarketplacePanel({
   ) {
     if (action === "unpublish") {
       const confirmed = await dialog.confirm(
-        "下架该技能后，它将不再出现在其他用户的技能市场；已安装到别人工作区的副本不受影响。确认下架 " + listing.name + " ？",
+        "下架该技能后，它将不再出现在共享 Skill 列表；已安装到别人工作区的副本不受影响。确认下架 " + listing.name + " ？",
         { title: "下架技能", confirmText: "确认下架", tone: "danger" },
       );
       if (!confirmed) return;
@@ -730,7 +730,7 @@ function MarketplacePanel({
         throw new Error(payload.error ?? (action === "install" ? "安装失败" : "下架失败"));
       }
       if (action === "install") {
-        onNotice(listing.name + " 已安装到小逻工作区技能库。");
+        onNotice(listing.name + " 已安装为私有技能（仅你的小逻工作区可用）。");
       } else {
         onNotice(listing.name + " 已下架。");
       }
@@ -741,6 +741,41 @@ function MarketplacePanel({
       setBusyId("");
     }
   }
+  async function publishWorkspaceSkill(
+    name: string,
+    action: "publish" | "unpublish",
+  ) {
+    if (action === "unpublish") {
+      const confirmed = await dialog.confirm(
+        "下架后它将不再出现在共享 Skill 列表；别人已安装的副本不受影响。确认下架 " + name + " ？",
+        { title: "下架技能", confirmText: "确认下架", tone: "danger" },
+      );
+      if (!confirmed) return;
+    }
+    setBusyId("publish:" + name);
+    try {
+      const resp = await fetch("/api/v2/brain/skill-market", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, name }),
+      });
+      const payload = (await resp.json().catch(() => ({}))) as { error?: string };
+      if (!resp.ok) {
+        throw new Error(payload.error ?? (action === "publish" ? "发布失败" : "下架失败"));
+      }
+      onNotice(
+        action === "publish"
+          ? name + " 已发布到共享 Skill，其他用户可安装。"
+          : name + " 已下架。",
+      );
+      await loadSkillMarket();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "操作失败", "error");
+    } finally {
+      setBusyId("");
+    }
+  }
+
   const publicPackageItems = marketplacePackages.filter(
     (item) => item.packageType === category,
   );
@@ -759,6 +794,11 @@ function MarketplacePanel({
   );
   const otherSharedPackageItems = publicPackageItems.filter(
     (item) => !ownedSharedKeys.has(item.packageKey),
+  );
+  const myPublishedSkillNames = new Set(
+    skillMarketListings
+      .filter((listing) => listing.publisherId === userId)
+      .map((listing) => listing.name),
   );
 
   async function install(item: WorkflowMarketplaceItem) {
@@ -964,7 +1004,6 @@ function MarketplacePanel({
               key={value}
               onClick={() => {
                 setCategory(value);
-                if (value !== "skill" && source === "market") setSource("installed");
               }}
             >
               {value === "workflow" ? (
@@ -1016,17 +1055,6 @@ function MarketplacePanel({
           >
             {category === "skill" ? "共享 Skill" : "共享插件"}
           </button>
-          {category === "skill" && (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={source === "market"}
-              className={source === "market" ? "is-active" : ""}
-              onClick={() => setSource("market")}
-            >
-              技能市场
-            </button>
-          )}
         </div>
       )}
 
@@ -1038,7 +1066,7 @@ function MarketplacePanel({
               <div>
                 <h2>工作区技能</h2>
                 <p>
-                  小逻对话工作区沉淀与插件自带的技能；对话输入框键入 / 加名字即可引用。
+                  小逻对话工作区沉淀与插件自带的技能；对话输入框键入 / 加名字即可引用，工作区技能可一键发布到共享。
                 </p>
               </div>
               <span className="registry-version">
@@ -1059,13 +1087,45 @@ function MarketplacePanel({
                       <h3>{skill.name}</h3>
                       <small>{skill.source}</small>
                     </div>
-                    <b>工作区</b>
+                    <b>{myPublishedSkillNames.has(skill.name) ? "共享（已发布）" : "私有"}</b>
                   </header>
                   <p>{skill.description || "未填写说明"}</p>
                   <div className="workflow-card-tags">
                     <span>/{skill.name}</span>
                     <span>对话输入 / 引用</span>
                   </div>
+                  {skill.source === "工作区" && (
+                    <footer>
+                      <button
+                        type="button"
+                        className={
+                          myPublishedSkillNames.has(skill.name)
+                            ? "danger-text-button"
+                            : "secondary-button compact"
+                        }
+                        disabled={busyId === "publish:" + skill.name}
+                        onClick={() =>
+                          void publishWorkspaceSkill(
+                            skill.name,
+                            myPublishedSkillNames.has(skill.name)
+                              ? "unpublish"
+                              : "publish",
+                          )
+                        }
+                      >
+                        {busyId === "publish:" + skill.name ? (
+                          <LoaderCircle size={14} className="spin" />
+                        ) : myPublishedSkillNames.has(skill.name) ? (
+                          <Trash2 size={14} />
+                        ) : (
+                          <PackagePlus size={14} />
+                        )}
+                        {myPublishedSkillNames.has(skill.name)
+                          ? "下架"
+                          : "发布到共享"}
+                      </button>
+                    </footer>
+                  )}
                 </article>
               ))}
             </div>
@@ -1344,7 +1404,9 @@ function MarketplacePanel({
           ))}
         </div>
       ) : source === "shared" &&
-        (ownedSharedPackageItems.length || otherSharedPackageItems.length) ? (
+        (ownedSharedPackageItems.length ||
+          otherSharedPackageItems.length ||
+          (category === "skill" && skillMarketListings.length)) ? (
         <div className="workflow-market-grid">
           {ownedSharedPackageItems.map((item) => (
             <article
@@ -1503,21 +1565,8 @@ function MarketplacePanel({
               </footer>
             </article>
           ))}
-        </div>
-      ) : source === "market" && category === "skill" ? (
-        marketStatus === "loading" ? (
-          <RegistryLoading label="正在读取技能市场" />
-        ) : marketStatus === "error" ? (
-          <div className="registry-banner is-error">
-            <CircleAlert size={16} />
-            <span>{marketError}</span>
-            <button type="button" onClick={() => void loadSkillMarket()}>
-              重试
-            </button>
-          </div>
-        ) : skillMarketListings.length ? (
-          <div className="workflow-market-grid">
-            {skillMarketListings.map((item) => {
+          {category === "skill" &&
+            skillMarketListings.map((item) => {
               const key = item.publisherId + "/" + item.name;
               const mine = item.publisherId === userId;
               return (
@@ -1532,11 +1581,12 @@ function MarketplacePanel({
                         @{item.publisherName || "匿名"} · {item.publishedAt.slice(0, 10)}
                       </small>
                     </div>
-                    <b>{mine ? "我发布的" : item.localCopy ? "已安装" : "技能市场"}</b>
+                    <b>{mine ? "我发布的" : item.localCopy ? "已安装" : "共享技能库"}</b>
                   </header>
                   <p>{item.description || "未填写说明"}</p>
                   <div className="workflow-card-tags">
                     <span>SKILL.md</span>
+                    <span>装进小逻工作区</span>
                     {item.localCopy ? <span>本地已有</span> : null}
                   </div>
                   <footer>
@@ -1568,16 +1618,19 @@ function MarketplacePanel({
                 </article>
               );
             })}
-          </div>
-        ) : (
-          <div className="extension-empty">
-            <span>
-              <Code2 size={24} />
-            </span>
-            <h3>技能市场还是空的</h3>
-            <p>在小逻面板展开技能市场，把自己的技能发布出去，就会出现在这里，别的小逻可以一键安装。</p>
-          </div>
-        )
+          {category === "skill" && marketStatus === "error" && (
+            <div
+              className="registry-banner is-error"
+              style={{ gridColumn: "1 / -1" }}
+            >
+              <CircleAlert size={16} />
+              <span>共享技能库读取失败：{marketError}</span>
+              <button type="button" onClick={() => void loadSkillMarket()}>
+                重试
+              </button>
+            </div>
+          )}
+        </div>
       ) : (
         <div className="extension-empty">
           <span>{category === "skill" ? <Code2 size={24} /> : <PlugZap size={24} />}</span>
@@ -1593,7 +1646,10 @@ function MarketplacePanel({
               ? "通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。"
               : source === "private"
                 ? `创建或安装${category === "skill" ? " Skill" : "插件"}时选择“私有”，它只会对你本人显示。`
-                : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}，以及用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，都会显示在这里供所有用户添加。`}
+                : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}、用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，以及发布到共享技能库的 SKILL.md 技能，都会显示在这里供所有用户添加。`}
+            {category === "skill"
+              ? "也可以在小逻面板把工作区技能发布到共享，或直接对小逻说“安装 XX 技能”一步装好。"
+              : ""}
           </p>
         </div>
       )}

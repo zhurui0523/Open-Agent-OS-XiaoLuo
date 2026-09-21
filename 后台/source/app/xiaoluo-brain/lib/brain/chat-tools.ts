@@ -923,6 +923,23 @@ const LOAD_SKILL_SCHEMA = {
   },
 };
 
+const INSTALL_SKILL_SCHEMA = {
+  type: "function",
+  function: {
+    name: "install_skill",
+    description:
+      "从共享技能库直接安装技能到本工作区（一步落盘 skills/<name>/SKILL.md，装完是私有技能，下轮起 /名字 或 load_skill 可用）。老板说\"安装/装一下/给我 XX 技能\"时用；严禁用 run_command/write_file 手动建文件夹模拟安装。本地已有同名技能会拒绝。",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "技能名（共享技能库里的精确名字，kebab-case）" },
+        publisherId: { type: "string", description: "可选：发布者 id（同名技能来自不同发布者时消歧）" },
+      },
+      required: ["name"],
+    },
+  },
+};
+
 const SAVE_SKILL_SCHEMA = {
   type: "function",
   function: {
@@ -949,7 +966,7 @@ const SAVE_SKILL_SCHEMA = {
   if (caps.desktopEnabled) schemas.push(DESKTOP_SCREENSHOT_SCHEMA, DESKTOP_OPERATE_SCHEMA);
   if (caps.browserEnabled) schemas.push(BROWSE_PAGE_SCHEMA);
   // 技能三件套：schema 常量定义在注册语句之后，故在函数尾单独追加
-  if (caps.fsEnabled) schemas.push(LOAD_SKILL_SCHEMA, SAVE_SKILL_SCHEMA);
+  if (caps.fsEnabled) schemas.push(LOAD_SKILL_SCHEMA, SAVE_SKILL_SCHEMA, INSTALL_SKILL_SCHEMA);
   // 插件安装流（模块4）：解压 + manifest 校验需要命令与文件两个通道都在
   if (caps.fsEnabled && caps.commandEnabled) schemas.push(INSTALL_PLUGIN_SCHEMA);
   // 仓库地图：只读扫描，fs 通道在就注册

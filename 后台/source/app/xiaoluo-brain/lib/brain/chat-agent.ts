@@ -1053,6 +1053,8 @@ export class ChatAgent {
         return await this.execLoadSkill(call);
       case "save_skill":
         return await this.execSaveSkill(call);
+      case "install_skill":
+        return await this.execInstallSkill(call);
       case "install_plugin":
         return await this.execInstallPlugin(call);
       case "repo_map":
@@ -1709,6 +1711,53 @@ export class ChatAgent {
       } catch { /* plugins 目录不存在跳过 */ }
       return "技能 " + name + " 不存在。" + (names.length ? "可用技能：" + names.join("、") + "。" : "技能库为空——值得复用的做法可先 save_skill 沉淀。");
     }
+  }
+
+  /** 安装共享技能（体系合一）：共享技能库取 SKILL.md 正文一步落盘 skills/<name>/；同名拒绝；禁止命令建文件夹 */
+  private async execInstallSkill(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.fs) return "当前环境未接入文件系统，无法安装技能。";
+    const args = (call.arguments ?? {}) as { name?: string; publisherId?: string };
+    const name = String(args.name ?? "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    if (!name) return "install_skill 需要 name（共享技能库里的精确名字）。";
+    try {
+      await ports.fs.readFile("skills/" + name + "/SKILL.md");
+      return "本地已有同名技能 skills/" + name + "（私有技能），如需重装请老板先在工作区技能里删除本地同名技能。";
+    } catch { /* 本地不存在，允许安装 */ }
+    let listings: Array<{ name?: string; publisherId?: string; publisherName?: string }> = [];
+    try {
+      const resp = await fetch("/api/v2/brain/skill-market");
+      const data = (await resp.json().catch(() => ({}))) as { listings?: typeof listings };
+      listings = data.listings ?? [];
+    } catch { /* 网络异常按空库处理 */ }
+    const wanted = String(args.publisherId ?? "").trim();
+    const hit = listings.find((l) => l.name === name && (!wanted || l.publisherId === wanted));
+    if (!hit || !hit.publisherId) {
+      const names = Array.from(new Set(listings.map((l) => String(l.name ?? "")))).filter(Boolean).slice(0, 30);
+      return "共享技能库里没有技能 " + name + "。" + (names.length ? "可安装的共享技能：" + names.join("、") + "。" : "共享技能库为空。");
+    }
+    let content = "";
+    try {
+      const resp = await fetch("/api/v2/brain/skill-market", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "read", name, publisherId: hit.publisherId }),
+      });
+      const data = (await resp.json().catch(() => ({}))) as { content?: string; error?: string };
+      if (!resp.ok) throw new Error(data.error ?? "读取失败");
+      content = data.content ?? "";
+    } catch (error) {
+      return "读取共享技能 " + name + " 正文失败：" + (error as Error).message;
+    }
+    const fm = /^---\n([\s\S]*?)\n---/.exec(content);
+    const body = (fm ? content.slice(fm[0].length) : content).trim();
+    if (!fm || !/^name:\s*\S+/m.test(fm[1]) || body.length < 20) {
+      return "共享技能 " + name + " 的 SKILL.md 契约不完整（需 frontmatter name 与 ≥20 字正文），拒绝安装。";
+    }
+    await ports.fs.writeFile("skills/" + name + "/SKILL.md", content);
+    this.journal.append("tool_result", "安装共享技能：" + name, { tool: "install_skill", target: name, ok: true });
+    this.opts.ports.postUI("status", "安装共享技能：" + name + "（私有）", { tool: "install_skill", target: name, ok: true });
+    return "已安装《" + name + "》为私有技能（仅本工作区可用）；来源：共享技能库 @" + (hit.publisherName || hit.publisherId) + "。下一轮起 /" + name + " 或 load_skill 即可使用；想让别人也用，去能力中心把它发布到共享。";
   }
 
   /** 技能验收激活（差距五硬化）：frontmatter 声明 verify/verifyMatch → 写盘后系统强制跑；未声明则清空 */

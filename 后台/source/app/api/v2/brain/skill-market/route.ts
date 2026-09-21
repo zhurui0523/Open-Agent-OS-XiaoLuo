@@ -10,6 +10,7 @@ import {
   installSkillFromMarket,
   listSkillMarket,
   publishSkillToMarket,
+  readSkillListingContent,
   unpublishSkillFromMarket,
 } from "../../../../lib/brain-sandbox";
 
@@ -33,8 +34,8 @@ export async function POST(request: Request) {
       publisherId?: string;
     };
     const action = body.action;
-    if (action !== "publish" && action !== "unpublish" && action !== "install") {
-      return Response.json({ error: "action 必须是 publish / unpublish / install" }, { status: 400 });
+    if (action !== "publish" && action !== "unpublish" && action !== "install" && action !== "read") {
+      return Response.json({ error: "action 必须是 publish / unpublish / install / read" }, { status: 400 });
     }
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) {
@@ -51,7 +52,11 @@ export async function POST(request: Request) {
     }
     const publisherId = typeof body.publisherId === "string" ? body.publisherId.trim() : "";
     if (!publisherId) {
-      return Response.json({ error: "install 需要 publisherId" }, { status: 400 });
+      return Response.json({ error: "install / read 需要 publisherId" }, { status: 400 });
+    }
+    if (action === "read") {
+      const content = await readSkillListingContent(publisherId, name);
+      return Response.json({ ok: true, content });
     }
     await installSkillFromMarket(user.id, publisherId, name);
     return Response.json({ ok: true, installed: name });
