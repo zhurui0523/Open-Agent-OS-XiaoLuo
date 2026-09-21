@@ -1694,6 +1694,31 @@ export class ChatAgent {
           } catch { /* 该插件里没有这个技能，继续找 */ }
         }
       } catch { /* plugins 目录不存在按无插件处理 */ }
+      // 共享库兜底（合一语义）：共享技能住在服务端共享库，所有用户无需安装直接可加载
+      try {
+        const resp = await fetch("/api/v2/brain/skill-market");
+        const data = (await resp.json().catch(() => ({}))) as {
+          listings?: Array<{ name?: string; publisherId?: string; publisherName?: string }>;
+        };
+        const hit = (data.listings ?? []).find((l) => l.name === name && l.publisherId);
+        if (hit && hit.publisherId) {
+          const r2 = await fetch("/api/v2/brain/skill-market", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ action: "read", name, publisherId: hit.publisherId }),
+          });
+          const p2 = (await r2.json().catch(() => ({}))) as { content?: string };
+          if (r2.ok && p2.content) {
+            const m3 = /^---\n([\s\S]*?)\n---/.exec(p2.content);
+            const body3 = (m3 ? p2.content.slice(m3[0].length) : p2.content).trim();
+            this.activateSkillVerify(name, m3 ? m3[1] : null);
+            const verifyNote = this.activeSkillVerify ? "\n【技能验收】此技能声明了硬验收：" + this.activeSkillVerify.command + "——每次写/改文件后系统自动跑，你不用自己执行，看到【技能验收】报错先修。" : "";
+            this.journal.append("tool_result", "加载共享技能：" + name, { tool: "load_skill" });
+            this.opts.ports.postUI("status", "加载共享技能：" + name, { tool: "load_skill", target: name, ok: true });
+            return "【共享技能 " + name + " 正文】（服务端共享库，所有用户无需安装直接可用）\n" + (body3 || "（正文为空）") + "\n照此技能执行；想私有化修改可 install_skill 装为私有。" + verifyNote;
+          }
+        }
+      } catch { /* 共享库不可达落到不存在分支 */ }
       let names: string[] = [];
       try {
         const entries = await ports.fs.listDir("skills");
@@ -1757,7 +1782,7 @@ export class ChatAgent {
     await ports.fs.writeFile("skills/" + name + "/SKILL.md", content);
     this.journal.append("tool_result", "安装共享技能：" + name, { tool: "install_skill", target: name, ok: true });
     this.opts.ports.postUI("status", "安装共享技能：" + name + "（私有）", { tool: "install_skill", target: name, ok: true });
-    return "已安装《" + name + "》为私有技能（仅本工作区可用）；来源：共享技能库 @" + (hit.publisherName || hit.publisherId) + "。下一轮起 /" + name + " 或 load_skill 即可使用；想让别人也用，去能力中心把它发布到共享。";
+    return "已把《" + name + "》私有化安装到本工作区（仅自己可见可改），来源：共享技能库 @" + (hit.publisherName || hit.publisherId) + "。共享原版所有用户无需安装即可直接用；下一轮起 /" + name + " 或 load_skill 优先用你的私有副本。";
   }
 
   /** 技能验收激活（差距五硬化）：frontmatter 声明 verify/verifyMatch → 写盘后系统强制跑；未声明则清空 */

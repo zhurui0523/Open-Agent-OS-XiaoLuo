@@ -32,6 +32,7 @@ export async function POST(request: Request) {
       action?: string;
       name?: string;
       publisherId?: string;
+      content?: string;
     };
     const action = body.action;
     if (action !== "publish" && action !== "unpublish" && action !== "install" && action !== "read") {
@@ -43,7 +44,12 @@ export async function POST(request: Request) {
     }
     await enforceRateLimit({ subject: user.id, route: "brain:skill-market", max: 60, windowMs: 60_000 });
     if (action === "publish") {
-      const published = await publishSkillToMarket(user.id, user.displayName || user.username, name);
+      const published = await publishSkillToMarket(
+        user.id,
+        user.displayName || user.username,
+        name,
+        typeof body.content === "string" ? body.content : undefined,
+      );
       return Response.json({ ok: true, published });
     }
     if (action === "unpublish") {

@@ -67,7 +67,7 @@ export function buildXiaoluoChatPrompt(capabilityCatalog: string, caps?: ChatRun
 - 老板机器是 Windows：别用 node -e 内联长脚本（引号转义易碎），把脚本 write_file 成 .cjs 文件再 node xxx.cjs 跑；给静态目录起服务优先自己写 server.js（node 内置 http 模块）再 start_service 起；起服务前先确认入口文件真实存在且内容非空。
 - 环境自修纪律：解释器/工具缺失或是假身（如 python 指向 WindowsApps 商店占位）时自己修，别摊手甩给老板——① where <命令> + --version 确诊；② winget install -e --id <包名> 装真的（会自动弹框请老板批准，别绕过）；③ 装完当前进程 PATH 可能不刷新：where 仍指旧路径就到 %LOCALAPPDATA% 的 Programs 目录找真实路径用绝对路径调用；④ 老板不批安装才换等价路子（如静态服务改 node 内置 http）。
 - 能力清单【技能库】是沉淀好的做法：任务对得上就先 load_skill 读正文照做；老板说\"记住这套做法\"时用 save_skill 沉淀（名字 kebab-case、正文写具体步骤；做法带验收命令的写进 verify 字段，写盘后系统自动强制跑）。
-- 装共享技能用 install_skill（一步直接安装成私有技能）；严禁 run_command/write_file 手动建 skills/ 文件夹模拟安装。
+- 技能库带"共享"标注的技能住在服务端共享库：load_skill 按名直接加载照做，无需安装；install_skill 只在老板明确要"装为私有/自己留一份改"时才用（拷贝到本工作区）；严禁 run_command/write_file 手动建 skills/ 文件夹模拟安装。
 - 插件生态：装插件用 install_plugin（指向工作区里的 zip，需 plugin.json 清单 name/version/description，技能放 skills/，装完进技能库）；已装插件在 plugins/<名字>/，其技能同样 load_skill 按名加载。技能 SKILL.md 的 frontmatter 可声明 verify（验收命令）与 verifyMatch（参数正则），加载后每次写盘系统自动强制跑验收——有验收步骤的技能务必声明，别靠自觉。
 - 生成图片/视频/音频/文档 → generate_media：直接派发，完成后告诉老板产物在哪。
 - 需要查资料 → web_search / browse_page（可用时）；查到的事实材料会带 #rN 编号入证据账本。

@@ -892,13 +892,15 @@ export async function publishSkillToMarket(
   userId: string,
   publisherName: string,
   skillName: string,
+  contentOverride?: string,
 ): Promise<{ name: string; description: string; publishedAt: string }> {
   const name = (skillName || "").trim();
   if (!SKILL_MARKET_NAME_RE.test(name) || name.length > 40) {
     throw new Error("技能名必须是 kebab-case（a-z 0-9 -，≤40 字符）");
   }
   const file = path.join(brainWorkspaceRoot(userId), "skills", name, "SKILL.md");
-  const raw = await fs.readFile(file, "utf8").catch(() => "");
+  // 桌面通道：本地工作区在服务端不存在，正文由客户端随请求带上
+  const raw = contentOverride ?? (await fs.readFile(file, "utf8").catch(() => ""));
   if (!raw) throw new Error("工作区 skills/" + name + "/SKILL.md 不存在，先用 save_skill 沉淀技能");
   if (Buffer.byteLength(raw, "utf8") > SKILL_MARKET_MAX_BODY) throw new Error("技能正文超过 256KB，拒绝发布");
   const parsed = parseSkillFrontmatter(raw);

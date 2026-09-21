@@ -563,6 +563,7 @@ function MarketplacePanel({
   const [workspaceSkills, setWorkspaceSkills] = useState<
     Array<{ name: string; description: string; source: string }>
   >([]);
+  const [workspaceScanTick, setWorkspaceScanTick] = useState(0);
 
   // 工作区技能扫描（工作区 skills/ + 插件自带技能）：能力中心显示便于管理，对话 /名字 引用
   useEffect(() => {
@@ -663,7 +664,7 @@ function MarketplacePanel({
     return () => {
       live = false;
     };
-  }, [category]);
+  }, [category, workspaceScanTick]);
   // ---- 共享技能库（小逻工作区 SKILL.md 流通层；listings 并入共享 Skill 页签统一展示） ----
   const [skillMarketListings, setSkillMarketListings] = useState<
     SkillMarketListing[]
@@ -703,6 +704,34 @@ function MarketplacePanel({
     if (category === "skill") void loadSkillMarket();
   }, [category, source]);
 
+  // 桌面通道探测：Electron 下工作区在本机磁盘，安装/发布必须走本地桥而非服务端工作区
+  const hasDesktopFs =
+    typeof (
+      window as unknown as { xiaoluoDesktop?: { fsAction?: unknown } }
+    ).xiaoluoDesktop?.fsAction === "function";
+  async function desktopFsAction(
+    action: "read" | "write" | "list",
+    path: string,
+    content?: string,
+  ): Promise<{ ok: boolean; error?: string; content?: string }> {
+    const bridge = (
+      window as unknown as {
+        xiaoluoDesktop?: {
+          fsAction?: (payload: unknown) => Promise<{
+            error?: string;
+            content?: string;
+          }>;
+        };
+      }
+    ).xiaoluoDesktop;
+    if (!bridge || typeof bridge.fsAction !== "function") {
+      return { ok: false, error: "无桌面通道" };
+    }
+    const res = await bridge.fsAction({ action, path, content, mode: "default" });
+    if (res.error) return { ok: false, error: res.error };
+    return { ok: true, content: res.content };
+  }
+
   async function marketAct(
     listing: SkillMarketListing,
     action: "install" | "unpublish",
@@ -716,21 +745,50 @@ function MarketplacePanel({
     }
     setBusyId("market:" + listing.publisherId + "/" + listing.name);
     try {
-      const resp = await fetch("/api/v2/brain/skill-market", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          action === "install"
-            ? { action, name: listing.name, publisherId: listing.publisherId }
-            : { action, name: listing.name },
-        ),
-      });
-      const payload = (await resp.json().catch(() => ({}))) as { error?: string };
-      if (!resp.ok) {
-        throw new Error(payload.error ?? (action === "install" ? "安装失败" : "下架失败"));
+      if (action === "install" && hasDesktopFs) {
+        // 桌面模式：正文从服务端共享库取，落盘走本地桥；否则"已安装"只落在服务端工作区，本机看不见也用不了
+        const probe = await desktopFsAction("read", `skills/${listing.name}/SKILL.md`);
+        if (probe.ok) {
+          throw new Error("本地工作区已有同名技能 skills/" + listing.name + "，请先删除后再安装。");
+        }
+        const src = await fetch("/api/v2/brain/skill-market", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "read",
+            name: listing.name,
+            publisherId: listing.publisherId,
+          }),
+        });
+        const srcPayload = (await src.json().catch(() => ({}))) as {
+          content?: string;
+          error?: string;
+        };
+        if (!src.ok) throw new Error(srcPayload.error ?? "读取共享技能正文失败");
+        const wrote = await desktopFsAction(
+          "write",
+          `skills/${listing.name}/SKILL.md`,
+          srcPayload.content ?? "",
+        );
+        if (!wrote.ok) throw new Error(wrote.error ?? "写入本地工作区失败");
+      } else {
+        const resp = await fetch("/api/v2/brain/skill-market", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            action === "install"
+              ? { action, name: listing.name, publisherId: listing.publisherId }
+              : { action, name: listing.name },
+          ),
+        });
+        const payload = (await resp.json().catch(() => ({}))) as { error?: string };
+        if (!resp.ok) {
+          throw new Error(payload.error ?? (action === "install" ? "安装失败" : "下架失败"));
+        }
       }
       if (action === "install") {
-        onNotice(listing.name + " 已安装为私有技能（仅你的小逻工作区可用）。");
+        onNotice(listing.name + " 已私有化一份到你的工作区（共享原版无需安装即可直接用）。");
+        setWorkspaceScanTick((tick) => tick + 1);
       } else {
         onNotice(listing.name + " 已下架。");
       }
@@ -754,10 +812,19 @@ function MarketplacePanel({
     }
     setBusyId("publish:" + name);
     try {
+      let body: { action: string; name: string; content?: string } = { action, name };
+      if (action === "publish" && hasDesktopFs) {
+        // 桌面模式：本地 SKILL.md 读出来随请求带上，服务端工作区没有本机文件
+        const local = await desktopFsAction("read", `skills/${name}/SKILL.md`);
+        if (!local.ok || !local.content) {
+          throw new Error("本地工作区不存在 skills/" + name + "/SKILL.md，无法发布");
+        }
+        body = { action, name, content: local.content };
+      }
       const resp = await fetch("/api/v2/brain/skill-market", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, name }),
+        body: JSON.stringify(body),
       });
       const payload = (await resp.json().catch(() => ({}))) as { error?: string };
       if (!resp.ok) {
@@ -795,6 +862,7 @@ function MarketplacePanel({
   const otherSharedPackageItems = publicPackageItems.filter(
     (item) => !ownedSharedKeys.has(item.packageKey),
   );
+  const installedSkillNames = new Set(workspaceSkills.map((skill) => skill.name));
   const myPublishedSkillNames = new Set(
     skillMarketListings
       .filter((listing) => listing.publisherId === userId)
@@ -1061,12 +1129,12 @@ function MarketplacePanel({
       {category === "skill" &&
         source === "installed" &&
         workspaceSkills.length > 0 && (
-          <section aria-label="工作区技能" style={{ marginBottom: 18 }}>
+          <section aria-label="私有技能" style={{ marginBottom: 18 }}>
             <div className="section-title-row">
               <div>
-                <h2>工作区技能</h2>
+                <h2>私有技能</h2>
                 <p>
-                  小逻对话工作区沉淀与插件自带的技能；对话输入框键入 / 加名字即可引用，工作区技能可一键发布到共享。
+                  你自己工作区沉淀与插件自带的技能，私有仅自己可见，对话输入框键入 / 加名字即可引用，也可一键发布到共享；共享技能无需安装、所有用户直接可用，"安装为私有"只是私有化一份自己改。
                 </p>
               </div>
               <span className="registry-version">
@@ -1569,6 +1637,9 @@ function MarketplacePanel({
             skillMarketListings.map((item) => {
               const key = item.publisherId + "/" + item.name;
               const mine = item.publisherId === userId;
+              const installed = hasDesktopFs
+                ? installedSkillNames.has(item.name)
+                : item.localCopy;
               return (
                 <article className="workflow-market-card package-market-card" key={key}>
                   <header>
@@ -1581,19 +1652,19 @@ function MarketplacePanel({
                         @{item.publisherName || "匿名"} · {item.publishedAt.slice(0, 10)}
                       </small>
                     </div>
-                    <b>{mine ? "我发布的" : item.localCopy ? "已安装" : "共享技能库"}</b>
+                    <b>{mine ? "我发布的" : installed ? "已私有化" : "共享技能库"}</b>
                   </header>
                   <p>{item.description || "未填写说明"}</p>
                   <div className="workflow-card-tags">
                     <span>SKILL.md</span>
                     <span>装进小逻工作区</span>
-                    {item.localCopy ? <span>本地已有</span> : null}
+                    {installed ? <span>本地已有</span> : null}
                   </div>
                   <footer>
                     <button
                       type="button"
                       className="primary-button compact"
-                      disabled={item.localCopy || busyId === key}
+                      disabled={installed || busyId === key}
                       onClick={() => void marketAct(item, "install")}
                     >
                       {busyId === key ? (
@@ -1601,7 +1672,7 @@ function MarketplacePanel({
                       ) : (
                         <PackagePlus size={14} />
                       )}
-                      {item.localCopy ? "已安装" : "安装到小逻工作区"}
+                      {installed ? "已私有化" : "安装为私有"}
                     </button>
                     {mine ? (
                       <button

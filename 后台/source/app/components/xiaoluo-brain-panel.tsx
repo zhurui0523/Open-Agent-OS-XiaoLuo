@@ -1012,7 +1012,7 @@ export function XiaoluoBrainPanel({
     if (!skillCatalog.length) return base;
     return (
       base +
-      "\n[技能库：先 load_skill 读正文再照做；值得复用的做法用 save_skill 沉淀]\n" +
+      "\n[技能库：先 load_skill 读正文再照做（带\"共享\"标注的技能在服务端共享库，无需安装直接可加载）；值得复用的做法用 save_skill 沉淀]\n" +
       skillCatalog.map((s) => "- " + s.name + " | skill | " + s.description).join("\n")
     );
   }, [brainModels, skillCatalog]);
@@ -2371,6 +2371,23 @@ export function XiaoluoBrainPanel({
             } catch { /* 插件无 skills 目录跳过 */ }
           }
         } catch { /* plugins 目录不存在跳过 */ }
+        // 共享技能（服务端共享库）：所有用户不安装即可直接用，并入目录标"共享"；同名以工作区私有副本优先
+        try {
+          const resp = await fetch("/api/v2/brain/skill-market");
+          const payload = (await resp.json().catch(() => ({}))) as {
+            listings?: Array<{ name?: string; description?: string; publisherName?: string }>;
+          };
+          const owned = new Set(items.map((it) => it.name));
+          for (const l of payload.listings ?? []) {
+            const n = String(l.name ?? "");
+            if (!n || owned.has(n)) continue;
+            owned.add(n);
+            items.push({
+              name: n,
+              description: (l.description ?? "") + "（共享 @" + (l.publisherName || "匿名") + "）",
+            });
+          }
+        } catch { /* 共享库不可达只显本地库 */ }
         if (live) setSkillCatalog(items);
       } catch { /* skills 目录不存在按空库处理 */ }
     };

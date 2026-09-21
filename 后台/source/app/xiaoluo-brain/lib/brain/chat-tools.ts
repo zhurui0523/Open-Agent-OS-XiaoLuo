@@ -928,7 +928,7 @@ const INSTALL_SKILL_SCHEMA = {
   function: {
     name: "install_skill",
     description:
-      "从共享技能库直接安装技能到本工作区（一步落盘 skills/<name>/SKILL.md，装完是私有技能，下轮起 /名字 或 load_skill 可用）。老板说\"安装/装一下/给我 XX 技能\"时用；严禁用 run_command/write_file 手动建文件夹模拟安装。本地已有同名技能会拒绝。",
+      "把共享技能库里的技能私有化安装到本工作区（落盘 skills/<name>/SKILL.md 副本，可修改；装完 /名字 或 load_skill 优先用私有副本）。共享技能本身无需安装、load_skill 直接可用；仅当老板说\"安装为私有/留一份自己改\"时才调用。严禁用 run_command/write_file 手动建文件夹模拟安装。本地已有同名技能会拒绝。",
     parameters: {
       type: "object",
       properties: {
