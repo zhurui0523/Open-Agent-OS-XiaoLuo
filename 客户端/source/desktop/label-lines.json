@@ -1,1 +1,1 @@
-["param([Parameter(Mandatory=$true)][string]$Root)","$ErrorActionPreference = 'Stop'","$tool = Join-Path ([System.Environment]::SystemDirectory) 'icacls.exe'","$flag = '/set' + 'integrity' + 'level'","& $tool $Root $flag '(OI)(CI)' 'Low' '/T' '/Q'","exit 0"]
+["param([Parameter(Mandatory=$true)][string]$Root)","$ErrorActionPreference = 'Stop'","$tool = Join-Path ([System.Environment]::SystemDirectory) 'icacls.exe'","$flag = '/set' + 'integrity' + 'level'","& $tool $Root $flag '(OI)(CI)Low' '/T' '/Q'","if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }","exit 0"]

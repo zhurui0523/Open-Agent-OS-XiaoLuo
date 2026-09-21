@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   AppWindow,
@@ -727,7 +727,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          ".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select",
+          ".select-menu, .schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select",
         )
       ) {
         return;
