@@ -117,6 +117,9 @@ export interface RuntimeToolCaps {
   service: boolean;
   vision: boolean;
   desktop: boolean;
+  web: boolean; // WEB-DRIVE-CAPS
+  review: boolean; // REVIEW-CAPS
+  ssh: boolean; // SSH-CAPS
   browser: boolean;
   memory: boolean;
   deploy: boolean;
@@ -135,7 +138,10 @@ export function buildRuntimeCapsSection(caps: RuntimeToolCaps): string {
   put(caps.fs, "read_file / write_file / edit_file / list_dir / grep_files / find_files 操作工作区；repo_map 仓库地图；load_skill / save_skill 技能库；package_program 打包");
   put(caps.git, "git 集成（status/log/diff/commit/push，push 需老板批准）");
   put(caps.vision, 'inspect_screen 截屏自检（预览过页面就必须自己截图看效果，禁止问老板）/ operate_ui 真鼠标点击输入滚动（操作后回看确认）/ read_browser_dom 页面快照 / navigate_browser 自主导航浏览器页签');
-    put(caps.desktop, "desktop_screenshot 整桌截屏 / desktop_operate 整桌键鼠（默认关闭，需老板在客户端设置开启「允许小逻控制本机」）");
+    put(caps.desktop, "desktop_screenshot 整桌截屏 / desktop_operate 整桌键鼠 / desktop_inspect 桌面控件语义识别（UI Automation：枚举窗口→dump控件树→按 名称/AutomationId/控件类型 定位并 invoke点击/setvalue赋值/focus聚焦，比像素坐标抗分辨率与布局变化）（默认关闭，需老板在客户端设置开启「允许小逻控制本机」）");
+  put(caps.web, "web_navigate 打开系统浏览器（Edge/Chrome，复用已登录会话）/ web_dom 读页面结构与可点元素选择器 / web_screenshot 截图看图验收 / web_operate 按 CSS 选择器点击输入滚动 / web_eval 执行页面 JS 取值 / web_record 录制老板的浏览器演示转成可复用技能（start/stop/save/list/delete）/ web_replay 按技能名或内联步骤回放（外部浏览器口，走 CDP，需老板开启「允许小逻控制本机」）");
+  put(caps.review, "review_code 多维代码审查（Auto Review）：对当前产物做 正确性/安全/健壮性/性能/可维护性 五维审查，按 critical/major/minor 分级给问题与修法；写完代码应主动调用，发现 critical/major 就修到干净再交付");
+  put(caps.ssh, "ssh_exec SSH 远程执行：在远程主机跑命令取回 stdout/stderr/退出码（系统 OpenSSH，只密钥认证不存密码，op=test 探连通/op=exec 执行；需老板开启「允许小逻控制本机」）");
   put(caps.browser, "browse_page 浏览网页（含本机 127.0.0.1 服务探活）");
   put(caps.webSearch, "web_search 联网搜索");
   put(caps.memory, "add_memory 长期记忆（跨对话记住稳定事实；反思/过程/「这轮没值得记」类内容禁止入账，没有值得记的就不调用）");

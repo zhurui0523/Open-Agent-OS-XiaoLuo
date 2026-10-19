@@ -1,6 +1,6 @@
 /**
  * Xiaoluo Brain 技能市场口（SKILL.md 轻量流通层）。
- * 发布/下架/浏览/安装小逻工作区技能；市场直存 .data/brain-workspace/.market，
+ * 浏览/安装小逻工作区技能（发布/下架已下线）；市场直存 .data/brain-workspace/.market，
  * 不碰 packages 重体系（签名/trust 审核），装发同一套 frontmatter 契约。
  */
 
@@ -9,9 +9,7 @@ import { enforceRateLimit } from "../../../../lib/rate-limit";
 import {
   installSkillFromMarket,
   listSkillMarket,
-  publishSkillToMarket,
   readSkillListingContent,
-  unpublishSkillFromMarket,
 } from "../../../../lib/brain-sandbox";
 
 export async function GET(request: Request) {
@@ -35,27 +33,14 @@ export async function POST(request: Request) {
       content?: string;
     };
     const action = body.action;
-    if (action !== "publish" && action !== "unpublish" && action !== "install" && action !== "read") {
-      return Response.json({ error: "action 必须是 publish / unpublish / install / read" }, { status: 400 });
+    if (action !== "install" && action !== "read") {
+      return Response.json({ error: "action 必须是 install / read" }, { status: 400 });
     }
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!name) {
       return Response.json({ error: "name 必填" }, { status: 400 });
     }
     await enforceRateLimit({ subject: user.id, route: "brain:skill-market", max: 60, windowMs: 60_000 });
-    if (action === "publish") {
-      const published = await publishSkillToMarket(
-        user.id,
-        user.displayName || user.username,
-        name,
-        typeof body.content === "string" ? body.content : undefined,
-      );
-      return Response.json({ ok: true, published });
-    }
-    if (action === "unpublish") {
-      await unpublishSkillFromMarket(user.id, name);
-      return Response.json({ ok: true });
-    }
     const publisherId = typeof body.publisherId === "string" ? body.publisherId.trim() : "";
     if (!publisherId) {
       return Response.json({ error: "install / read 需要 publisherId" }, { status: 400 });

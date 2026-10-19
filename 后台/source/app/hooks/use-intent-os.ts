@@ -997,12 +997,14 @@ export function useIntentOS() {
             let mode: ChatMessage["mode"];
             let resultNodeId: string | undefined;
             let resultKind: ChatMessage["resultKind"];
+            let resultAssetUrl: string | undefined;
             try {
               const metadata = JSON.parse(message.metadataJson) as {
                 attachments?: ChatAttachment[];
                 mode?: string;
                 resultNodeId?: string;
                 resultKind?: string;
+                resultAssetUrl?: string;
               };
               if (Array.isArray(metadata.attachments)) {
                 attachments = metadata.attachments;
@@ -1015,6 +1017,9 @@ export function useIntentOS() {
               }
               if (typeof metadata.resultKind === "string" && metadata.resultKind) {
                 resultKind = metadata.resultKind as ChatMessage["resultKind"];
+              }
+              if (typeof metadata.resultAssetUrl === "string" && metadata.resultAssetUrl) {
+                resultAssetUrl = metadata.resultAssetUrl;
               }
             } catch {
               attachments = [];
@@ -1029,6 +1034,7 @@ export function useIntentOS() {
               ...(attachments.length ? { attachments } : {}),
               ...(resultNodeId ? { resultNodeId } : {}),
               ...(resultKind ? { resultKind } : {}),
+              ...(resultAssetUrl ? { resultAssetUrl } : {}),
             };
           });
         // 每个画布的对话器独立：切换画布时无条件替换消息（空画布即清空旧消息），
@@ -1602,6 +1608,27 @@ export function useIntentOS() {
     setEdges((current) => current.filter((edge) => edge.id !== id));
   }
 
+  // 输入素材拖拽排序：同目标边按新序写回全局数组原槽位，[图N] 编号随边序（2026-09-27）
+  function reorderInputAssets(orderedEdgeIds: string[]) {
+    if (orderedEdgeIds.length < 2) return;
+    const positionById = new Map(orderedEdgeIds.map((id, index) => [id, index]));
+    const slots: number[] = [];
+    edges.forEach((edge, index) => {
+      if (positionById.has(edge.id)) slots.push(index);
+    });
+    if (slots.length !== orderedEdgeIds.length) return;
+    rememberCanvas();
+    setEdges((current) => {
+      const byId = new Map(current.map((edge) => [edge.id, edge]));
+      const next = [...current];
+      slots.forEach((slot, index) => {
+        const edge = byId.get(orderedEdgeIds[index]);
+        if (edge) next[slot] = edge;
+      });
+      return next;
+    });
+  }
+
   function undoCanvas() {
     const previous = canvasHistory.current.pop();
     if (!previous) return;
@@ -1900,12 +1927,14 @@ export function useIntentOS() {
             let mode: ChatMessage["mode"];
             let resultNodeId: string | undefined;
             let resultKind: ChatMessage["resultKind"];
+            let resultAssetUrl: string | undefined;
             try {
               const metadata = JSON.parse(m.metadataJson) as {
                 attachments?: ChatAttachment[];
                 mode?: string;
                 resultNodeId?: string;
                 resultKind?: string;
+                resultAssetUrl?: string;
               };
               if (Array.isArray(metadata.attachments)) {
                 attachments = metadata.attachments;
@@ -1918,6 +1947,9 @@ export function useIntentOS() {
               }
               if (typeof metadata.resultKind === "string" && metadata.resultKind) {
                 resultKind = metadata.resultKind as ChatMessage["resultKind"];
+              }
+              if (typeof metadata.resultAssetUrl === "string" && metadata.resultAssetUrl) {
+                resultAssetUrl = metadata.resultAssetUrl;
               }
             } catch {
               attachments = [];
@@ -1932,6 +1964,7 @@ export function useIntentOS() {
               ...(attachments.length ? { attachments } : {}),
               ...(resultNodeId ? { resultNodeId } : {}),
               ...(resultKind ? { resultKind } : {}),
+              ...(resultAssetUrl ? { resultAssetUrl } : {}),
             };
           });
         setMessages(restored);
@@ -2602,11 +2635,52 @@ export function useIntentOS() {
     return result;
   }
 
+  // 残锁回收：上一轮 run 在服务端已终态但客户端 activeRun 未清（轮询循环中断/异常）时，
+  // 旧锁会永远静默吞掉所有新运行——运行请求根本不会发出（2026-09-28 彻底修复）
+  async function reclaimStaleActiveRun() {
+    const current = activeRun.current;
+    if (!current || current.paused) return;
+    try {
+      const state = await readRunState(current.id);
+      if (
+        ["succeeded", "failed", "canceled"].includes(state.run.status) &&
+        activeRun.current?.id === current.id
+      ) {
+        activeRun.current = null;
+        setRunState("idle");
+      }
+    } catch {
+      // 问不到就保留锁：宁可挡一次提交，也不让两个任务并发跑
+    }
+  }
+
+  // 串行闸门：多个 startRunServer 并发进入（双提交串行等待、手动运行节点）会互踩
+  // activeRun 单槽，使前轮轮询循环因 id 不符中断、节点状态无人更新（2026-09-28）
+  const runGate = useRef<Promise<unknown>>(Promise.resolve());
+
   async function startRunServer(
     targetNodeId?: string,
     mode: "target" | "branch" | "group" = "target",
   ) {
+    const gate = runGate.current;
+    let releaseGate: () => void = () => undefined;
+    runGate.current = new Promise((resolve) => {
+      releaseGate = resolve;
+    });
+    try {
+      await gate;
+      return await startRunServerInner(targetNodeId, mode);
+    } finally {
+      releaseGate();
+    }
+  }
+
+  async function startRunServerInner(
+    targetNodeId?: string,
+    mode: "target" | "branch" | "group" = "target",
+  ) {
     setCloudError("");
+    await reclaimStaleActiveRun();
     const current = activeRun.current;
     if (current?.paused) {
       current.paused = false;
@@ -2622,7 +2696,19 @@ export function useIntentOS() {
       }
       return;
     }
-    if (current || !nodes.length || !activeCanvasId) return;
+    if (current) {
+      // 串行而不挡回：同秒双提交/大脑派单时后一运行会被 activeRun 单槽静默吞掉，
+  // 结果占位卡永远转圈无人跑；这里等上一轮 run 终态后继续启动本轮（2026-09-28 彻底修复）
+      const settled = await waitForRun(current.id, await readRunState(current.id));
+      if (!["succeeded", "failed", "canceled"].includes(settled.run.status)) {
+        setCloudError(
+          "上一个任务未结束（状态: " + settled.run.status + "），请先停止再提交",
+        );
+        return;
+      }
+      activeRun.current = null;
+    }
+    if (!nodes.length || !activeCanvasId) return;
     const graph =
       targetNodeId && mode === "branch"
         ? graphForBranch(targetNodeId)
@@ -2896,30 +2982,87 @@ export function useIntentOS() {
   }
 
   // 对话器生成的结果消息持久化到会话，切换画布/刷新后恢复时不丢失结果缩略图
+  const persistedServerIds = useRef(new Map<string, string>());
   async function persistIntentMessage(
+    clientId: string,
     content: string,
     metadata: Record<string, unknown>,
+    serverMessageId?: string,
+    role: "user" | "assistant" = "assistant",
   ) {
     if (!activeCanvasId) return;
     try {
-      const result = await requestJson<{ conversation?: { id: string } }>(
-        "/api/v2/intent/messages",
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            canvasId: activeCanvasId,
-            content,
-            metadata,
-          }),
-        },
-      );
+      const result = await requestJson<{
+        conversation?: { id: string };
+        message?: { id?: string };
+      }>("/api/v2/intent/messages", {
+        method: "PATCH",
+        body: JSON.stringify({
+          canvasId: activeCanvasId,
+          ...(serverMessageId ? { messageId: serverMessageId } : {}),
+          content,
+          metadata,
+          role,
+        }),
+      });
       if (result.conversation?.id) setConversationId(result.conversation.id);
+      if (!serverMessageId && result.message?.id) {
+        persistedServerIds.current.set(clientId, result.message.id);
+      }
     } catch {
       // 消息已在本地对话器展示，持久化失败不阻断生成流程
     }
   }
 
-  function generateDirectly(
+  // 结果资产快照：生成完成把 assetUrl 回写消息 metadata，
+  // 节点被删/窗口重载后对话缩略图仍按快照渲染（2026-09-23）
+  useEffect(() => {
+    const targets = messages.filter(
+      (message) => message.resultNodeId && !message.resultAssetUrl,
+    );
+    if (!targets.length) return;
+    const hits: Array<{ id: string; url: string; kind?: NodeKind }> = [];
+    for (const message of targets) {
+      const node = nodes.find((item) => item.id === message.resultNodeId);
+      const url = (
+        node?.parameters?.kernelOutput as { assetUrl?: string } | undefined
+      )?.assetUrl?.trim();
+      if (node && url) hits.push({ id: message.id, url, kind: node.kind });
+    }
+    if (!hits.length) return;
+    setMessages((current) =>
+      current.map((message) => {
+        const hit = hits.find((item) => item.id === message.id);
+        return hit
+          ? {
+              ...message,
+              resultAssetUrl: hit.url,
+              resultKind: message.resultKind ?? hit.kind,
+            }
+          : message;
+      }),
+    );
+    for (const hit of hits) {
+      const message = messages.find((item) => item.id === hit.id);
+      const serverId =
+        persistedServerIds.current.get(hit.id) ??
+        (hit.id.startsWith("message_") ? hit.id : undefined);
+      void persistIntentMessage(
+        hit.id,
+        message?.content ?? "",
+        {
+          resultNodeId: message?.resultNodeId,
+          resultKind: message?.resultKind ?? hit.kind,
+          generator: true,
+          resultAssetUrl: hit.url,
+        },
+        serverId,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, nodes]);
+
+  async function generateDirectly(
     value: string,
     kind: Extract<NodeKind, "text" | "image" | "video" | "audio">,
     requestedCapabilityId?: string,
@@ -2928,7 +3071,13 @@ export function useIntentOS() {
     modelParameters?: Record<string, unknown>,
   ) {
     const prompt = value.trim();
-    if (isPlanning || activeRun.current) return null;
+    await reclaimStaleActiveRun();
+    // activeRun 不再挡节点创建：运行侧由 startRunServer 等前轮终态串行，
+    // 避免双提交的第二张占位卡被静默吞掉永远转圈（2026-09-28 彻底修复）
+    if (isPlanning) {
+      setCloudError("上一单还在规划中，等它结束再提交");
+      return null;
+    }
     const rules = resolveProfessionalGeneratorRules({
       capabilities,
       models,
@@ -3157,17 +3306,23 @@ export function useIntentOS() {
 
     pendingDirectRunNodeId.current = execId;
     const generatorNotice = `已创建${title}节点，正在使用 ${rules.usesSkillRuntime ? `${rules.capability?.title ?? "Skill"} 内置服务` : rules.model?.name ?? "模型"} 直接生成。`;
+    const generatorMsgId = `msg_${Date.now()}_generator`;
+    const directUserMsgId = `msg_${Date.now()}_user`;
+    const directUserContent =
+      prompt || `执行 Skill：${rules.capability?.title ?? "Skill"}（输入素材 ${attachments.length} 个）`;
     setMessages((current) => [
       ...current,
       {
-        id: `msg_${Date.now()}`,
+        id: directUserMsgId,
         role: "user",
-        content: prompt || `执行 Skill：${rules.capability?.title ?? "Skill"}（输入素材 ${attachments.length} 个）`,
+        content: directUserContent,
         time: messageTime(),
         createdAt: Date.now(),
+        // 专业生成用户消息同带素材：旧版只存提示词，对话里看不到图片等附件（2026-09-28 用户裁决）
+        ...(attachments.length ? { attachments } : {}),
       },
       {
-        id: `msg_${Date.now()}_generator`,
+        id: generatorMsgId,
         role: "assistant",
         content: generatorNotice,
         time: messageTime(),
@@ -3176,11 +3331,22 @@ export function useIntentOS() {
         resultKind: kind,
       },
     ]);
-    void persistIntentMessage(generatorNotice, {
+    void persistIntentMessage(generatorMsgId, generatorNotice, {
       resultNodeId: resultId,
       resultKind: kind,
       generator: true,
     });
+    // 专业生成用户消息落库：重载后按 metadata 恢复素材展示（2026-09-28）
+    void persistIntentMessage(
+      directUserMsgId,
+      directUserContent,
+      {
+        directGeneration: true,
+        ...(attachments.length ? { attachments } : {}),
+      },
+      undefined,
+      "user",
+    );
     return { execId, resultId };
   }
 
@@ -3240,7 +3406,7 @@ export function useIntentOS() {
   async function generateForBrain(args: GenerateMediaArgs): Promise<NodeRunResult> {
     const kind: Extract<NodeKind, "text" | "image" | "video" | "audio"> =
       args.modality === "document" ? "text" : args.modality;
-    const created = generateDirectly(args.prompt, kind, args.skillId, args.modelId);
+    const created = await generateDirectly(args.prompt, kind, args.skillId, args.modelId);
     if (!created) {
       return {
         stepId: "",
@@ -3268,25 +3434,59 @@ export function useIntentOS() {
   }
 
   // Use a ref to track whether we have already scheduled the run for the current pending node.
-  // This avoids the stale-closure problem where the effect sees an outdated `nodes` array.
   const directRunScheduledRef = useRef<string | null>(null);
 
+  // 节点落画布即直接点火：旧版 setTimeout(0) 的定时器会被 nodes 再次变化时的 effect cleanup 清掉，
+  // 且 scheduledRef 挡住重排，startRunServer 永不执行，运行请求静默丢失（2026-09-28 彻底修复）
   useEffect(() => {
     const nodeId = pendingDirectRunNodeId.current;
     if (!nodeId) return;
-    // Already scheduled this node — skip duplicate triggers.
-    if (directRunScheduledRef.current === nodeId) return;
+    if (!nodes.some((node) => node.id === nodeId)) return;
+    pendingDirectRunNodeId.current = null;
     directRunScheduledRef.current = nodeId;
-    // Defer until after the next render so that `nodes` includes the newly created node.
-    const timer = window.setTimeout(() => {
-      const stillPending = pendingDirectRunNodeId.current === nodeId;
-      if (!stillPending) return;
-      pendingDirectRunNodeId.current = null;
-      directRunScheduledRef.current = null;
-      void startRunServer(nodeId);
-    }, 0);
-    return () => clearTimeout(timer);
+    void startRunServer(nodeId).catch((error) => {
+      setCloudError(
+        error instanceof Error ? error.message : "节点运行启动失败",
+      );
+    });
   }, [nodes]);
+
+  // 孤儿补跑去重：同一节点每会话只补点火一次，失败后不无限重试（2026-09-28）
+  const reignitedOrphans = useRef<Set<string>>(new Set());
+
+  // 看门狗用 nodes 活快照：看门狗 deps 为 [] 否则闭包陈旧（2026-09-28）
+  const nodesLiveRef = useRef(nodes);
+  useEffect(() => {
+    nodesLiveRef.current = nodes;
+  }, [nodes]);
+
+  // 看门狗：轮询循环意外死亡后 activeRun 残锁会永久吞掉新运行，定时问询回收（2026-09-28）
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (activeRun.current && !activeRun.current.paused) {
+        void reclaimStaleActiveRun();
+        return;
+      }
+      // 孤儿补跑：queued/running 却无 kernelRunId 的占位卡（客户端重启、静默吞残留）
+      // 永远转圈无人跑；这里补点火，串行闸门防并发互踩（2026-09-28 彻底修复）
+      if (pendingDirectRunNodeId.current) return;
+      const orphan = nodesLiveRef.current.find(
+        (node) =>
+          ["queued", "running"].includes(node.status) &&
+          typeof node.parameters?.kernelRunId !== "string" &&
+          node.id !== directRunScheduledRef.current &&
+          !reignitedOrphans.current.has(node.id),
+      );
+      if (!orphan) return;
+      reignitedOrphans.current.add(orphan.id);
+      void startRunServer(orphan.id).catch((error) => {
+        setCloudError(
+          error instanceof Error ? error.message : "孤儿任务自动补跑失败",
+        );
+      });
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function rerunBranchServer(nodeId: string) {
     return startRunServer(nodeId, "branch");
@@ -3657,6 +3857,8 @@ export function useIntentOS() {
     setActiveCanvasId,
     reloadActiveCanvas,
     refreshCanvases,
+    // 跨机自动同步：本地脏态判定，有未落云端的改动时禁止自动重载（2026-09-24）
+    hasUnsavedCanvasChanges: () => latestCanvasSave.current !== null,
     createCanvas,
     duplicateCanvas,
     restoreCanvas,
@@ -3702,6 +3904,7 @@ export function useIntentOS() {
     deleteNode,
     connectNodes,
     deleteEdge,
+    reorderInputAssets,
     undoCanvas,
     redoCanvas,
     copySelected,

@@ -132,7 +132,9 @@ export async function fetchExternalEndpoint(
 ) {
   const url = validateExternalEndpoint(raw.toString());
   const timeoutSignal = AbortSignal.timeout(
-    Math.max(1_000, Math.min(timeoutMs, 120_000)),
+    // 上限 120s 放宽到 600s：内核非流式长文本生成（text 300s）不能在适配层先被截断；
+    // probe/health 等短超时调用方自传小值，不受影响（2026-09-22）
+    Math.max(1_000, Math.min(timeoutMs, 600_000)),
   );
   const signal = init.signal
     ? AbortSignal.any([init.signal, timeoutSignal])

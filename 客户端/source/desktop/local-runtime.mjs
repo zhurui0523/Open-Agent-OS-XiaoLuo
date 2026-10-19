@@ -7,7 +7,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs"; // P22-SW0
 import { createConnection } from "node:net";
-import { mkdir, readdir, readFile as readFileAsync, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile as readFileAsync, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import path from "node:path";
 
@@ -614,6 +614,8 @@ export async function handleFsPayload(payload) {
     // 权限模式：default=仅工作区；auto=越界只读自动放行；full=本机任意读写
     const fsMode = String(payload?.mode ?? "default");
     const scanRoot = action === "grep" || action === "find" ? String(payload?.opts?.path ?? ".") : rel;
+    // 删除：仅允许工作区内相对路径（私有技能卸载），绝对路径一律拒绝
+    if (action === "delete") { await fsDelete(rel); return { ok: true }; }
     if (isAbsLike(scanRoot)) {
       const readLike = action !== "write";
       if (fsMode === "full" || (fsMode === "auto" && readLike)) {
@@ -645,6 +647,16 @@ export async function handleFsPayload(payload) {
   } catch (error) {
     return { error: "文件操作失败：" + (error instanceof Error ? error.message : String(error)) };
   }
+}
+
+/** 递归删除工作区内相对路径；拒绝空路径/整个工作区/越界 */
+async function fsDelete(rel) {
+  const norm = String(rel || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!norm || norm === "." || norm === ".." || norm.startsWith("..") || norm.includes("/../")) {
+    throw new Error("删除路径非法：只能删除工作区内的相对目录/文件");
+  }
+  if (isAbsLike(norm)) throw new Error("删除仅支持工作区相对路径");
+  await rm(join(workspaceRoot, norm), { recursive: true, force: true });
 }
 
 /** 提取命令中的写/删意图目标（与 app/lib/brain-sandbox.ts 同名函数保持同步维护） */

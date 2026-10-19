@@ -4,11 +4,13 @@ import {
   AppWindow,
   Check,
   CircleAlert,
+  Copy,
   Layers3,
   Maximize2,
   PanelLeftOpen,
   Share2,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -239,8 +241,6 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
   const [minimapOpen, setMinimapOpen] = useState(true);
   /** 小逻大脑结果面板：最新代码产物/预览快照 + 开关 */
   const [brainResult, setBrainResult] = useState<BrainResultSnapshot | null>(null);
-  /** 是否已有结果：仅无结果→有结果的第一次自动弹面板，之后更新快照不打扰老板 */
-  const hadBrainResultRef = useRef(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [intentDockWidth, setIntentDockWidth] = useState(() => {
@@ -324,6 +324,25 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
     canvasRevision: os.canvasRevision,
     cursorRef: collaborationCursorRef,
   });
+  // 跨机自动同步：云端 revision 领先且本地无未保存改动时自动重拉画布（2026-09-24 用户裁决）
+  // 本地有脏态时不覆盖，保留手动「点击同步」按钮兜底
+  const autoSyncInFlight = useRef(false);
+  useEffect(() => {
+    if (collaboration.remoteRevision <= 0 || collaboration.accessRevoked) return;
+    if (autoSyncInFlight.current) return;
+    if (os.hasUnsavedCanvasChanges()) return;
+    autoSyncInFlight.current = true;
+    void (async () => {
+      try {
+        await os.reloadActiveCanvas();
+        collaboration.acknowledgeRemoteRevision();
+      } catch {
+        // 重拉失败不阻断：下一轮协作轮询会再次触发
+      } finally {
+        autoSyncInFlight.current = false;
+      }
+    })();
+  }, [collaboration.remoteRevision, collaboration.accessRevoked, os.cloudStatus]);
   /** 小逻大脑产出新结果时自动弹出独立面板 */
   const [dockFocus, setDockFocus] = useState<{ tab: "preview" | "code"; nonce: number } | null>(null);
   const openBrainDock = useCallback(
@@ -397,12 +416,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
     // 直接覆盖会出现“结果预览几秒后消失”
     if (snapshot.artifact || snapshot.preview) {
       setBrainResult(snapshot);
-      // 仅无结果→有结果的第一次自动弹面板：后续快照更新不再强制打开
-      // 老板点×关闭后不会被下一轮结果上报立刻重开（原“关闭没反应”根因）
-      if (!hadBrainResultRef.current) {
-        hadBrainResultRef.current = true;
-        onBrainDockOpenChange(true);
-      }
+      // 面板只由手动点击或结果显式跳转展开：任何自动弹开都会打扰老板操作（2026-09-22 裁决）
     }
   }, []);
 
@@ -525,6 +539,29 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
       ),
     };
   }, [nodeHeights, os.nodes]);
+
+  // 多选选区专属框：被选节点的世界坐标包围盒（批量操作条贴其上沿，2026-09-23）
+  const selectionBounds = useMemo<WorldBounds | null>(() => {
+    if (os.selectedNodeIds.length < 2) return null;
+    const selected = os.nodes.filter((node) =>
+      os.selectedNodeIds.includes(node.id),
+    );
+    if (selected.length < 2) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of selected) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + widthForNode(node));
+      maxY = Math.max(
+        maxY,
+        node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT),
+      );
+    }
+    return { minX, minY, maxX, maxY };
+  }, [nodeHeights, os.nodes, os.selectedNodeIds]);
 
   const groupBounds = useMemo<WorldBounds>(() => {
     if (!os.groups.length) return nodeBounds;
@@ -727,7 +764,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
       const target = event.target as HTMLElement;
       if (
         target.closest(
-          ".select-menu, .schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select",
+          ".select-menu, .schema-fields, .canvas-bulk-bar, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select",
         )
       ) {
         return;
@@ -939,7 +976,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
   function isCanvasOverlay(target: HTMLElement) {
     return Boolean(
       target.closest(
-        ".canvas-node, .canvas-group-header, .canvas-group-resize, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
+        ".canvas-node, .canvas-group-header, .canvas-group-resize, .canvas-bulk-bar, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
       ),
     );
   }
@@ -988,7 +1025,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
     const target = event.target as HTMLElement;
     if (
       target.closest(
-        ".canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
+        ".canvas-bulk-bar, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button",
       )
     ) {
       setContextMenu(null);
@@ -1611,6 +1648,54 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
       ),
     [os.packages],
   );
+  // 斜杠菜单全量源：注册表可用技能包（"可用 Skill"页签同谓词），intent-console 内并入菜单（2026-09-22）
+  const registrySkillItems = useMemo(
+    () =>
+      os.packages
+        .filter(
+          (item) =>
+            item.packageType === "skill" &&
+            item.lifecycleState !== "uninstalled" &&
+            Boolean(item.name),
+        )
+        .map((item) => ({
+          name: item.name,
+          description: String(item.description ?? "").trim(),
+        })),
+    [os.packages],
+  );
+  // 做同款请求态：seq 递增后由 IntentConsole effect 同步进输入条
+  const [makeSame, setMakeSame] = useState<{
+    seq: number;
+    prompt: string;
+    sourceNodeIds: string[];
+  } | null>(null);
+  // 做同款：节点提示词与输入素材同步到对话器输入条（2026-09-23 裁决：做同款=送对话器，非复制节点）
+  const makeSameFromNode = useCallback(
+    (id: string) => {
+      const clicked = os.nodes.find((item) => item.id === id);
+      if (!clicked) return;
+      // 结果卡片自身 prompt 是占位"等待生成结果"、入边源是生成节点而非素材：
+      // 回溯到产出该结果的生成节点，取它的真实提示词与输入素材（2026-09-23 修正）
+      let recipe = clicked;
+      if (clicked.role === "result") {
+        const incoming = os.edges.find((edge) => edge.target === clicked.id);
+        const producer = incoming
+          ? os.nodes.find((item) => item.id === incoming.source)
+          : undefined;
+        if (producer) recipe = producer;
+      }
+      setMakeSame({
+        seq: Date.now(),
+        prompt: recipe.prompt,
+        sourceNodeIds: (inputAssetsByNode.get(recipe.id) ?? []).map(
+          (asset) => asset.sourceNodeId,
+        ),
+      });
+      os.setConsoleOpen(true);
+    },
+    [inputAssetsByNode, os],
+  );
   const visibleEdgeIds = spatialIndex.queryEdgeIds(expandBounds(visibleBounds, 360));
   if (selectedEdgeId) visibleEdgeIds.add(selectedEdgeId);
   const visibleEdges = [...visibleEdgeIds]
@@ -1935,6 +2020,18 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
           )}
 
           <div ref={contentRef} className="canvas-content" style={worldStyle}>
+            {selectionBounds && (
+              <div
+                className="canvas-selection-region"
+                aria-hidden="true"
+                style={{
+                  left: selectionBounds.minX - 12,
+                  top: selectionBounds.minY - 12,
+                  width: selectionBounds.maxX - selectionBounds.minX + 24,
+                  height: selectionBounds.maxY - selectionBounds.minY + 24,
+                }}
+              />
+            )}
             {collaboration.presence
               .filter(
                 (item) =>
@@ -2003,7 +2100,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
                 canvasId={os.activeCanvasId}
                 workspaceId={os.workspaceId}
                 selected={node.id === os.selectedNodeId}
-                multiSelected={os.selectedNodeIds.includes(node.id)}
+                multiSelected={os.selectedNodeIds.length >= 2 && os.selectedNodeIds.includes(node.id)}
                 zoom={os.zoom}
                 panMode={os.activeTool === "hand" || spaceHeld}
                 capabilities={os.capabilities}
@@ -2033,6 +2130,9 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
                   os.connectNodes(sourceNodeId, node.id, undefined, "reference");
                 }}
                 onRemoveInputAsset={(edgeId) => os.deleteEdge(edgeId)}
+                onReorderInputAssets={(orderedEdgeIds) =>
+                  os.reorderInputAssets(orderedEdgeIds)
+                }
                 onUploadInputAssets={async (files) => {
                   await importFilesToCanvas(
                     files,
@@ -2053,6 +2153,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
                 }
                 onRun={() => void os.startRun(node.id)}
                 onRerunBranch={() => void os.rerunBranch(node.id)}
+                onRemake={() => makeSameFromNode(node.id)}
                 onDelete={() => void os.deleteNode(node.id)}
                 onOpenPlugin={(mode = "window") => {
                   const installedPlugin = installedPluginForNode(node);
@@ -2185,6 +2286,46 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
           <div className="canvas-navigation-hint">
             拖动空白处平移 · 右键快捷菜单 · Ctrl/⌘ + 滚轮缩放 · Space 抓手 · 0 适配全部
           </div>
+
+          {os.selectedNodeIds.length >= 2 && selectionBounds && (
+            <nav
+              className="canvas-bulk-bar"
+              aria-label="多选批量操作"
+              style={{
+                left:
+                  pan.x +
+                  ((selectionBounds.minX + selectionBounds.maxX) / 2) * scale,
+                top: Math.max(8, pan.y + (selectionBounds.minY - 12) * scale - 44),
+              }}
+            >
+              <strong>已选 {os.selectedNodeIds.length} 个</strong>
+              <button
+                type="button"
+                className="result-text-action"
+                onClick={() => os.copySelected()}
+              >
+                <Copy size={14} />
+                <span>复制</span>
+              </button>
+              <button
+                type="button"
+                className="result-text-action is-danger"
+                title="删除选中节点及其连线"
+                onClick={() => void os.deleteSelected()}
+              >
+                <Trash2 size={14} />
+                <span>删除</span>
+              </button>
+              <button
+                type="button"
+                className="result-text-action"
+                onClick={() => os.setSelectedNodeId(null)}
+              >
+                <X size={14} />
+                <span>取消选择</span>
+              </button>
+            </nav>
+          )}
 
           <ZoomControls
             zoom={os.zoom}
@@ -2426,6 +2567,9 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }: CanvasVie
             canvasAssets={canvasAssets}
             nodes={os.nodes}
             canvasId={os.activeCanvasId}
+            workspaceId={os.workspaceId}
+            registrySkills={registrySkillItems}
+            makeSame={makeSame}
             onFocusNode={focusNodeOnCanvas}
             onClose={() => os.setConsoleOpen(false)}
             onSubmit={os.submitIntent}

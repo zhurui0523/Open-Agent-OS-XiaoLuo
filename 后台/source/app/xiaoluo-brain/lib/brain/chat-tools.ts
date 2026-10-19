@@ -39,12 +39,22 @@ export type ChatToolName =
   | "package_program" // 组包交付：文件树+manifest+交付说明落盘 deliveries/（fs 口存在时注册）
   | "locate_local_service" // 系统级定位：按端口查本机监听进程的可执行路径与启动命令
   | "query_ledger" //   查账本：证据引用与动作日志（纯内部账本，常注册）
+  | "review_code" //    多维代码审查：对当前产物做 正确性/安全/健壮性/性能/可维护性 审查（LLM） // REVIEW-TS
+  | "ssh_exec" //       SSH 远程执行：在远程主机跑命令（系统 OpenSSH，只密钥认证；整桌口开关门控） // SSH-TS
   | "inspect_screen" //  截屏自检：截内嵌浏览器/整窗画面，图片入模型上下文（视觉口）
   | "operate_ui" //      真鼠标：内嵌浏览器内点击/输入/滚动/按键（视觉口）
   | "read_browser_dom" // 页面快照：URL/正文/可交互元素坐标（视觉口；纯文本模型的眼睛）
   | "navigate_browser" // 自主导航：把 URL 开进浏览器页签（视觉口）
   | "desktop_screenshot" // 整桌截屏（整桌口：默认关闭，需老板开启开关）
-  | "desktop_operate"; //  整桌键鼠：点击/输入/按键/滚动（整桌口：默认关闭，需老板开启开关）
+  | "desktop_operate" //  整桌键鼠：点击/输入/按键/滚动（整桌口：默认关闭，需老板开启开关）
+  | "desktop_inspect" // 整桌语义：UI Automation 枚举窗口/控件树，按 名称/AutomationId/控件类型 定位并 invoke/setvalue/focus（整桌口） // UIA-TS
+  | "web_navigate" //   外部浏览器：把 URL 开进系统 Edge/Chrome（CDP，登录态复用）
+  | "web_dom" //        外部浏览器：DOM 快照（选择器+坐标）或纯正文
+  | "web_screenshot" // 外部浏览器：截图入模型上下文（看图验收外部网页）
+  | "web_operate" //    外部浏览器：按 CSS 选择器 click/type/scroll/key
+  | "web_eval" //       外部浏览器：页面上下文执行 JS 取值
+  | "web_record" //     外部浏览器：录制演示转技能（start/stop/save/list/delete） // RECORD-TS
+  | "web_replay"; //    外部浏览器：回放已录技能（按名或内联 steps） // RECORD-TS
 
 // ---------- 工具参数 ----------
 
@@ -142,6 +152,98 @@ export interface DesktopOperateArgs {
   key?: string;
   dx?: number;
   dy?: number;
+}
+
+/** UIA 桌面控件语义识别参数（desktop_inspect） */
+export interface DesktopInspectArgs {
+  /** windows=枚举顶层窗口 tree=dump控件树 find=按条件查控件 invoke=语义点击 setvalue=语义赋值 focus=聚焦 */
+  action: 'windows' | 'tree' | 'find' | 'invoke' | 'setvalue' | 'focus';
+  /** 目标窗口/进程 pid（tree/find/invoke/setvalue/focus 用；来自 windows 结果） */
+  pid?: number;
+  /** 控件/窗口名称（包含匹配） */
+  name?: string;
+  /** 控件 AutomationId（精确匹配，最稳） */
+  automationId?: string;
+  /** 控件类型（Button/Edit/CheckBox/MenuItem/... 精确匹配） */
+  controlType?: string;
+  /** tree 递归深度（默认 6） */
+  depth?: number;
+  /** 返回上限（默认 80） */
+  max?: number;
+  /** setvalue 的文本 */
+  text?: string;
+}
+
+export interface WebNavigateArgs { url: string; }
+export interface WebDomArgs { mode?: 'dom' | 'text'; max?: number; }
+export interface WebEvalArgs { js: string; awaitPromise?: boolean; }
+export interface WebOperateArgs {
+  op: 'click' | 'dblclick' | 'type' | 'scroll' | 'key';
+  /** CSS 选择器（优先；DOM 路线抗布局变化，来自 web_dom） */
+  selector?: string;
+  /** 选择器缺省时的视口坐标兜底 */
+  x?: number;
+  y?: number;
+  text?: string;
+  key?: string;
+  dx?: number;
+  dy?: number;
+  /** type 时是否先清空原值 */
+  clear?: boolean;
+}
+
+/** 演示录制参数（web_record） */
+export interface WebRecordArgs {
+  /** start=开始录制 stop=停止并取回步骤 save=把最近录制/传入steps存成命名技能 list=列技能 delete=删技能 */
+  op: 'start' | 'stop' | 'save' | 'list' | 'delete';
+  /** save/delete 的技能名 */
+  name?: string;
+}
+/** 单条录制步骤（回放用） */
+export interface WebReplayStep {
+  type: 'navigate' | 'click' | 'type' | 'key';
+  url?: string;
+  selector?: string;
+  value?: string;
+  text?: string;
+  key?: string;
+  x?: number;
+  y?: number;
+}
+/** 回放参数（web_replay） */
+export interface WebReplayArgs {
+  /** 已存技能名（优先） */
+  name?: string;
+  /** 或内联步骤 */
+  steps?: WebReplayStep[];
+  /** 每步间隔毫秒（默认 250） */
+  stepDelay?: number;
+}
+
+/** 多维代码审查参数（review_code） */
+export interface ReviewCodeArgs {
+  /** 只审某个文件（缺省审当前全部产物） */
+  file?: string;
+  /** 审查重点（可选，如"重点看并发安全"） */
+  focus?: string;
+}
+
+/** SSH 远程执行参数（ssh_exec） */
+export interface SshExecArgs {
+  /** 远程主机名或 IP */
+  host: string;
+  /** 要在远程执行的命令（op=test 时可省略，只探连通） */
+  command?: string;
+  /** 登录用户（缺省用 ssh 默认） */
+  user?: string;
+  /** 端口（缺省 22） */
+  port?: number;
+  /** 私钥文件路径（只支持密钥认证，不支持密码） */
+  identityFile?: string;
+  /** 超时毫秒（默认 30000，上限 300000） */
+  timeoutMs?: number;
+  /** exec=执行命令（默认）test=只探连通性 */
+  op?: 'exec' | 'test';
 }
 
 export interface RunCommandArgs {
@@ -855,6 +957,181 @@ const DESKTOP_OPERATE_SCHEMA = {
   },
 };
 
+const DESKTOP_INSPECT_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'desktop_inspect',
+    description:
+      '整桌控件语义识别（Windows UI Automation）：action=windows 枚举顶层窗口拿 pid；tree dump 某窗口控件树；find 按 name/automationId/controlType 查控件（返回可点击矩形）；invoke 语义点击、setvalue 语义赋值、focus 聚焦（比像素坐标抗分辨率/布局变化）。先 windows→tree/find 拿语义定位，再 invoke/setvalue 操作。变更类动作需老板开启开关。',
+    parameters: {
+      type: 'object',
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['windows', 'tree', 'find', 'invoke', 'setvalue', 'focus'] },
+        pid: { type: 'number', description: '目标窗口 pid（来自 windows 结果）' },
+        name: { type: 'string', description: '控件/窗口名称（包含匹配）' },
+        automationId: { type: 'string', description: '控件 AutomationId（精确匹配，最稳）' },
+        controlType: { type: 'string', description: '控件类型：Button/Edit/CheckBox/MenuItem/...' },
+        depth: { type: 'number', description: 'tree 递归深度（默认 6）' },
+        max: { type: 'number', description: '返回上限（默认 80）' },
+        text: { type: 'string', description: 'setvalue 的文本' },
+      },
+    },
+  },
+};
+
+const WEB_NAVIGATE_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_navigate',
+    description:
+      '外部浏览器导航：把 URL 开进系统 Edge/Chrome（独立于内嵌浏览器，走 CDP，复用已登录会话）。适合需登录态的真实网站操作/采集/端到端验证；首次调用会拉起浏览器。',
+    parameters: { type: 'object', required: ['url'], properties: { url: { type: 'string', description: '目标网址（含 http/https 协议）' } } },
+  },
+};
+
+const WEB_DOM_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_dom',
+    description:
+      '外部浏览器读取：mode=dom 返回 URL/标题/正文摘要/可交互元素（含 CSS 选择器+中心坐标）；mode=text 返回纯正文。web_operate 前先用它拿选择器。',
+    parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['dom', 'text'], description: 'dom=结构快照（默认），text=纯正文' }, max: { type: 'number', description: 'text 模式最大字符数（默认 6000）' } } },
+  },
+};
+
+const WEB_SCREENSHOT_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_screenshot',
+    description:
+      '外部浏览器截图：截当前页可视区，图片入模型上下文（看图验收外部网页效果）。无视觉能力时自动降级为 DOM 快照。',
+    parameters: { type: 'object', properties: {} },
+  },
+};
+
+const WEB_OPERATE_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_operate',
+    description:
+      '外部浏览器操作：click/dblclick/type/scroll/key。优先用 selector（CSS 选择器，DOM 路线抗布局变化，来自 web_dom）；无选择器时用 x/y 视口坐标兜底。type 可带 clear 先清空。操作后接 web_screenshot 看结果，形成 操作→看图 闭环。',
+    parameters: {
+      type: 'object',
+      required: ['op'],
+      properties: {
+        op: { type: 'string', enum: ['click', 'dblclick', 'type', 'scroll', 'key'] },
+        selector: { type: 'string', description: 'CSS 选择器（优先）' },
+        x: { type: 'number', description: '视口坐标 x（选择器缺省时兜底）' },
+        y: { type: 'number', description: '视口坐标 y' },
+        text: { type: 'string', description: 'op=type 输入内容' },
+        key: { type: 'string', description: 'op=key 按键（enter/tab/escape/单字符）' },
+        clear: { type: 'boolean', description: 'op=type 时先清空原值' },
+        dx: { type: 'number' },
+        dy: { type: 'number' },
+      },
+    },
+  },
+};
+
+const WEB_EVAL_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_eval',
+    description:
+      '外部浏览器执行 JS：在页面上下文运行脚本并取回值（returnByValue）。用于精确提取数据/断言页面状态。awaitPromise=true 时等待 Promise。',
+    parameters: { type: 'object', required: ['js'], properties: { js: { type: 'string', description: '要执行的 JS 表达式' }, awaitPromise: { type: 'boolean' } } },
+  },
+};
+
+const WEB_RECORD_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_record',
+    description:
+      '外部浏览器演示录制转技能：op=start 开始录制（此后老板在浏览器里的点击/输入/回车/跳转被自动捕获为步骤）；op=stop 停止并取回步骤；op=save 把最近录制存成命名技能（配 name）；op=list 列出已存技能；op=delete 删除技能（配 name）。录好的技能可用 web_replay 反复重放。',
+    parameters: {
+      type: 'object',
+      required: ['op'],
+      properties: {
+        op: { type: 'string', enum: ['start', 'stop', 'save', 'list', 'delete'] },
+        name: { type: 'string', description: 'save/delete 的技能名' },
+      },
+    },
+  },
+};
+
+const WEB_REPLAY_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'web_replay',
+    description:
+      '外部浏览器回放：重放已录制的演示技能。优先用 name 回放已存技能；也可直接传 steps 内联步骤。每步按 选择器优先定位（抗布局变化）、坐标兜底。回放后可用 web_screenshot 看结果。',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '已存技能名（优先）' },
+        stepDelay: { type: 'number', description: '每步间隔毫秒（默认 250）' },
+        steps: {
+          type: 'array',
+          description: '内联步骤（无 name 时用）',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['navigate', 'click', 'type', 'key'] },
+              url: { type: 'string' },
+              selector: { type: 'string' },
+              value: { type: 'string' },
+              text: { type: 'string' },
+              key: { type: 'string' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const REVIEW_CODE_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'review_code',
+    description:
+      '多维代码审查（Auto Review）：对当前代码产物做一次资深工程师视角的审查，覆盖 正确性/安全/健壮性/性能/可维护性 五个维度，按 critical/major/minor 分级给出问题与修法。写完代码后应主动调用；发现 critical/major 问题就修到干净再交付。可用 file 只审单个文件、focus 指定重点。',
+    parameters: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: '只审这个文件（缺省审全部产物）' },
+        focus: { type: 'string', description: '审查重点（可选）' },
+      },
+    },
+  },
+};
+
+const SSH_EXEC_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'ssh_exec',
+    description:
+      'SSH 远程执行：在远程主机上跑命令并取回 stdout/stderr/退出码（走系统 OpenSSH 客户端）。只支持密钥认证（不接收/不存密码）；需老板开启「允许小逻控制本机」开关。op=test 先探连通性；op=exec 执行 command。可用 user/port/identityFile 指定连接参数。适合远程部署、查日志、跑远端脚本。',
+    parameters: {
+      type: 'object',
+      required: ['host'],
+      properties: {
+        host: { type: 'string', description: '远程主机名或 IP' },
+        command: { type: 'string', description: 'op=exec 时要在远程执行的命令' },
+        user: { type: 'string', description: '登录用户（可选）' },
+        port: { type: 'number', description: '端口（默认 22）' },
+        identityFile: { type: 'string', description: '私钥文件路径（可选）' },
+        timeoutMs: { type: 'number', description: '超时毫秒（默认 30000）' },
+        op: { type: 'string', enum: ['exec', 'test'], description: 'exec=执行命令（默认）test=只探连通' },
+      },
+    },
+  },
+};
+
 export interface ChatToolCapabilities {
   webSearchEnabled: boolean;
   fsEnabled: boolean;
@@ -873,6 +1150,12 @@ export interface ChatToolCapabilities {
   visionEnabled?: boolean;
   /** 整桌控制口（desktop_screenshot / desktop_operate；默认关闭需老板开启） */
   desktopEnabled?: boolean;
+  /** 外部浏览器口（web_navigate / web_dom / web_screenshot / web_operate / web_eval；CDP 接管系统 Edge/Chrome） */
+  webEnabled?: boolean;
+  /** 代码审查口（review_code；LLM 多维审查，主 agent 常开） */ // REVIEW-TS
+  reviewEnabled?: boolean;
+  /** SSH 远程执行口（ssh_exec；系统 OpenSSH，只密钥认证） */ // SSH-TS
+  sshEnabled?: boolean;
   /** MCP 外部工具（mcp__<server>__<tool>；schema 由服务器上报，原样注册） */
   mcpTools?: McpToolInfo[];
 }
@@ -963,7 +1246,10 @@ const SAVE_SKILL_SCHEMA = {
   if (caps.serviceEnabled) schemas.push(START_SERVICE_SCHEMA, STOP_SERVICE_SCHEMA, SERVICE_STATUS_SCHEMA, SETUP_SERVICE_SCHEMA);
   if (caps.gitEnabled) schemas.push(GIT_SCHEMA);
   if (caps.visionEnabled) schemas.push(INSPECT_SCREEN_SCHEMA, OPERATE_UI_SCHEMA, READ_BROWSER_DOM_SCHEMA, NAVIGATE_BROWSER_SCHEMA);
-  if (caps.desktopEnabled) schemas.push(DESKTOP_SCREENSHOT_SCHEMA, DESKTOP_OPERATE_SCHEMA);
+  if (caps.desktopEnabled) schemas.push(DESKTOP_SCREENSHOT_SCHEMA, DESKTOP_OPERATE_SCHEMA, DESKTOP_INSPECT_SCHEMA);
+  if (caps.webEnabled) schemas.push(WEB_NAVIGATE_SCHEMA, WEB_DOM_SCHEMA, WEB_SCREENSHOT_SCHEMA, WEB_OPERATE_SCHEMA, WEB_EVAL_SCHEMA, WEB_RECORD_SCHEMA, WEB_REPLAY_SCHEMA);
+  if (caps.reviewEnabled) schemas.push(REVIEW_CODE_SCHEMA);
+  if (caps.sshEnabled) schemas.push(SSH_EXEC_SCHEMA);
   if (caps.browserEnabled) schemas.push(BROWSE_PAGE_SCHEMA);
   // 技能三件套：schema 常量定义在注册语句之后，故在函数尾单独追加
   if (caps.fsEnabled) schemas.push(LOAD_SKILL_SCHEMA, SAVE_SKILL_SCHEMA, INSTALL_SKILL_SCHEMA);

@@ -50,7 +50,7 @@ import type {
 import { AudioPlayer } from "./audio-player";
 import { IconButton } from "./icon-button";
 import { VideoPlayer } from "./video-player";
-import { InputAssetPreview, NodePromptEditor } from "./node-card";
+import { InputAssetPreview, NodePromptEditor, useChipReorderDrag } from "./node-card";
 import { resolveAssetContentUrl } from "./asset-content-preview";
 import {
   normalizeModelInputConstraints,
@@ -115,6 +115,12 @@ interface IntentConsoleProps {
   canvasAssets: CanvasAssetReference[];
   nodes: CanvasNode[];
   canvasId?: string;
+  /** 工作区 id：转传大脑面板做注册表包技能物化 */
+  workspaceId?: string;
+  /** 注册表可用技能包（能力中心"可用 Skill"页签同谓词）：并入斜杠菜单，防文件扫描时序漏项（2026-09-22 根治） */
+  registrySkills?: { name: string; description: string }[];
+  /** 做同款请求：画布节点的提示词与输入素材同步进输入条（seq 去重防重复应用） */
+  makeSame?: { seq: number; prompt: string; sourceNodeIds: string[] } | null;
   /** 小逻大脑 generate_media 直派口（来自 useIntentOs.generateForBrain） */
   onGenerateMedia?: ChatAdapters["generateMedia"];
   /** 小逻大脑最新代码产物/预览上报（画布独立结果面板消费） */
@@ -180,6 +186,9 @@ export function IntentConsole({
   canvasAssets,
   nodes,
   canvasId,
+  workspaceId = "",
+  registrySkills = [],
+  makeSame = null,
   onGenerateMedia,
   onBrainResult,
   mcpServers = [],
@@ -216,6 +225,17 @@ export function IntentConsole({
   const [brainSkillCatalog, setBrainSkillCatalog] = useState<
     Array<{ name: string; description: string }>
   >([]);
+  /** 斜杠菜单 = 脑面板扫描目录 ∪ 注册表可用包：扫描迟到/漏触发也与"可用 Skill"对齐（2026-09-22 根治） */
+  const slashSkillCatalog = useMemo(() => {
+    const seen = new Set(brainSkillCatalog.map((skill) => skill.name));
+    const merged = [...brainSkillCatalog];
+    for (const skill of registrySkills) {
+      if (seen.has(skill.name)) continue;
+      seen.add(skill.name);
+      merged.push(skill);
+    }
+    return merged;
+  }, [brainSkillCatalog, registrySkills]);
   /** 权限模式：default 仅工作区 / auto 越界只读自动放行 / full 本机任意读写（高风险命令仍确认） */
   const [permissionMode, setPermissionMode] = useState<"default" | "auto" | "full">(() => {
     try {
@@ -564,6 +584,31 @@ export function IntentConsole({
     });
   }
 
+  // 输入素材拖拽排序：附件数组实时换位，[图N] 引用编号随之（2026-09-27）
+  const { dragIndex: chipDragIndex, chipDragProps } = useChipReorderDrag(
+    (from, to) =>
+      setAttachments((current) => {
+        const next = [...current];
+        const [moved] = next.splice(from, 1);
+        if (!moved) return current;
+        next.splice(to, 0, moved);
+        return next;
+      }),
+  );
+
+  // 做同款：画布节点的提示词与输入素材同步进输入条（2026-09-23 裁决：做同款=送对话器，非复制节点）
+  const makeSameSeqRef = useRef(0);
+  useEffect(() => {
+    if (!makeSame || makeSame.seq === makeSameSeqRef.current) return;
+    makeSameSeqRef.current = makeSame.seq;
+    setComposerMode("brain");
+    setDraft(makeSame.prompt);
+    for (const sourceNodeId of makeSame.sourceNodeIds) {
+      attachCanvasAsset(sourceNodeId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [makeSame]);
+
   function submit() {
     // 本地模型：通知嵌入式引擎"有活动"，重置空闲自动停止计时
     {
@@ -617,7 +662,7 @@ export function IntentConsole({
           (draft.match(/(?:^|\s)\/([^\s/]+)(?=\s|$)/g) ?? [])
             .map((token) => token.trim().slice(1))
             .filter((name) =>
-              brainSkillCatalog.some((skill) => skill.name === name),
+              slashSkillCatalog.some((skill) => skill.name === name),
             ),
         ),
       );
@@ -718,6 +763,7 @@ export function IntentConsole({
           <MessageResultPreview
             node={nodes.find((item) => item.id === message.resultNodeId)}
             kind={message.resultKind}
+            snapshotUrl={message.resultAssetUrl}
             onFocus={onFocusNode}
           />
         ) : null}
@@ -976,6 +1022,7 @@ export function IntentConsole({
             onBusyChange={setBrainBusy}
             onQueueChange={setBrainQueue}
             onSkillCatalogChange={setBrainSkillCatalog}
+            workspaceId={workspaceId}
             permissionMode={permissionMode}
             externalItems={externalItems}
             externalFooter={externalFooter}
@@ -1031,11 +1078,12 @@ export function IntentConsole({
               </p>
             ) : (
             <div className="composer-input-asset-grid">
-            {attachments.map((attachment) => (
+            {attachments.map((attachment, index) => (
               <div
-                className="composer-input-asset-card"
+                className={`composer-input-asset-card ${chipDragIndex === index ? "is-chip-drag" : ""}`}
                 key={attachment.id}
                 title={attachment.name}
+                {...chipDragProps(index)}
               >
                 <InputAssetPreview
                   asset={{
@@ -1124,7 +1172,7 @@ export function IntentConsole({
             onChange={setDraft}
             onAttach={attachCanvasAsset}
             onSubmitShortcut={submit}
-            slashSkills={composerMode === "brain" ? brainSkillCatalog : []}
+            slashSkills={composerMode === "brain" ? slashSkillCatalog : []}
             onPasteFiles={addFilesAsAttachments}
             aria-label={
               composerMode === "quick"
@@ -1558,13 +1606,47 @@ const KIND_LABEL: Record<string, string> = {
 function MessageResultPreview({
   node,
   kind,
+  snapshotUrl,
   onFocus,
 }: {
   node: CanvasNode | undefined;
   kind?: NodeKind;
+  snapshotUrl?: string;
   onFocus?: (nodeId: string) => void;
 }) {
-  if (!node) return null;
+  // 节点已不在画布（被删除/未同步）：优先按结果快照渲染缩略图，
+  // 无快照也给占位说明卡，缩略图不再凭空消失（2026-09-23）
+  if (!node) {
+    const archived = snapshotUrl?.trim();
+    if (archived && (kind === "image" || kind === "video")) {
+      return (
+        <div className="message-result-card message-result-archived">
+          {kind === "image" ? (
+            <img
+              src={archived}
+              alt="结果快照缩略图"
+              loading="lazy"
+              decoding="async"
+            />
+          ) : (
+            /* eslint-disable-next-line jsx-a11y/media-has-caption */
+            <video
+              src={`${archived}#t=0.1`}
+              muted
+              preload="metadata"
+              aria-hidden="true"
+            />
+          )}
+          <small>结果快照 · 节点已不在画布</small>
+        </div>
+      );
+    }
+    return (
+      <div className="message-result-card message-result-gone">
+        <small>结果节点已不在画布，缩略图不可用</small>
+      </div>
+    );
+  }
   const kernelOutput = node.parameters?.kernelOutput as
     | { text?: string; assetUrl?: string; result?: string }
     | undefined;

@@ -60,6 +60,8 @@ export async function PATCH(request: Request) {
       canvasId?: string;
       content?: string;
       metadata?: Record<string, unknown>;
+      messageId?: string;
+      role?: string;
     };
     const canvasId = payload.canvasId?.trim();
     const content = payload.content?.trim().slice(0, 20_000);
@@ -77,10 +79,24 @@ export async function PATCH(request: Request) {
     });
     const db = await getDb();
     const now = mysqlNow();
+    const messageId = payload.messageId?.trim();
+    if (messageId) {
+      // 快照回写：按消息 id 更新 metadata（如结果资产地址），不插入重复行
+      await db
+        .update(intentMessages)
+        .set({
+          metadataJson: JSON.stringify(payload.metadata ?? {}).slice(0, 8_000),
+        })
+        .where(eq(intentMessages.id, messageId));
+      return Response.json({ conversation, message: { id: messageId } });
+    }
     const message = {
       id: `message_${crypto.randomUUID()}`,
       conversationId: conversation.id,
-      role: "assistant" as const,
+      // 用户消息也走 PATCH 落库（专业生成），role 由调用方指定（2026-09-28）
+      role: (payload.role === "user" ? "user" : "assistant") as
+        | "user"
+        | "assistant",
       content,
       metadataJson: JSON.stringify(payload.metadata ?? {}).slice(0, 8_000),
       createdAt: now,

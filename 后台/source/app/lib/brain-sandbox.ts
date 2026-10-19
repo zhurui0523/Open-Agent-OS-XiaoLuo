@@ -151,6 +151,22 @@ export async function writeSandboxFile(
   await fs.writeFile(file, content, "utf8");
 }
 
+/** 删除：递归删除工作区内相对路径目录/文件（私有技能卸载）；拒绝删整个工作区与越界路径 */
+export async function deleteSandboxPath(
+  userId: string,
+  relPath: string,
+): Promise<void> {
+  const rel = (relPath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  if (!rel || rel === "." || rel === ".." || rel.startsWith("..") || rel.includes("/../")) {
+    throw new Error("删除路径非法：只能删除工作区内的相对目录/文件");
+  }
+  const target = resolveInWorkspace(userId, rel);
+  await fs.rm(target, { recursive: true, force: true });
+}
+
 // ---------- 工作区搜索（grep_files / find_files 的服务端实现） ----------
 
 /** 收集工作区文件（跳过依赖/隐藏目录，限数量与单文件体积） */
@@ -807,11 +823,10 @@ export async function runSandboxedGit(
 }
 
 // ===================== 技能市场：SKILL.md 轻量流通层 =====================
-// 发布/安装不走 packages 重体系（签名+trust 审核），文件式直存 .data/brain-workspace/.market，
-// 装/发同一套 SKILL.md frontmatter 契约，任何小逻实例原样吃回。
+// 安装不走 packages 重体系（签名+trust 审核），文件式直存 .data/brain-workspace/.market（发布/下架已下线），
+// 装/读同一套 SKILL.md frontmatter 契约，任何小逻实例原样吃回。
 const MARKET_ROOT = path.join(WORKSPACE_ROOT, ".market");
 const SKILL_MARKET_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const SKILL_MARKET_MAX_BODY = 256 * 1024;
 const SKILL_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 export interface SkillMarketListing {
@@ -821,10 +836,6 @@ export interface SkillMarketListing {
   publisherName: string;
   publishedAt: string;
   localCopy: boolean;
-}
-
-function marketSkillDir(publisherId: string, name: string): string {
-  return path.join(MARKET_ROOT, sanitizeOwner(publisherId), name);
 }
 
 function parseSkillFrontmatter(raw: string): { name: string; description: string; body: string } {
@@ -885,44 +896,6 @@ export async function listSkillMarket(mine: string): Promise<SkillMarketListing[
   }
   rows.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
   return rows;
-}
-
-/** 发布：从本人工作区 skills/<name>/SKILL.md 读取校验后直存市场（同名覆盖更新） */
-export async function publishSkillToMarket(
-  userId: string,
-  publisherName: string,
-  skillName: string,
-  contentOverride?: string,
-): Promise<{ name: string; description: string; publishedAt: string }> {
-  const name = (skillName || "").trim();
-  if (!SKILL_MARKET_NAME_RE.test(name) || name.length > 40) {
-    throw new Error("技能名必须是 kebab-case（a-z 0-9 -，≤40 字符）");
-  }
-  const file = path.join(brainWorkspaceRoot(userId), "skills", name, "SKILL.md");
-  // 桌面通道：本地工作区在服务端不存在，正文由客户端随请求带上
-  const raw = contentOverride ?? (await fs.readFile(file, "utf8").catch(() => ""));
-  if (!raw) throw new Error("工作区 skills/" + name + "/SKILL.md 不存在，先用 save_skill 沉淀技能");
-  if (Buffer.byteLength(raw, "utf8") > SKILL_MARKET_MAX_BODY) throw new Error("技能正文超过 256KB，拒绝发布");
-  const parsed = parseSkillFrontmatter(raw);
-  if (!parsed.description) throw new Error("SKILL.md frontmatter 缺 description，无法发布");
-  if (parsed.body.length < 20) throw new Error("技能正文过短（<20 字），无法发布");
-  const dir = marketSkillDir(userId, name);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, "SKILL.md"), raw, "utf8");
-  const publishedAt = new Date().toISOString();
-  await fs.writeFile(
-    path.join(dir, "meta.json"),
-    JSON.stringify({ publisherId: userId, publisherName, publishedAt }),
-    "utf8",
-  );
-  return { name, description: parsed.description, publishedAt };
-}
-
-/** 下架：只能删自己发布的条目 */
-export async function unpublishSkillFromMarket(userId: string, skillName: string): Promise<void> {
-  const name = (skillName || "").trim();
-  if (!SKILL_MARKET_NAME_RE.test(name)) throw new Error("技能名非法");
-  await fs.rm(marketSkillDir(userId, name), { recursive: true, force: true });
 }
 
 /** 读取：返回共享技能库某条 listing 的 SKILL.md 正文（对话器 install_skill 直接安装用） */

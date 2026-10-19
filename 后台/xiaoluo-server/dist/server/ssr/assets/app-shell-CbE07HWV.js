@@ -496,7 +496,10 @@ function normalizeModelInputConstraints(value, kind, protocol, modelName) {
 }
 function validateModelInputAssets(constraints, inputs) {
 	const counts = emptyTypeLimits();
-	for (const input of inputs) if (input.kind && MODEL_INPUT_ASSET_KINDS.includes(input.kind)) counts[input.kind] += 1;
+	for (const input of inputs) {
+		if (input.kind === "document") continue;
+		if (input.kind && MODEL_INPUT_ASSET_KINDS.includes(input.kind)) counts[input.kind] += 1;
+	}
 	const total = MODEL_INPUT_ASSET_KINDS.reduce((sum, assetKind) => sum + counts[assetKind], 0);
 	const errors = [];
 	if (total > constraints.maxTotal) errors.push(`输入素材共 ${total} 个，当前模型最多支持 ${constraints.maxTotal} 个`);
@@ -2082,12 +2085,14 @@ function useIntentOS() {
 				let mode;
 				let resultNodeId;
 				let resultKind;
+				let resultAssetUrl;
 				try {
 					const metadata = JSON.parse(message.metadataJson);
 					if (Array.isArray(metadata.attachments)) attachments = metadata.attachments;
 					if (metadata.mode === "quick_answer") mode = "quick_answer";
 					if (typeof metadata.resultNodeId === "string" && metadata.resultNodeId) resultNodeId = metadata.resultNodeId;
 					if (typeof metadata.resultKind === "string" && metadata.resultKind) resultKind = metadata.resultKind;
+					if (typeof metadata.resultAssetUrl === "string" && metadata.resultAssetUrl) resultAssetUrl = metadata.resultAssetUrl;
 				} catch {
 					attachments = [];
 				}
@@ -2100,7 +2105,8 @@ function useIntentOS() {
 					...mode ? { mode } : {},
 					...attachments.length ? { attachments } : {},
 					...resultNodeId ? { resultNodeId } : {},
-					...resultKind ? { resultKind } : {}
+					...resultKind ? { resultKind } : {},
+					...resultAssetUrl ? { resultAssetUrl } : {}
 				};
 			}));
 			setPlanApplied(false);
@@ -2441,6 +2447,25 @@ function useIntentOS() {
 		rememberCanvas();
 		setEdges((current) => current.filter((edge) => edge.id !== id));
 	}
+	function reorderInputAssets(orderedEdgeIds) {
+		if (orderedEdgeIds.length < 2) return;
+		const positionById = new Map(orderedEdgeIds.map((id, index) => [id, index]));
+		const slots = [];
+		edges.forEach((edge, index) => {
+			if (positionById.has(edge.id)) slots.push(index);
+		});
+		if (slots.length !== orderedEdgeIds.length) return;
+		rememberCanvas();
+		setEdges((current) => {
+			const byId = new Map(current.map((edge) => [edge.id, edge]));
+			const next = [...current];
+			slots.forEach((slot, index) => {
+				const edge = byId.get(orderedEdgeIds[index]);
+				if (edge) next[slot] = edge;
+			});
+			return next;
+		});
+	}
 	function undoCanvas() {
 		const previous = canvasHistory.current.pop();
 		if (!previous) return;
@@ -2665,12 +2690,14 @@ function useIntentOS() {
 				let mode;
 				let resultNodeId;
 				let resultKind;
+				let resultAssetUrl;
 				try {
 					const metadata = JSON.parse(m.metadataJson);
 					if (Array.isArray(metadata.attachments)) attachments = metadata.attachments;
 					if (metadata.mode === "quick_answer") mode = "quick_answer";
 					if (typeof metadata.resultNodeId === "string" && metadata.resultNodeId) resultNodeId = metadata.resultNodeId;
 					if (typeof metadata.resultKind === "string" && metadata.resultKind) resultKind = metadata.resultKind;
+					if (typeof metadata.resultAssetUrl === "string" && metadata.resultAssetUrl) resultAssetUrl = metadata.resultAssetUrl;
 				} catch {
 					attachments = [];
 				}
@@ -2683,7 +2710,8 @@ function useIntentOS() {
 					...mode ? { mode } : {},
 					...attachments.length ? { attachments } : {},
 					...resultNodeId ? { resultNodeId } : {},
-					...resultKind ? { resultKind } : {}
+					...resultKind ? { resultKind } : {},
+					...resultAssetUrl ? { resultAssetUrl } : {}
 				};
 			}));
 			if (result.plan?.status === "awaiting_confirmation") try {
@@ -3182,8 +3210,38 @@ function useIntentOS() {
 		}
 		return result;
 	}
+	async function reclaimStaleActiveRun() {
+		const current = activeRun.current;
+		if (!current || current.paused) return;
+		try {
+			const state = await readRunState(current.id);
+			if ([
+				"succeeded",
+				"failed",
+				"canceled"
+			].includes(state.run.status) && activeRun.current?.id === current.id) {
+				activeRun.current = null;
+				setRunState("idle");
+			}
+		} catch {}
+	}
+	const runGate = (0, import_react.useRef)(Promise.resolve());
 	async function startRunServer(targetNodeId, mode = "target") {
+		const gate = runGate.current;
+		let releaseGate = () => void 0;
+		runGate.current = new Promise((resolve) => {
+			releaseGate = resolve;
+		});
+		try {
+			await gate;
+			return await startRunServerInner(targetNodeId, mode);
+		} finally {
+			releaseGate();
+		}
+	}
+	async function startRunServerInner(targetNodeId, mode = "target") {
 		setCloudError("");
+		await reclaimStaleActiveRun();
 		const current = activeRun.current;
 		if (current?.paused) {
 			current.paused = false;
@@ -3200,7 +3258,19 @@ function useIntentOS() {
 			if (!["paused", "waiting"].includes(completed.run.status)) activeRun.current = null;
 			return;
 		}
-		if (current || !nodes.length || !activeCanvasId) return;
+		if (current) {
+			const settled = await waitForRun(current.id, await readRunState(current.id));
+			if (![
+				"succeeded",
+				"failed",
+				"canceled"
+			].includes(settled.run.status)) {
+				setCloudError("上一个任务未结束（状态: " + settled.run.status + "），请先停止再提交");
+				return;
+			}
+			activeRun.current = null;
+		}
+		if (!nodes.length || !activeCanvasId) return;
 		const graph = targetNodeId && mode === "branch" ? graphForBranch(targetNodeId) : targetNodeId && mode === "group" ? graphForGroup(targetNodeId) : graphForTarget(targetNodeId);
 		if (!graph.nodes.length) {
 			setCloudError(mode === "group" ? "该节点群区域内没有可执行节点" : "没有可执行节点");
@@ -3354,23 +3424,64 @@ function useIntentOS() {
 			}]);
 		}
 	}
-	async function persistIntentMessage(content, metadata) {
+	const persistedServerIds = (0, import_react.useRef)(/* @__PURE__ */ new Map());
+	async function persistIntentMessage(clientId, content, metadata, serverMessageId, role = "assistant") {
 		if (!activeCanvasId) return;
 		try {
 			const result = await requestJson$5("/api/v2/intent/messages", {
 				method: "PATCH",
 				body: JSON.stringify({
 					canvasId: activeCanvasId,
+					...serverMessageId ? { messageId: serverMessageId } : {},
 					content,
-					metadata
+					metadata,
+					role
 				})
 			});
 			if (result.conversation?.id) setConversationId(result.conversation.id);
+			if (!serverMessageId && result.message?.id) persistedServerIds.current.set(clientId, result.message.id);
 		} catch {}
 	}
-	function generateDirectly(value, kind, requestedCapabilityId, requestedModelId, attachments = [], modelParameters) {
+	(0, import_react.useEffect)(() => {
+		const targets = messages.filter((message) => message.resultNodeId && !message.resultAssetUrl);
+		if (!targets.length) return;
+		const hits = [];
+		for (const message of targets) {
+			const node = nodes.find((item) => item.id === message.resultNodeId);
+			const url = (node?.parameters?.kernelOutput)?.assetUrl?.trim();
+			if (node && url) hits.push({
+				id: message.id,
+				url,
+				kind: node.kind
+			});
+		}
+		if (!hits.length) return;
+		setMessages((current) => current.map((message) => {
+			const hit = hits.find((item) => item.id === message.id);
+			return hit ? {
+				...message,
+				resultAssetUrl: hit.url,
+				resultKind: message.resultKind ?? hit.kind
+			} : message;
+		}));
+		for (const hit of hits) {
+			const message = messages.find((item) => item.id === hit.id);
+			const serverId = persistedServerIds.current.get(hit.id) ?? (hit.id.startsWith("message_") ? hit.id : void 0);
+			persistIntentMessage(hit.id, message?.content ?? "", {
+				resultNodeId: message?.resultNodeId,
+				resultKind: message?.resultKind ?? hit.kind,
+				generator: true,
+				resultAssetUrl: hit.url
+			}, serverId);
+		}
+	}, [messages, nodes]);
+	async function generateDirectly(value, kind, requestedCapabilityId, requestedModelId, attachments = [], modelParameters) {
 		const prompt = value.trim();
-		if (isPlanning || activeRun.current) return null;
+		await reclaimStaleActiveRun();
+		if (isPlanning) {
+			setCloudError("上一单还在规划中，等它结束再提交");
+			return null;
+		}
 		const rules = resolveProfessionalGeneratorRules({
 			capabilities,
 			models,
@@ -3515,17 +3626,21 @@ function useIntentOS() {
 		setSelectedNodeIds([execId]);
 		pendingDirectRunNodeId.current = execId;
 		const generatorNotice = `已创建${title}节点，正在使用 ${rules.usesSkillRuntime ? `${rules.capability?.title ?? "Skill"} 内置服务` : rules.model?.name ?? "模型"} 直接生成。`;
+		const generatorMsgId = `msg_${Date.now()}_generator`;
+		const directUserMsgId = `msg_${Date.now()}_user`;
+		const directUserContent = prompt || `执行 Skill：${rules.capability?.title ?? "Skill"}（输入素材 ${attachments.length} 个）`;
 		setMessages((current) => [
 			...current,
 			{
-				id: `msg_${Date.now()}`,
+				id: directUserMsgId,
 				role: "user",
-				content: prompt || `执行 Skill：${rules.capability?.title ?? "Skill"}（输入素材 ${attachments.length} 个）`,
+				content: directUserContent,
 				time: messageTime(),
-				createdAt: Date.now()
+				createdAt: Date.now(),
+				...attachments.length ? { attachments } : {}
 			},
 			{
-				id: `msg_${Date.now()}_generator`,
+				id: generatorMsgId,
 				role: "assistant",
 				content: generatorNotice,
 				time: messageTime(),
@@ -3534,11 +3649,15 @@ function useIntentOS() {
 				resultKind: kind
 			}
 		]);
-		persistIntentMessage(generatorNotice, {
+		persistIntentMessage(generatorMsgId, generatorNotice, {
 			resultNodeId: resultId,
 			resultKind: kind,
 			generator: true
 		});
+		persistIntentMessage(directUserMsgId, directUserContent, {
+			directGeneration: true,
+			...attachments.length ? { attachments } : {}
+		}, void 0, "user");
 		return {
 			execId,
 			resultId
@@ -3573,7 +3692,7 @@ function useIntentOS() {
 	/** 小逻大脑 generate_media：复用直派链路建节点并执行，等结果后返回（面板 ChatAdapters 用） */
 	async function generateForBrain(args) {
 		const kind = args.modality === "document" ? "text" : args.modality;
-		const created = generateDirectly(args.prompt, kind, args.skillId, args.modelId);
+		const created = await generateDirectly(args.prompt, kind, args.skillId, args.modelId);
 		if (!created) return {
 			stepId: "",
 			nodeId: "",
@@ -3601,16 +3720,34 @@ function useIntentOS() {
 	(0, import_react.useEffect)(() => {
 		const nodeId = pendingDirectRunNodeId.current;
 		if (!nodeId) return;
-		if (directRunScheduledRef.current === nodeId) return;
+		if (!nodes.some((node) => node.id === nodeId)) return;
+		pendingDirectRunNodeId.current = null;
 		directRunScheduledRef.current = nodeId;
-		const timer = window.setTimeout(() => {
-			if (!(pendingDirectRunNodeId.current === nodeId)) return;
-			pendingDirectRunNodeId.current = null;
-			directRunScheduledRef.current = null;
-			startRunServer(nodeId);
-		}, 0);
-		return () => clearTimeout(timer);
+		startRunServer(nodeId).catch((error) => {
+			setCloudError(error instanceof Error ? error.message : "节点运行启动失败");
+		});
 	}, [nodes]);
+	const reignitedOrphans = (0, import_react.useRef)(/* @__PURE__ */ new Set());
+	const nodesLiveRef = (0, import_react.useRef)(nodes);
+	(0, import_react.useEffect)(() => {
+		nodesLiveRef.current = nodes;
+	}, [nodes]);
+	(0, import_react.useEffect)(() => {
+		const timer = window.setInterval(() => {
+			if (activeRun.current && !activeRun.current.paused) {
+				reclaimStaleActiveRun();
+				return;
+			}
+			if (pendingDirectRunNodeId.current) return;
+			const orphan = nodesLiveRef.current.find((node) => ["queued", "running"].includes(node.status) && typeof node.parameters?.kernelRunId !== "string" && node.id !== directRunScheduledRef.current && !reignitedOrphans.current.has(node.id));
+			if (!orphan) return;
+			reignitedOrphans.current.add(orphan.id);
+			startRunServer(orphan.id).catch((error) => {
+				setCloudError(error instanceof Error ? error.message : "孤儿任务自动补跑失败");
+			});
+		}, 1e4);
+		return () => window.clearInterval(timer);
+	}, []);
 	function rerunBranchServer(nodeId) {
 		return startRunServer(nodeId, "branch");
 	}
@@ -3899,6 +4036,7 @@ function useIntentOS() {
 		setActiveCanvasId,
 		reloadActiveCanvas,
 		refreshCanvases,
+		hasUnsavedCanvasChanges: () => latestCanvasSave.current !== null,
 		createCanvas,
 		duplicateCanvas,
 		restoreCanvas,
@@ -3944,6 +4082,7 @@ function useIntentOS() {
 		deleteNode,
 		connectNodes,
 		deleteEdge,
+		reorderInputAssets,
 		undoCanvas,
 		redoCanvas,
 		copySelected,
@@ -6510,6 +6649,7 @@ var SUPPORTED_FILE_FORMATS = [
 	}
 ];
 var formatByExtension = new Map(SUPPORTED_FILE_FORMATS.flatMap((format) => format.extensions.map((extension) => [extension, format])));
+new Map(SUPPORTED_FILE_FORMATS.map((format) => [format.canonicalMimeType, format]));
 var SUPPORTED_FILE_ACCEPT = SUPPORTED_FILE_FORMATS.flatMap((format) => format.extensions.map((extension) => `.${extension}`)).join(",");
 var SUPPORTED_FILE_GROUPS = [
 	{
@@ -9200,6 +9340,26 @@ var AppWindow = createLucideIcon("AppWindow", [
 	}]
 ]);
 //#endregion
+//#region node_modules/.pnpm/lucide-react@0.468.0_react@19.2.6/node_modules/lucide-react/dist/esm/icons/copy.js
+/**
+* @license lucide-react v0.468.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
+var Copy = createLucideIcon("Copy", [["rect", {
+	width: "14",
+	height: "14",
+	x: "8",
+	y: "8",
+	rx: "2",
+	ry: "2",
+	key: "17jyea"
+}], ["path", {
+	d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
+	key: "zix9uf"
+}]]);
+//#endregion
 //#region node_modules/.pnpm/lucide-react@0.468.0_react@19.2.6/node_modules/lucide-react/dist/esm/icons/layers.js
 /**
 * @license lucide-react v0.468.0 - ISC
@@ -9629,26 +9789,6 @@ var SquareDashed = createLucideIcon("SquareDashed", [
 		key: "169vum"
 	}]
 ]);
-//#endregion
-//#region node_modules/.pnpm/lucide-react@0.468.0_react@19.2.6/node_modules/lucide-react/dist/esm/icons/copy.js
-/**
-* @license lucide-react v0.468.0 - ISC
-*
-* This source code is licensed under the ISC license.
-* See the LICENSE file in the root directory of this source tree.
-*/
-var Copy = createLucideIcon("Copy", [["rect", {
-	width: "14",
-	height: "14",
-	x: "8",
-	y: "8",
-	rx: "2",
-	ry: "2",
-	key: "17jyea"
-}], ["path", {
-	d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
-	key: "zix9uf"
-}]]);
 //#endregion
 //#region node_modules/.pnpm/lucide-react@0.468.0_react@19.2.6/node_modules/lucide-react/dist/esm/icons/file-output.js
 /**
@@ -13791,8 +13931,13 @@ function inlineTextResult(node) {
 		return String(kernelOutput.data);
 	}
 }
+function downloadUniqueSuffix() {
+	const now = /* @__PURE__ */ new Date();
+	const pad = (value) => String(value).padStart(2, "0");
+	return `${`${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`}-${Math.random().toString(36).slice(2, 6)}`;
+}
 function textDownloadName(title) {
-	return `${title.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[.\s]+$/g, "") || "文本结果"}.txt`;
+	return `${title.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[.\s]+$/g, "") || "文本结果"}-${downloadUniqueSuffix()}.txt`;
 }
 var inputAssetMeta = {
 	image: { icon: Image },
@@ -14014,16 +14159,30 @@ function activeAssetMention(value, caret) {
 		query: match[1] ?? ""
 	};
 }
-function NodePromptEditor({ value, assets, attachedSourceIds, onChange, onAttach, onExpand, onSubmitShortcut, onPasteFiles, ariaLabel = "节点任务描述", placeholder, autoFocus = false }) {
+function activeSlashSkill(value, caret) {
+	const beforeCaret = value.slice(0, caret);
+	const match = beforeCaret.match(/(?:^|\s)\/([^\s/]*)$/u);
+	if (!match) return null;
+	return {
+		start: beforeCaret.lastIndexOf("/"),
+		end: caret,
+		query: match[1] ?? ""
+	};
+}
+function NodePromptEditor({ value, assets, attachedSourceIds, onChange, onAttach, onExpand, onSubmitShortcut, onPasteFiles, slashSkills, ariaLabel = "节点任务描述", placeholder, autoFocus = false }) {
 	const editorRef = (0, import_react.useRef)(null);
 	const pendingCaretRef = (0, import_react.useRef)(null);
 	const [mention, setMention] = (0, import_react.useState)(null);
+	const [slash, setSlash] = (0, import_react.useState)(null);
 	const [activeIndex, setActiveIndex] = (0, import_react.useState)(0);
+	const [slashIndex, setSlashIndex] = (0, import_react.useState)(0);
 	const query = mention?.query.trim().toLocaleLowerCase() ?? "";
 	const queryMatches = (asset) => asset.title.toLocaleLowerCase().includes(query);
 	const matchingAttachedAssets = assets.filter((asset) => attachedSourceIds.has(asset.sourceNodeId) && queryMatches(asset));
 	const matchingCanvasAssets = assets.filter((asset) => !attachedSourceIds.has(asset.sourceNodeId) && queryMatches(asset));
 	const matchingAssets = [...matchingAttachedAssets, ...matchingCanvasAssets];
+	const slashQuery = slash?.query.trim().toLocaleLowerCase() ?? "";
+	const matchingSkills = (slashSkills ?? []).filter((skill) => !slashQuery || skill.name.toLocaleLowerCase().includes(slashQuery) || skill.description.toLocaleLowerCase().includes(slashQuery));
 	(0, import_react.useLayoutEffect)(() => {
 		const editor = editorRef.current;
 		const pendingCaret = pendingCaretRef.current;
@@ -14037,6 +14196,8 @@ function NodePromptEditor({ value, assets, attachedSourceIds, onChange, onAttach
 	function refreshMention(nextValue, caret) {
 		setMention(activeAssetMention(nextValue, caret));
 		setActiveIndex(0);
+		setSlash(slashSkills?.length ? activeSlashSkill(nextValue, caret) : null);
+		setSlashIndex(0);
 	}
 	function chooseAsset(asset) {
 		if (!mention) return;
@@ -14052,6 +14213,19 @@ function NodePromptEditor({ value, assets, attachedSourceIds, onChange, onAttach
 			if (editorRef.current) setPromptCaretOffset(editorRef.current, nextCaret);
 		});
 	}
+	function chooseSkill(skill) {
+		if (!slash) return;
+		const inserted = `/${skill.name} `;
+		const nextValue = value.slice(0, slash.start) + inserted + value.slice(slash.end);
+		const nextCaret = slash.start + inserted.length;
+		pendingCaretRef.current = nextCaret;
+		onChange(nextValue);
+		setSlash(null);
+		requestAnimationFrame(() => {
+			editorRef.current?.focus();
+			if (editorRef.current) setPromptCaretOffset(editorRef.current, nextCaret);
+		});
+	}
 	function syncEditorValue(editor) {
 		const nextValue = promptValueFromDom(editor);
 		const nextCaret = promptCaretOffset(editor);
@@ -14061,117 +14235,162 @@ function NodePromptEditor({ value, assets, attachedSourceIds, onChange, onAttach
 	}
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "node-prompt-editor",
-		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-			ref: editorRef,
-			className: "node-prompt-input node-prompt-rich-input",
-			role: "textbox",
-			"aria-label": ariaLabel,
-			"aria-multiline": "true",
-			"data-placeholder": placeholder,
-			contentEditable: true,
-			suppressContentEditableWarning: true,
-			onFocus: (event) => {
-				if (isDefaultNodePrompt(value)) {
-					pendingCaretRef.current = 0;
-					onChange("");
-					refreshMention("", 0);
-					return;
-				}
-				refreshMention(value, promptCaretOffset(event.currentTarget));
-			},
-			onInput: (event) => syncEditorValue(event.currentTarget),
-			onClick: (event) => {
-				const caret = promptCaretOffset(event.currentTarget);
-				refreshMention(promptValueFromDom(event.currentTarget), caret);
-			},
-			onDoubleClick: (event) => {
-				if (!onExpand) return;
-				event.preventDefault();
-				event.stopPropagation();
-				setMention(null);
-				onExpand();
-			},
-			onPaste: (event) => {
-				const pastedFiles = Array.from(event.clipboardData?.files ?? []);
-				if (pastedFiles.length && onPasteFiles) {
-					event.preventDefault();
-					onPasteFiles(pastedFiles);
-					return;
-				}
-				event.preventDefault();
-				insertPromptText(event.currentTarget, event.clipboardData.getData("text/plain"));
-				syncEditorValue(event.currentTarget);
-			},
-			onKeyDown: (event) => {
-				if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && onSubmitShortcut) {
-					event.preventDefault();
-					onSubmitShortcut();
-					return;
-				}
-				if (mention) {
-					if (event.key === "Escape") {
-						event.preventDefault();
-						setMention(null);
+		children: [
+			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+				ref: editorRef,
+				className: "node-prompt-input node-prompt-rich-input",
+				role: "textbox",
+				"aria-label": ariaLabel,
+				"aria-multiline": "true",
+				"data-placeholder": placeholder,
+				contentEditable: true,
+				suppressContentEditableWarning: true,
+				onFocus: (event) => {
+					if (isDefaultNodePrompt(value)) {
+						pendingCaretRef.current = 0;
+						onChange("");
+						refreshMention("", 0);
 						return;
 					}
-					if (matchingAssets.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-						event.preventDefault();
-						const direction = event.key === "ArrowDown" ? 1 : -1;
-						setActiveIndex((current) => (current + direction + matchingAssets.length) % matchingAssets.length);
-						return;
-					}
-					if (matchingAssets.length && event.key === "Enter") {
-						event.preventDefault();
-						chooseAsset(matchingAssets[activeIndex] ?? matchingAssets[0]);
-						return;
-					}
-				}
-				if (event.key === "Enter") {
+					refreshMention(value, promptCaretOffset(event.currentTarget));
+				},
+				onInput: (event) => syncEditorValue(event.currentTarget),
+				onClick: (event) => {
+					const caret = promptCaretOffset(event.currentTarget);
+					refreshMention(promptValueFromDom(event.currentTarget), caret);
+				},
+				onDoubleClick: (event) => {
+					if (!onExpand) return;
 					event.preventDefault();
-					insertPromptText(event.currentTarget, "\n");
+					event.stopPropagation();
+					setMention(null);
+					onExpand();
+				},
+				onPaste: (event) => {
+					const pastedFiles = Array.from(event.clipboardData?.files ?? []);
+					if (pastedFiles.length && onPasteFiles) {
+						event.preventDefault();
+						onPasteFiles(pastedFiles);
+						return;
+					}
+					event.preventDefault();
+					insertPromptText(event.currentTarget, event.clipboardData.getData("text/plain"));
 					syncEditorValue(event.currentTarget);
-				}
-			},
-			onBlur: () => setMention(null)
-		}), mention && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-			className: "node-asset-mention-menu",
-			role: "listbox",
-			"aria-label": "引用画布素材",
-			children: matchingAssets.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-				className: "node-asset-mention-group",
-				"aria-label": "已连接素材",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "已连接素材" }), matchingAttachedAssets.length ? matchingAttachedAssets.map((asset, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-					type: "button",
-					role: "option",
-					"aria-selected": index === activeIndex,
-					className: index === activeIndex ? "is-active" : "",
-					onPointerDown: (event) => {
+				},
+				onKeyDown: (event) => {
+					if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && onSubmitShortcut) {
 						event.preventDefault();
-						event.stopPropagation();
-					},
-					onClick: () => chooseAsset(asset),
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(InputAssetPreview, { asset }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: asset.title })]
-				}, asset.sourceNodeId)) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无已连接素材" })]
-			}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
-				className: "node-asset-mention-group",
-				"aria-label": "画布素材",
-				children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "画布素材" }), matchingCanvasAssets.length ? matchingCanvasAssets.map((asset, index) => {
-					const optionIndex = matchingAttachedAssets.length + index;
-					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+						onSubmitShortcut();
+						return;
+					}
+					if (mention) {
+						if (event.key === "Escape") {
+							event.preventDefault();
+							setMention(null);
+							return;
+						}
+						if (matchingAssets.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+							event.preventDefault();
+							const direction = event.key === "ArrowDown" ? 1 : -1;
+							setActiveIndex((current) => (current + direction + matchingAssets.length) % matchingAssets.length);
+							return;
+						}
+						if (matchingAssets.length && event.key === "Enter") {
+							event.preventDefault();
+							chooseAsset(matchingAssets[activeIndex] ?? matchingAssets[0]);
+							return;
+						}
+					}
+					if (slash) {
+						if (event.key === "Escape") {
+							event.preventDefault();
+							setSlash(null);
+							return;
+						}
+						if (matchingSkills.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+							event.preventDefault();
+							const direction = event.key === "ArrowDown" ? 1 : -1;
+							setSlashIndex((current) => (current + direction + matchingSkills.length) % matchingSkills.length);
+							return;
+						}
+						if (matchingSkills.length && (event.key === "Enter" || event.key === "Tab")) {
+							event.preventDefault();
+							chooseSkill(matchingSkills[slashIndex] ?? matchingSkills[0]);
+							return;
+						}
+					}
+					if (event.key === "Enter") {
+						event.preventDefault();
+						insertPromptText(event.currentTarget, "\n");
+						syncEditorValue(event.currentTarget);
+					}
+				},
+				onBlur: () => {
+					setMention(null);
+					setSlash(null);
+				}
+			}),
+			mention && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+				className: "node-asset-mention-menu",
+				role: "listbox",
+				"aria-label": "引用画布素材",
+				children: matchingAssets.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+					className: "node-asset-mention-group",
+					"aria-label": "已连接素材",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "已连接素材" }), matchingAttachedAssets.length ? matchingAttachedAssets.map((asset, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 						type: "button",
 						role: "option",
-						"aria-selected": optionIndex === activeIndex,
-						className: optionIndex === activeIndex ? "is-active" : "",
+						"aria-selected": index === activeIndex,
+						className: index === activeIndex ? "is-active" : "",
 						onPointerDown: (event) => {
 							event.preventDefault();
 							event.stopPropagation();
 						},
 						onClick: () => chooseAsset(asset),
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(InputAssetPreview, { asset }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: asset.title })]
-					}, asset.sourceNodeId);
-				}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无其他画布素材" })]
-			})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无匹配素材" })
-		})]
+					}, asset.sourceNodeId)) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无已连接素材" })]
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+					className: "node-asset-mention-group",
+					"aria-label": "画布素材",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "画布素材" }), matchingCanvasAssets.length ? matchingCanvasAssets.map((asset, index) => {
+						const optionIndex = matchingAttachedAssets.length + index;
+						return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							role: "option",
+							"aria-selected": optionIndex === activeIndex,
+							className: optionIndex === activeIndex ? "is-active" : "",
+							onPointerDown: (event) => {
+								event.preventDefault();
+								event.stopPropagation();
+							},
+							onClick: () => chooseAsset(asset),
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(InputAssetPreview, { asset }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: asset.title })]
+						}, asset.sourceNodeId);
+					}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无其他画布素材" })]
+				})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无匹配素材" })
+			}),
+			slash && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+				className: "node-asset-mention-menu",
+				role: "listbox",
+				"aria-label": "引用技能",
+				children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
+					className: "node-asset-mention-group",
+					"aria-label": "工作区技能",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "技能（回车选用）" }), matchingSkills.length ? matchingSkills.map((skill, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						role: "option",
+						"aria-selected": index === slashIndex,
+						className: "node-skill-option" + (index === slashIndex ? " is-active" : ""),
+						onPointerDown: (event) => {
+							event.preventDefault();
+							event.stopPropagation();
+						},
+						onClick: () => chooseSkill(skill),
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: skill.name })
+					}, skill.name)) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "暂无匹配技能" })]
+				})
+			})
+		]
 	});
 }
 function PromptEditorDialog({ nodeTitle, value, assets, attachedSourceIds, onAttach, onCancel, onSave }) {
@@ -14253,13 +14472,91 @@ function PromptEditorDialog({ nodeTitle, value, assets, attachedSourceIds, onAtt
 		})
 	}), document.body);
 }
-function NodeInputAssets({ assets, constraints, onRemove, onUpload }) {
+function useChipReorderDrag(onMove) {
+	const dragRef = (0, import_react.useRef)(null);
+	const [dragIndex, setDragIndex] = (0, import_react.useState)(null);
+	const moveRef = (0, import_react.useRef)(onMove);
+	moveRef.current = onMove;
+	function endChipDrag() {
+		dragRef.current = null;
+		setDragIndex(null);
+	}
+	function chipDragProps(index) {
+		return {
+			"data-chip-index": index,
+			onPointerDown: (event) => {
+				if (event.pointerType === "mouse" && event.button !== 0) return;
+				dragRef.current = {
+					pointerId: event.pointerId,
+					index,
+					startX: event.clientX,
+					startY: event.clientY,
+					active: false
+				};
+			},
+			onPointerMove: (event) => {
+				const state = dragRef.current;
+				if (!state || state.pointerId !== event.pointerId) return;
+				if (!state.active) {
+					if (Math.hypot(event.clientX - state.startX, event.clientY - state.startY) < 4) return;
+					state.active = true;
+					event.currentTarget.setPointerCapture(event.pointerId);
+					setDragIndex(state.index);
+				}
+				event.stopPropagation();
+				event.preventDefault();
+				const container = event.currentTarget.parentElement;
+				if (!container) return;
+				const chips = Array.from(container.querySelectorAll("[data-chip-index]"));
+				let hover = chips.length - 1;
+				for (const chip of chips) {
+					const rect = chip.getBoundingClientRect();
+					if (event.clientX < rect.left + rect.width / 2) {
+						hover = Number(chip.dataset.chipIndex);
+						break;
+					}
+				}
+				if (hover !== state.index) {
+					moveRef.current(state.index, hover);
+					state.index = hover;
+					setDragIndex(hover);
+				}
+			},
+			onPointerUp: (event) => {
+				const state = dragRef.current;
+				if (!state || state.pointerId !== event.pointerId) return;
+				if (state.active) event.stopPropagation();
+				endChipDrag();
+			},
+			onPointerCancel: endChipDrag,
+			onLostPointerCapture: endChipDrag
+		};
+	}
+	return {
+		dragIndex,
+		chipDragProps
+	};
+}
+function NodeInputAssets({ assets, constraints, onRemove, onUpload, onReorder }) {
 	const [expanded, setExpanded] = (0, import_react.useState)(false);
 	const [uploading, setUploading] = (0, import_react.useState)(false);
 	const validation = validateModelInputAssets(constraints, assets);
 	const visibleAssets = expanded ? assets : assets.slice(0, 12);
 	const hiddenCount = Math.max(0, assets.length - visibleAssets.length);
 	const canUpload = constraints.maxTotal > 0 && assets.length < constraints.maxTotal;
+	const { dragIndex, chipDragProps } = useChipReorderDrag(handleReorder);
+	function handleReorder(from, to) {
+		const fromId = visibleAssets[from]?.edgeId;
+		const toId = visibleAssets[to]?.edgeId;
+		if (!fromId || !toId || fromId === toId) return;
+		const ordered = assets.map((asset) => asset.edgeId);
+		const fromFull = ordered.indexOf(fromId);
+		const toFull = ordered.indexOf(toId);
+		if (fromFull < 0 || toFull < 0) return;
+		ordered.splice(fromFull, 1);
+		ordered.splice(toFull, 0, fromId);
+		onReorder(ordered);
+	}
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", {
 		className: `node-input-assets ${validation.valid ? "" : "has-error"}`,
 		"aria-label": "输入素材",
@@ -14277,11 +14574,12 @@ function NodeInputAssets({ assets, constraints, onRemove, onUpload }) {
 				children: "当前模型未开放参考素材"
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: "node-input-asset-grid",
-				children: [visibleAssets.map((asset) => {
+				children: [visibleAssets.map((asset, index) => {
 					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-						className: "node-input-asset-card",
+						className: `node-input-asset-card ${dragIndex === index ? "is-chip-drag" : ""}`,
 						"data-kind": asset.kind,
 						"aria-label": asset.title,
+						...chipDragProps(index),
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(InputAssetPreview, { asset }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
 							"aria-label": `移除${asset.title}`,
@@ -14421,7 +14719,7 @@ function NodeWorkbench({ node }) {
 		})
 	});
 }
-function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, panMode, capabilities, models, canvasAssets = [], inputAssets = [], inputTextContexts = [], mediaPlugins = [], pluginRuntimeUrl: currentPluginRuntimeUrl, onSelect, onMoveStart, onMovePreview, onMove, onUpdate, onSizeChange, onConnectionStart, onAttachInputAsset, onRemoveInputAsset, onUploadInputAssets, connectionDataType, onRun, onRerunBranch, onDelete, onOpenPlugin, onOpenMediaPlugin }) {
+function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, panMode, capabilities, models, canvasAssets = [], inputAssets = [], inputTextContexts = [], mediaPlugins = [], pluginRuntimeUrl: currentPluginRuntimeUrl, onSelect, onMoveStart, onMovePreview, onMove, onUpdate, onSizeChange, onConnectionStart, onAttachInputAsset, onRemoveInputAsset, onReorderInputAssets, onUploadInputAssets, connectionDataType, onRun, onRerunBranch, onRemake, onDelete, onOpenPlugin, onOpenMediaPlugin }) {
 	const cardRef = (0, import_react.useRef)(null);
 	const pluginPreviewFrameRef = (0, import_react.useRef)(null);
 	const pluginPreviewHostRef = (0, import_react.useRef)(null);
@@ -14498,13 +14796,14 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 		const fallbackExtension = node.kind === "video" ? "mp4" : node.kind === "audio" ? "mp3" : "png";
 		const base = (node.title || fallbackLabel).replace(/[\\/:*?"<>|]/g, "_").trim() || fallbackLabel;
 		const extension = (mediaSourceUrl.split(".").pop() ?? "").split("?")[0];
-		return /^[a-z0-9]{1,10}$/i.test(extension) ? `${base}.${extension.toLowerCase()}` : `${base}.${fallbackExtension}`;
+		const suffix = downloadUniqueSuffix();
+		return /^[a-z0-9]{1,10}$/i.test(extension) ? `${base}-${suffix}.${extension.toLowerCase()}` : `${base}-${suffix}.${fallbackExtension}`;
 	})();
 	const isEmptyResultPlaceholder = role === "result" && !hasResultOutput;
 	const isSizedTextResult = role === "result" && node.kind === "text" && hasResultOutput;
-	const hasTextResultActions = selected && role === "result" && node.kind === "text" && hasResultOutput;
-	const hasMediaActions = selected && (node.kind === "image" || node.kind === "video") && hasMediaAssetOutput;
-	const hasAudioActions = selected && node.kind === "audio" && hasMediaAssetOutput;
+	const hasTextResultActions = selected && !multiSelected && role === "result" && node.kind === "text" && hasResultOutput;
+	const hasMediaActions = selected && !multiSelected && (node.kind === "image" || node.kind === "video") && hasMediaAssetOutput;
+	const hasAudioActions = selected && !multiSelected && node.kind === "audio" && hasMediaAssetOutput;
 	const isExecutionNode = role === "execution";
 	const hasResultTextSurface = role === "result" && hasResultOutput && (node.kind === "text" || (node.kind === "image" || node.kind === "video") && Boolean(node.result?.trim()) && !hasMediaAssetOutput);
 	const hideSucceededResultStatus = role === "result" && node.status === "succeeded" && (node.kind === "text" || node.kind === "image" || node.kind === "video" || node.kind === "audio");
@@ -15113,11 +15412,21 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 						] })]
 					})
 				}),
-				selected && mediaUrl && (node.kind === "image" || node.kind === "video" || node.kind === "audio") && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("nav", {
+				selected && !multiSelected && mediaUrl && (node.kind === "image" || node.kind === "video" || node.kind === "audio") && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("nav", {
 					className: "result-action-nav",
 					"aria-label": node.kind === "video" ? "视频功能导航" : node.kind === "audio" ? "音频功能导航" : "图片功能导航",
 					onPointerDown: (event) => event.stopPropagation(),
 					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							className: "result-text-action",
+							title: "素材与提示词同步到对话器做同款",
+							onClick: (event) => {
+								event.stopPropagation();
+								onRemake();
+							},
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { size: 14 }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "做同款" })]
+						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)(AssetPluginMenu, {
 							plugins: mediaPlugins,
 							mediaKind: node.kind,
@@ -15415,6 +15724,16 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 				"aria-label": node.kind === "video" ? "视频功能导航" : node.kind === "audio" ? "音频功能导航" : "图片功能导航",
 				onPointerDown: (event) => event.stopPropagation(),
 				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+						type: "button",
+						className: "result-text-action",
+						title: "素材与提示词同步到对话器做同款",
+						onClick: (event) => {
+							event.stopPropagation();
+							onRemake();
+						},
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { size: 14 }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "做同款" })]
+					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(AssetPluginMenu, {
 						plugins: mediaPlugins,
 						mediaKind: node.kind,
@@ -15459,6 +15778,16 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 				"aria-label": "音频功能导航",
 				onPointerDown: (event) => event.stopPropagation(),
 				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+						type: "button",
+						className: "result-text-action",
+						title: "素材与提示词同步到对话器做同款",
+						onClick: (event) => {
+							event.stopPropagation();
+							onRemake();
+						},
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { size: 14 }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "做同款" })]
+					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(AssetPluginMenu, {
 						plugins: mediaPlugins,
 						mediaKind: "audio",
@@ -15536,7 +15865,11 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 					})
 				})]
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
-				role === "result" && node.kind === "text" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+				role === "result" && node.kind === "text" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+					className: "text-result-drag-handle node-drag-handle",
+					"aria-hidden": "true",
+					title: "拖动移动节点"
+				}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 					className: "node-workbench-content",
 					children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("textarea", {
 						className: "text-result-editor",
@@ -15548,7 +15881,7 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 						},
 						onChange: (event) => updateTextResult(event.target.value)
 					})
-				}),
+				})] }),
 				(role === "execution" || selected && role === "result" && node.kind !== "text") && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "node-workbench-content",
 					children: [
@@ -15557,7 +15890,8 @@ function NodeCard({ node, canvasId, workspaceId, selected, multiSelected, zoom, 
 							assets: inputAssets,
 							constraints: inputConstraints,
 							onRemove: onRemoveInputAsset,
-							onUpload: onUploadInputAssets
+							onUpload: onUploadInputAssets,
+							onReorder: onReorderInputAssets
 						}),
 						role !== "result" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(NodePromptEditor, {
 							value: node.prompt,
@@ -17303,6 +17637,306 @@ var DESKTOP_OPERATE_SCHEMA = {
 		}
 	}
 };
+var DESKTOP_INSPECT_SCHEMA = {
+	type: "function",
+	function: {
+		name: "desktop_inspect",
+		description: "整桌控件语义识别（Windows UI Automation）：action=windows 枚举顶层窗口拿 pid；tree dump 某窗口控件树；find 按 name/automationId/controlType 查控件（返回可点击矩形）；invoke 语义点击、setvalue 语义赋值、focus 聚焦（比像素坐标抗分辨率/布局变化）。先 windows→tree/find 拿语义定位，再 invoke/setvalue 操作。变更类动作需老板开启开关。",
+		parameters: {
+			type: "object",
+			required: ["action"],
+			properties: {
+				action: {
+					type: "string",
+					enum: [
+						"windows",
+						"tree",
+						"find",
+						"invoke",
+						"setvalue",
+						"focus"
+					]
+				},
+				pid: {
+					type: "number",
+					description: "目标窗口 pid（来自 windows 结果）"
+				},
+				name: {
+					type: "string",
+					description: "控件/窗口名称（包含匹配）"
+				},
+				automationId: {
+					type: "string",
+					description: "控件 AutomationId（精确匹配，最稳）"
+				},
+				controlType: {
+					type: "string",
+					description: "控件类型：Button/Edit/CheckBox/MenuItem/..."
+				},
+				depth: {
+					type: "number",
+					description: "tree 递归深度（默认 6）"
+				},
+				max: {
+					type: "number",
+					description: "返回上限（默认 80）"
+				},
+				text: {
+					type: "string",
+					description: "setvalue 的文本"
+				}
+			}
+		}
+	}
+};
+var WEB_NAVIGATE_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_navigate",
+		description: "外部浏览器导航：把 URL 开进系统 Edge/Chrome（独立于内嵌浏览器，走 CDP，复用已登录会话）。适合需登录态的真实网站操作/采集/端到端验证；首次调用会拉起浏览器。",
+		parameters: {
+			type: "object",
+			required: ["url"],
+			properties: { url: {
+				type: "string",
+				description: "目标网址（含 http/https 协议）"
+			} }
+		}
+	}
+};
+var WEB_DOM_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_dom",
+		description: "外部浏览器读取：mode=dom 返回 URL/标题/正文摘要/可交互元素（含 CSS 选择器+中心坐标）；mode=text 返回纯正文。web_operate 前先用它拿选择器。",
+		parameters: {
+			type: "object",
+			properties: {
+				mode: {
+					type: "string",
+					enum: ["dom", "text"],
+					description: "dom=结构快照（默认），text=纯正文"
+				},
+				max: {
+					type: "number",
+					description: "text 模式最大字符数（默认 6000）"
+				}
+			}
+		}
+	}
+};
+var WEB_SCREENSHOT_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_screenshot",
+		description: "外部浏览器截图：截当前页可视区，图片入模型上下文（看图验收外部网页效果）。无视觉能力时自动降级为 DOM 快照。",
+		parameters: {
+			type: "object",
+			properties: {}
+		}
+	}
+};
+var WEB_OPERATE_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_operate",
+		description: "外部浏览器操作：click/dblclick/type/scroll/key。优先用 selector（CSS 选择器，DOM 路线抗布局变化，来自 web_dom）；无选择器时用 x/y 视口坐标兜底。type 可带 clear 先清空。操作后接 web_screenshot 看结果，形成 操作→看图 闭环。",
+		parameters: {
+			type: "object",
+			required: ["op"],
+			properties: {
+				op: {
+					type: "string",
+					enum: [
+						"click",
+						"dblclick",
+						"type",
+						"scroll",
+						"key"
+					]
+				},
+				selector: {
+					type: "string",
+					description: "CSS 选择器（优先）"
+				},
+				x: {
+					type: "number",
+					description: "视口坐标 x（选择器缺省时兜底）"
+				},
+				y: {
+					type: "number",
+					description: "视口坐标 y"
+				},
+				text: {
+					type: "string",
+					description: "op=type 输入内容"
+				},
+				key: {
+					type: "string",
+					description: "op=key 按键（enter/tab/escape/单字符）"
+				},
+				clear: {
+					type: "boolean",
+					description: "op=type 时先清空原值"
+				},
+				dx: { type: "number" },
+				dy: { type: "number" }
+			}
+		}
+	}
+};
+var WEB_EVAL_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_eval",
+		description: "外部浏览器执行 JS：在页面上下文运行脚本并取回值（returnByValue）。用于精确提取数据/断言页面状态。awaitPromise=true 时等待 Promise。",
+		parameters: {
+			type: "object",
+			required: ["js"],
+			properties: {
+				js: {
+					type: "string",
+					description: "要执行的 JS 表达式"
+				},
+				awaitPromise: { type: "boolean" }
+			}
+		}
+	}
+};
+var WEB_RECORD_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_record",
+		description: "外部浏览器演示录制转技能：op=start 开始录制（此后老板在浏览器里的点击/输入/回车/跳转被自动捕获为步骤）；op=stop 停止并取回步骤；op=save 把最近录制存成命名技能（配 name）；op=list 列出已存技能；op=delete 删除技能（配 name）。录好的技能可用 web_replay 反复重放。",
+		parameters: {
+			type: "object",
+			required: ["op"],
+			properties: {
+				op: {
+					type: "string",
+					enum: [
+						"start",
+						"stop",
+						"save",
+						"list",
+						"delete"
+					]
+				},
+				name: {
+					type: "string",
+					description: "save/delete 的技能名"
+				}
+			}
+		}
+	}
+};
+var WEB_REPLAY_SCHEMA = {
+	type: "function",
+	function: {
+		name: "web_replay",
+		description: "外部浏览器回放：重放已录制的演示技能。优先用 name 回放已存技能；也可直接传 steps 内联步骤。每步按 选择器优先定位（抗布局变化）、坐标兜底。回放后可用 web_screenshot 看结果。",
+		parameters: {
+			type: "object",
+			properties: {
+				name: {
+					type: "string",
+					description: "已存技能名（优先）"
+				},
+				stepDelay: {
+					type: "number",
+					description: "每步间隔毫秒（默认 250）"
+				},
+				steps: {
+					type: "array",
+					description: "内联步骤（无 name 时用）",
+					items: {
+						type: "object",
+						properties: {
+							type: {
+								type: "string",
+								enum: [
+									"navigate",
+									"click",
+									"type",
+									"key"
+								]
+							},
+							url: { type: "string" },
+							selector: { type: "string" },
+							value: { type: "string" },
+							text: { type: "string" },
+							key: { type: "string" },
+							x: { type: "number" },
+							y: { type: "number" }
+						}
+					}
+				}
+			}
+		}
+	}
+};
+var REVIEW_CODE_SCHEMA = {
+	type: "function",
+	function: {
+		name: "review_code",
+		description: "多维代码审查（Auto Review）：对当前代码产物做一次资深工程师视角的审查，覆盖 正确性/安全/健壮性/性能/可维护性 五个维度，按 critical/major/minor 分级给出问题与修法。写完代码后应主动调用；发现 critical/major 问题就修到干净再交付。可用 file 只审单个文件、focus 指定重点。",
+		parameters: {
+			type: "object",
+			properties: {
+				file: {
+					type: "string",
+					description: "只审这个文件（缺省审全部产物）"
+				},
+				focus: {
+					type: "string",
+					description: "审查重点（可选）"
+				}
+			}
+		}
+	}
+};
+var SSH_EXEC_SCHEMA = {
+	type: "function",
+	function: {
+		name: "ssh_exec",
+		description: "SSH 远程执行：在远程主机上跑命令并取回 stdout/stderr/退出码（走系统 OpenSSH 客户端）。只支持密钥认证（不接收/不存密码）；需老板开启「允许小逻控制本机」开关。op=test 先探连通性；op=exec 执行 command。可用 user/port/identityFile 指定连接参数。适合远程部署、查日志、跑远端脚本。",
+		parameters: {
+			type: "object",
+			required: ["host"],
+			properties: {
+				host: {
+					type: "string",
+					description: "远程主机名或 IP"
+				},
+				command: {
+					type: "string",
+					description: "op=exec 时要在远程执行的命令"
+				},
+				user: {
+					type: "string",
+					description: "登录用户（可选）"
+				},
+				port: {
+					type: "number",
+					description: "端口（默认 22）"
+				},
+				identityFile: {
+					type: "string",
+					description: "私钥文件路径（可选）"
+				},
+				timeoutMs: {
+					type: "number",
+					description: "超时毫秒（默认 30000）"
+				},
+				op: {
+					type: "string",
+					enum: ["exec", "test"],
+					description: "exec=执行命令（默认）test=只探连通"
+				}
+			}
+		}
+	}
+};
 /**
 * 组装本轮可用工具 schema：
 * 基础五件（write_code/preview_code/generate_media/ask_user/debate_ideas）常注册，
@@ -17352,6 +17986,27 @@ function buildChatToolSchemas(caps) {
 			}
 		}
 	};
+	const INSTALL_SKILL_SCHEMA = {
+		type: "function",
+		function: {
+			name: "install_skill",
+			description: "从共享技能库安装技能到本工作区（一步落盘 skills/<name>/SKILL.md，装完是私有技能、仅你可用，下轮起 /名字 或 load_skill 可用）。老板说\"安装/装一下/给我 XX 技能\"时用；共享技能必须先安装才能使用。严禁用 run_command/write_file 手动建文件夹模拟安装。本地已有同名技能会拒绝。",
+			parameters: {
+				type: "object",
+				properties: {
+					name: {
+						type: "string",
+						description: "技能名（共享技能库里的精确名字，kebab-case）"
+					},
+					publisherId: {
+						type: "string",
+						description: "可选：发布者 id（同名技能来自不同发布者时消歧）"
+					}
+				},
+				required: ["name"]
+			}
+		}
+	};
 	const SAVE_SKILL_SCHEMA = {
 		type: "function",
 		function: {
@@ -17393,9 +18048,12 @@ function buildChatToolSchemas(caps) {
 	if (caps.serviceEnabled) schemas.push(START_SERVICE_SCHEMA, STOP_SERVICE_SCHEMA, SERVICE_STATUS_SCHEMA, SETUP_SERVICE_SCHEMA);
 	if (caps.gitEnabled) schemas.push(GIT_SCHEMA);
 	if (caps.visionEnabled) schemas.push(INSPECT_SCREEN_SCHEMA, OPERATE_UI_SCHEMA, READ_BROWSER_DOM_SCHEMA, NAVIGATE_BROWSER_SCHEMA);
-	if (caps.desktopEnabled) schemas.push(DESKTOP_SCREENSHOT_SCHEMA, DESKTOP_OPERATE_SCHEMA);
+	if (caps.desktopEnabled) schemas.push(DESKTOP_SCREENSHOT_SCHEMA, DESKTOP_OPERATE_SCHEMA, DESKTOP_INSPECT_SCHEMA);
+	if (caps.webEnabled) schemas.push(WEB_NAVIGATE_SCHEMA, WEB_DOM_SCHEMA, WEB_SCREENSHOT_SCHEMA, WEB_OPERATE_SCHEMA, WEB_EVAL_SCHEMA, WEB_RECORD_SCHEMA, WEB_REPLAY_SCHEMA);
+	if (caps.reviewEnabled) schemas.push(REVIEW_CODE_SCHEMA);
+	if (caps.sshEnabled) schemas.push(SSH_EXEC_SCHEMA);
 	if (caps.browserEnabled) schemas.push(BROWSE_PAGE_SCHEMA);
-	if (caps.fsEnabled) schemas.push(LOAD_SKILL_SCHEMA, SAVE_SKILL_SCHEMA);
+	if (caps.fsEnabled) schemas.push(LOAD_SKILL_SCHEMA, SAVE_SKILL_SCHEMA, INSTALL_SKILL_SCHEMA);
 	if (caps.fsEnabled && caps.commandEnabled) schemas.push(INSTALL_PLUGIN_SCHEMA);
 	if (caps.fsEnabled) schemas.push(REPO_MAP_SCHEMA);
 	for (const t of caps.mcpTools ?? []) schemas.push({
@@ -17648,6 +18306,7 @@ function buildXiaoluoChatPrompt(capabilityCatalog, caps) {
 - 老板机器是 Windows：别用 node -e 内联长脚本（引号转义易碎），把脚本 write_file 成 .cjs 文件再 node xxx.cjs 跑；给静态目录起服务优先自己写 server.js（node 内置 http 模块）再 start_service 起；起服务前先确认入口文件真实存在且内容非空。
 - 环境自修纪律：解释器/工具缺失或是假身（如 python 指向 WindowsApps 商店占位）时自己修，别摊手甩给老板——① where <命令> + --version 确诊；② winget install -e --id <包名> 装真的（会自动弹框请老板批准，别绕过）；③ 装完当前进程 PATH 可能不刷新：where 仍指旧路径就到 %LOCALAPPDATA% 的 Programs 目录找真实路径用绝对路径调用；④ 老板不批安装才换等价路子（如静态服务改 node 内置 http）。
 - 能力清单【技能库】是沉淀好的做法：任务对得上就先 load_skill 读正文照做；老板说\"记住这套做法\"时用 save_skill 沉淀（名字 kebab-case、正文写具体步骤；做法带验收命令的写进 verify 字段，写盘后系统自动强制跑）。
+- 共享技能需先安装才能用：老板想用某个共享技能时先 install_skill 一步装为私有技能（仅老板可用），再 load_skill 读正文照做；严禁 run_command/write_file 手动建 skills/ 文件夹模拟安装。
 - 插件生态：装插件用 install_plugin（指向工作区里的 zip，需 plugin.json 清单 name/version/description，技能放 skills/，装完进技能库）；已装插件在 plugins/<名字>/，其技能同样 load_skill 按名加载。技能 SKILL.md 的 frontmatter 可声明 verify（验收命令）与 verifyMatch（参数正则），加载后每次写盘系统自动强制跑验收——有验收步骤的技能务必声明，别靠自觉。
 - 生成图片/视频/音频/文档 → generate_media：直接派发，完成后告诉老板产物在哪。
 - 需要查资料 → web_search / browse_page（可用时）；查到的事实材料会带 #rN 编号入证据账本。
@@ -17696,7 +18355,10 @@ function buildRuntimeCapsSection(caps) {
 	put(caps.fs, "read_file / write_file / edit_file / list_dir / grep_files / find_files 操作工作区；repo_map 仓库地图；load_skill / save_skill 技能库；package_program 打包");
 	put(caps.git, "git 集成（status/log/diff/commit/push，push 需老板批准）");
 	put(caps.vision, "inspect_screen 截屏自检（预览过页面就必须自己截图看效果，禁止问老板）/ operate_ui 真鼠标点击输入滚动（操作后回看确认）/ read_browser_dom 页面快照 / navigate_browser 自主导航浏览器页签");
-	put(caps.desktop, "desktop_screenshot 整桌截屏 / desktop_operate 整桌键鼠（默认关闭，需老板在客户端设置开启「允许小逻控制本机」）");
+	put(caps.desktop, "desktop_screenshot 整桌截屏 / desktop_operate 整桌键鼠 / desktop_inspect 桌面控件语义识别（UI Automation：枚举窗口→dump控件树→按 名称/AutomationId/控件类型 定位并 invoke点击/setvalue赋值/focus聚焦，比像素坐标抗分辨率与布局变化）（默认关闭，需老板在客户端设置开启「允许小逻控制本机」）");
+	put(caps.web, "web_navigate 打开系统浏览器（Edge/Chrome，复用已登录会话）/ web_dom 读页面结构与可点元素选择器 / web_screenshot 截图看图验收 / web_operate 按 CSS 选择器点击输入滚动 / web_eval 执行页面 JS 取值 / web_record 录制老板的浏览器演示转成可复用技能（start/stop/save/list/delete）/ web_replay 按技能名或内联步骤回放（外部浏览器口，走 CDP，需老板开启「允许小逻控制本机」）");
+	put(caps.review, "review_code 多维代码审查（Auto Review）：对当前产物做 正确性/安全/健壮性/性能/可维护性 五维审查，按 critical/major/minor 分级给问题与修法；写完代码应主动调用，发现 critical/major 就修到干净再交付");
+	put(caps.ssh, "ssh_exec SSH 远程执行：在远程主机跑命令取回 stdout/stderr/退出码（系统 OpenSSH，只密钥认证不存密码，op=test 探连通/op=exec 执行；需老板开启「允许小逻控制本机」）");
 	put(caps.browser, "browse_page 浏览网页（含本机 127.0.0.1 服务探活）");
 	put(caps.webSearch, "web_search 联网搜索");
 	put(caps.memory, "add_memory 长期记忆（跨对话记住稳定事实；反思/过程/「这轮没值得记」类内容禁止入账，没有值得记的就不调用）");
@@ -18646,6 +19308,9 @@ var ChatAgent = class {
 				service: Boolean(ports.service),
 				vision: Boolean(ports.vision),
 				desktop: Boolean(ports.desktop),
+				web: Boolean(ports.webdriver),
+				review: true,
+				ssh: Boolean(ports.ssh),
 				browser: Boolean(ports.browser),
 				memory: Boolean(ports.memory),
 				deploy: Boolean(ports.deployProgram),
@@ -18697,6 +19362,9 @@ var ChatAgent = class {
 			serviceEnabled: Boolean(ports.service),
 			visionEnabled: Boolean(ports.vision),
 			desktopEnabled: Boolean(ports.desktop),
+			webEnabled: Boolean(ports.webdriver),
+			reviewEnabled: true,
+			sshEnabled: Boolean(ports.ssh),
 			browserEnabled: Boolean(ports.browser),
 			memoryEnabled: Boolean(ports.memory),
 			deployEnabled: Boolean(ports.deployProgram),
@@ -19083,6 +19751,16 @@ var ChatAgent = class {
 			case "navigate_browser": return await this.execNavigateBrowser(call);
 			case "desktop_screenshot": return await this.execDesktopScreenshot(call);
 			case "desktop_operate": return await this.execDesktopOperate(call);
+			case "desktop_inspect": return await this.execDesktopInspect(call);
+			case "web_navigate": return await this.execWebNavigate(call);
+			case "web_dom": return await this.execWebDom(call);
+			case "web_screenshot": return await this.execWebScreenshot(call);
+			case "web_operate": return await this.execWebOperate(call);
+			case "web_eval": return await this.execWebEval(call);
+			case "web_record": return await this.execWebRecord(call);
+			case "web_replay": return await this.execWebReplay(call);
+			case "review_code": return await this.execReviewCode(call);
+			case "ssh_exec": return await this.execSshExec(call);
 			case "browse_page": return await this.execBrowsePage(call);
 			case "deploy_program": return await this.execDeployProgram(call);
 			case "package_program": return await this.execPackageProgram(call);
@@ -19092,6 +19770,7 @@ var ChatAgent = class {
 			case "edit_file": return await this.execEditFile(call);
 			case "load_skill": return await this.execLoadSkill(call);
 			case "save_skill": return await this.execSaveSkill(call);
+			case "install_skill": return await this.execInstallSkill(call);
 			case "install_plugin": return await this.execInstallPlugin(call);
 			case "repo_map": return await this.execRepoMap(call);
 			case "debate_ideas": return await this.execDebate(call);
@@ -19180,6 +19859,160 @@ var ChatAgent = class {
 		});
 		return summary;
 	}
+	async execDesktopInspect(call) {
+		const { ports } = this.opts;
+		if (!ports.uia) return "当前环境未接入桌面控件语义口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const out = await ports.uia.inspect(args);
+		if (args.action === "invoke" || args.action === "setvalue" || args.action === "focus") ports.postUI("status", "桌面控件语义操作：" + args.action + (args.name ? "（" + args.name + "）" : ""), {
+			tool: "desktop_inspect",
+			ok: true
+		});
+		return out;
+	}
+	async execWebNavigate(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const url = String(args.url ?? "").trim();
+		if (!url) return this.trackFailure("web_navigate", "url 为空");
+		const out = await ports.webdriver.navigate(url);
+		ports.postUI("status", "外部浏览器导航：" + url, {
+			tool: "web_navigate",
+			ok: true
+		});
+		return out;
+	}
+	async execWebDom(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const args = call.arguments;
+		return await ports.webdriver.dom(args.mode ?? "dom", args.max);
+	}
+	async execWebScreenshot(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const shot = await ports.webdriver.capture();
+		if (ports.vision?.modelVision === false) {
+			const dom = await ports.webdriver.dom("dom").catch(() => "");
+			this.visionCheckedThisTurn = true;
+			return "外部浏览器截图已拿到但当前模型无视觉能力，已降级为 DOM 快照：" + dom.slice(0, 1800);
+		}
+		this.pendingVisionImages.push({
+			mimeType: "image/png",
+			dataUrl: shot.dataUrl
+		});
+		this.visionCheckedThisTurn = true;
+		ports.postUI("status", "外部浏览器截图完成（" + shot.width + "×" + shot.height + "）", {
+			tool: "web_screenshot",
+			ok: true
+		});
+		return "外部浏览器截图完成（" + shot.width + "×" + shot.height + "）。图片将随下一条消息附上；web_operate 坐标以此为准。";
+	}
+	async execWebOperate(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const summary = await ports.webdriver.operate(args);
+		ports.postUI("status", "外部浏览器操作：" + args.op + (args.selector ? "（" + args.selector + "）" : ""), {
+			tool: "web_operate",
+			ok: true
+		});
+		return summary;
+	}
+	async execWebEval(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const js = String(args.js ?? "").trim();
+		if (!js) return this.trackFailure("web_eval", "js 为空");
+		return await ports.webdriver.eval(js, args.awaitPromise);
+	}
+	async execWebRecord(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const out = await ports.webdriver.record(args);
+		if (args.op === "start" || args.op === "stop" || args.op === "save") ports.postUI("status", "录制：" + args.op, {
+			tool: "web_record",
+			ok: true
+		});
+		return out;
+	}
+	async execWebReplay(call) {
+		const { ports } = this.opts;
+		if (!ports.webdriver) return "当前环境未接入外部浏览器口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const out = await ports.webdriver.replay(args);
+		ports.postUI("status", "回放技能" + (args.name ? "：" + args.name : ""), {
+			tool: "web_replay",
+			ok: true
+		});
+		return out;
+	}
+	/** Auto Review：多维代码审查（正确性/安全/健壮性/性能/可维护性），LLM 出结构化发现 */
+	async execReviewCode(call) {
+		const { ports } = this.opts;
+		if (!this.lastCode || !this.lastCode.files.length) return "当前对话还没有代码产物：先用 write_code 产出程序再审查。";
+		const args = call.arguments || {};
+		const wanted = args.file?.trim();
+		const files = wanted ? this.lastCode.files.filter((f) => f.path === wanted) : this.lastCode.files;
+		if (!files.length) return `产物里没有 "${wanted}" 这个文件。当前产物：${this.lastCode.files.map((f) => f.path).join("、")}`;
+		const MAX = 4e4;
+		let body = files.map((f) => `=== ${f.path} ===\n${f.content}`).join("\n\n");
+		if (body.length > MAX) body = body.slice(0, MAX) + "\n[代码过长，仅审查前 40000 字符]";
+		ports.postUI("status", "正在多维审查代码…", {
+			tool: "review_code",
+			ok: true
+		});
+		let review;
+		try {
+			const resp = await ports.callLLM({
+				messages: [{
+					role: "system",
+					content: REVIEW_PROMPT
+				}, {
+					role: "user",
+					content: (args.focus ? "[审查重点] " + args.focus + "\n\n" : "") + "[代码产物]\n" + body
+				}],
+				tools: [],
+				model: this.opts.model
+			});
+			this.usedTokens += resp.usage.promptTokens + resp.usage.completionTokens;
+			review = parseReview(resp.content);
+		} catch (e) {
+			return this.trackFailure("review_code", "审查调用失败：" + (e instanceof Error ? e.message : String(e)));
+		}
+		const findings = review.findings;
+		const critical = findings.filter((f) => f.severity === "critical").length;
+		const major = findings.filter((f) => f.severity === "major").length;
+		const lines = ["【代码审查】" + review.summary];
+		if (!findings.length) lines.push("未发现需要处理的问题。");
+		for (const f of findings) lines.push(`- [${f.severity}][${f.dimension}] ${f.file ? f.file + "：" : ""}${f.issue}${f.fix ? "（建议：" + f.fix + "）" : ""}`);
+		const report = lines.join("\n");
+		ports.postUI("status", `代码审查完成：${findings.length} 条发现（critical ${critical} / major ${major}）`, {
+			tool: "review_code",
+			ok: true,
+			findings: findings.slice(0, 12)
+		});
+		if (critical || major) return report + "\n\n[系统提示] 审查发现 critical/major 级问题：请逐条修复后重新 write_code 并再跑一次验证；修完可再 review_code 复查，直到没有 critical/major。";
+		return report;
+	}
+	/** SSH 远程执行：在远程主机跑命令，回传 stdout/stderr/退出码 */
+	async execSshExec(call) {
+		const { ports } = this.opts;
+		if (!ports.ssh) return "当前环境未接入 SSH 远程执行口（桌面客户端内才可用）";
+		const args = call.arguments;
+		const host = String(args.host ?? "").trim();
+		if (!host) return this.trackFailure("ssh_exec", "host 为空");
+		const out = await ports.ssh.exec(args);
+		ports.postUI("status", "SSH 远程执行：" + host + (args.op === "test" ? "（连通性探测）" : ""), {
+			tool: "ssh_exec",
+			ok: true,
+			target: host
+		});
+		return out;
+	}
 	/** 长期记忆：老板偏好/约定入账，对话流出一条「记住了」事件行 */
 	async execAddMemory(call) {
 		const { ports } = this.opts;
@@ -19248,12 +20081,14 @@ var ChatAgent = class {
 		if (saveP) saveP.catch(() => {});
 		const warnings = scanCodeRisk(artifact);
 		const previewHint = isPreviewable(artifact) ? "产物可预览，可调 preview_code 展示效果。" : "";
+		const reviewHint = "写完请立刻 review_code 做一次多维代码审查（正确性/安全/健壮性/性能/可维护性）；发现 critical/major 问题就修到干净再交付。";
 		const warnText = warnings.length ? `风险提醒（需如实告知老板）：${warnings.join("；")}` : "";
 		return [
 			"代码已写入并展示给老板。",
 			summarizeCodeArtifact(artifact),
 			warnText,
-			previewHint
+			previewHint,
+			reviewHint
 		].filter(Boolean).join("\n");
 	}
 	/** READ-PROG：读当前产物全文——产物住在对话内存（含老板在代码页签的手改），改之前先取，别去磁盘找 */
@@ -19677,7 +20512,7 @@ ${i.excerpt}`).join(String.fromCharCode(10) + String.fromCharCode(10)) : "【证
 		const { ports } = this.opts;
 		if (!ports.fs) return "当前环境未接入文件系统，无法加载技能。";
 		const args = call.arguments;
-		const name = String(args.name ?? "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+		const name = String(args.name ?? "").trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 		if (!name) return "load_skill 需要 name（技能库里的精确名字）。";
 		try {
 			const raw = (await ports.fs.readFile("skills/" + name + "/SKILL.md")).content ?? "";
@@ -19722,8 +20557,67 @@ ${i.excerpt}`).join(String.fromCharCode(10) + String.fromCharCode(10)) : "【证
 					} catch {}
 				}
 			} catch {}
-			return "技能 " + name + " 不存在。" + (names.length ? "可用技能：" + names.join("、") + "。" : "技能库为空——值得复用的做法可先 save_skill 沉淀。");
+			let sharedHint = "";
+			try {
+				const sharedHit = ((await (await fetch("/api/v2/brain/skill-market")).json().catch(() => ({}))).listings ?? []).find((l) => l.name === name && l.publisherId);
+				if (sharedHit) sharedHint = "提示：《" + name + "》在共享技能库（@" + (sharedHit.publisherName || sharedHit.publisherId) + "）但还没安装——共享技能需先安装才能用，可 install_skill 装为私有，下一轮起可用。";
+			} catch {}
+			return "技能 " + name + " 不存在。" + sharedHint + (names.length ? "可用技能：" + names.join("、") + "。" : "技能库为空——值得复用的做法可先 save_skill 沉淀。");
 		}
+	}
+	/** 安装共享技能（体系合一）：共享技能库取 SKILL.md 正文一步落盘 skills/<name>/；同名拒绝；禁止命令建文件夹 */
+	async execInstallSkill(call) {
+		const { ports } = this.opts;
+		if (!ports.fs) return "当前环境未接入文件系统，无法安装技能。";
+		const args = call.arguments ?? {};
+		const name = String(args.name ?? "").trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+		if (!name) return "install_skill 需要 name（共享技能库里的精确名字）。";
+		try {
+			await ports.fs.readFile("skills/" + name + "/SKILL.md");
+			return "本地已有同名技能 skills/" + name + "（私有技能），如需重装请老板先在工作区技能里删除本地同名技能。";
+		} catch {}
+		let listings = [];
+		try {
+			listings = (await (await fetch("/api/v2/brain/skill-market")).json().catch(() => ({}))).listings ?? [];
+		} catch {}
+		const wanted = String(args.publisherId ?? "").trim();
+		const hit = listings.find((l) => l.name === name && (!wanted || l.publisherId === wanted));
+		if (!hit || !hit.publisherId) {
+			const names = Array.from(new Set(listings.map((l) => String(l.name ?? "")))).filter(Boolean).slice(0, 30);
+			return "共享技能库里没有技能 " + name + "。" + (names.length ? "可安装的共享技能：" + names.join("、") + "。" : "共享技能库为空。");
+		}
+		let content = "";
+		try {
+			const resp = await fetch("/api/v2/brain/skill-market", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					action: "read",
+					name,
+					publisherId: hit.publisherId
+				})
+			});
+			const data = await resp.json().catch(() => ({}));
+			if (!resp.ok) throw new Error(data.error ?? "读取失败");
+			content = data.content ?? "";
+		} catch (error) {
+			return "读取共享技能 " + name + " 正文失败：" + error.message;
+		}
+		const fm = /^---\n([\s\S]*?)\n---/.exec(content);
+		const body = (fm ? content.slice(fm[0].length) : content).trim();
+		if (!fm || !/^name:\s*\S+/m.test(fm[1]) || body.length < 20) return "共享技能 " + name + " 的 SKILL.md 契约不完整（需 frontmatter name 与 ≥20 字正文），拒绝安装。";
+		await ports.fs.writeFile("skills/" + name + "/SKILL.md", content);
+		this.journal.append("tool_result", "安装共享技能：" + name, {
+			tool: "install_skill",
+			target: name,
+			ok: true
+		});
+		this.opts.ports.postUI("status", "安装共享技能：" + name + "（私有）", {
+			tool: "install_skill",
+			target: name,
+			ok: true
+		});
+		return "已安装《" + name + "》为私有技能（仅你可用）；来源：共享技能库 @" + (hit.publisherName || hit.publisherId) + "。下一轮起 /" + name + " 或 load_skill 即可使用。";
 	}
 	/** 技能验收激活（差距五硬化）：frontmatter 声明 verify/verifyMatch → 写盘后系统强制跑；未声明则清空 */
 	activateSkillVerify(skillName, fm) {
@@ -19749,7 +20643,7 @@ ${i.excerpt}`).join(String.fromCharCode(10) + String.fromCharCode(10)) : "【证
 		const { ports } = this.opts;
 		if (!ports.fs) return "当前环境未接入文件系统，无法保存技能。";
 		const args = call.arguments;
-		const name = String(args.name ?? "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+		const name = String(args.name ?? "").trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 		const description = String(args.description ?? "").trim().slice(0, 200);
 		const content = String(args.content ?? "").trim();
 		if (!name || !description || content.length < 20) return "save_skill 需要 name（kebab-case）、description（一句话）与 content（≥20 字的具体步骤正文）。";
@@ -20884,6 +21778,46 @@ var CONTEXT_SUMMARY_PROMPT = [
 	"必须覆盖：1) 目标与需求的要点索引（一句话指向）；2) 已达成的关键决定与结论；3) 当前产物/代码状态（只写文件名与要点，不贴代码全文）；4) 工具执行的关键结果与教训；5) 未决问题或待办。",
 	"要求：不超过 800 字；只输出摘要正文，不要寒暄与解释；信息有取舍时优先保留与最近话题相关的内容。"
 ].join("\n");
+var REVIEW_PROMPT = [
+	"你是资深代码审查员，对给定代码产物做多维审查。维度：",
+	"- correctness 正确性（逻辑错误、边界条件、空值、异步/竞态）",
+	"- security 安全（注入、XSS、密钥硬编码、越权、路径穿越）",
+	"- robustness 健壮性（错误处理、异常吞没、资源泄漏、失败降级）",
+	"- performance 性能（明显低效、N+1、无谓重渲染/循环）",
+	"- maintainability 可维护性（重复、命名、结构、魔法数）",
+	"只输出 JSON：{\"summary\":\"一句话总体结论\",\"findings\":[{\"dimension\":\"correctness\",\"severity\":\"critical|major|minor\",\"file\":\"路径\",\"issue\":\"问题\",\"fix\":\"修法\"}]}。",
+	"口径：只报真实可验证的问题，按严重度排序，最多 8 条；无问题输出 {\"summary\":\"未发现问题\",\"findings\":[]}。不臆测需求，不评价个人偏好。"
+].join("\n");
+/** 解析审查返回：宽松提取 summary/findings；无法解析时按无发现处理 */
+function parseReview(content) {
+	try {
+		const start = content.indexOf("{");
+		const stop = content.lastIndexOf("}");
+		if (start < 0 || stop <= start) return {
+			summary: "审查结果无法解析",
+			findings: []
+		};
+		const parsed = JSON.parse(content.slice(start, stop + 1));
+		return {
+			summary: typeof parsed.summary === "string" ? parsed.summary : "审查完成",
+			findings: (Array.isArray(parsed.findings) ? parsed.findings : []).slice(0, 8).map((f) => {
+				const o = f || {};
+				return {
+					dimension: String(o.dimension || "general"),
+					severity: String(o.severity || "minor"),
+					file: o.file ? String(o.file) : void 0,
+					issue: String(o.issue || "").trim(),
+					fix: o.fix ? String(o.fix) : void 0
+				};
+			}).filter((f) => f.issue)
+		};
+	} catch {
+		return {
+			summary: "审查结果无法解析",
+			findings: []
+		};
+	}
+}
 var INTENT_CHECK_PROMPT = [
 	"你是交付物核对员。对照老板的原始需求与代码产物摘要，判断产物是否完整满足需求。",
 	"只输出 JSON：{\"ok\": true 或 false, \"gaps\": [\"缺口简述\", ...]}。",
@@ -22370,7 +23304,7 @@ function StepGroup({ msgs, defaultOpen }) {
 		}) : null]
 	});
 }
-function XiaoluoBrainPanel({ canvasId, models, onGenerateMedia, selectedModelId, sendRef, onBrainResult, onOpenResult, onPinProgram, externalItems, externalFooter, onZoomMedia, onQuoteText, onBusyChange, onQueueChange, permissionMode = "default" }) {
+function XiaoluoBrainPanel({ canvasId, models, onGenerateMedia, selectedModelId, sendRef, onBrainResult, onOpenResult, onPinProgram, externalItems, externalFooter, onZoomMedia, onQuoteText, onBusyChange, onQueueChange, onSkillCatalogChange, workspaceId = "", permissionMode = "default" }) {
 	const [askDraft, setAskDraft] = (0, import_react.useState)("");
 	const [copiedId, setCopiedId] = (0, import_react.useState)(null);
 	const [quotedBrainId, setQuotedBrainId] = (0, import_react.useState)(null);
@@ -22449,7 +23383,7 @@ function XiaoluoBrainPanel({ canvasId, models, onGenerateMedia, selectedModelId,
 	const capabilityCatalog = (0, import_react.useMemo)(() => {
 		const base = brainModels.map((m) => "- " + m.name + " (" + m.modalities.join("/") + ")").join("\n");
 		if (!skillCatalog.length) return base;
-		return base + "\n[技能库：先 load_skill 读正文再照做；值得复用的做法用 save_skill 沉淀]\n" + skillCatalog.map((s) => "- " + s.name + " | skill | " + s.description).join("\n");
+		return base + "\n[技能库：先 load_skill 读正文再照做；值得复用的做法用 save_skill 沉淀；共享技能需先 install_skill 安装为私有才能用]\n" + skillCatalog.map((s) => "- " + s.name + " | skill | " + s.description).join("\n");
 	}, [brainModels, skillCatalog]);
 	/** 文件系统口的统一入口：桌面模式走主进程本地工作区（与 deploy/command 同一工作区）；
 	*  否则走服务端 /api/v2/brain/fs（每用户隔离工作区，路径防穿越） */
@@ -22728,6 +23662,104 @@ function XiaoluoBrainPanel({ canvasId, models, onGenerateMedia, selectedModelId,
 					return "整桌操作已执行：" + req.op;
 				}
 			} : void 0,
+			webdriver: desktop?.webDriveAction ? {
+				navigate: async (url) => {
+					const res = await desktop.webDriveAction({
+						action: "navigate",
+						url
+					});
+					if (res.error) throw new Error(res.error);
+					return "外部浏览器已打开：" + (res.url ?? url) + (res.title ? "（" + res.title + "）" : "");
+				},
+				dom: async (mode, max) => {
+					const res = await desktop.webDriveAction({
+						action: mode === "text" ? "text" : "dom",
+						...max ? { max } : {}
+					});
+					if (res.error) throw new Error(res.error);
+					return res.result ?? "";
+				},
+				capture: async () => {
+					const res = await desktop.webDriveAction({ action: "screenshot" });
+					if (res.error || !res.dataUrl) throw new Error(res.error ?? "外部浏览器截图失败");
+					return {
+						dataUrl: res.dataUrl,
+						width: res.width ?? 0,
+						height: res.height ?? 0
+					};
+				},
+				operate: async (req) => {
+					const res = await desktop.webDriveAction({
+						action: req.op === "dblclick" ? "click" : req.op,
+						double: req.op === "dblclick",
+						selector: req.selector,
+						x: req.x,
+						y: req.y,
+						text: req.text,
+						key: req.key,
+						dx: req.dx,
+						dy: req.dy,
+						clear: req.clear
+					});
+					if (res.error) throw new Error(res.error);
+					return "外部浏览器操作已执行：" + req.op + (req.selector ? "（" + req.selector + "）" : "");
+				},
+				eval: async (js, awaitPromise) => {
+					const res = await desktop.webDriveAction({
+						action: "eval",
+						js,
+						awaitPromise
+					});
+					if (res.error) throw new Error(res.error);
+					return res.result ?? "";
+				},
+				record: async (req) => {
+					const action = {
+						start: "record-start",
+						stop: "record-stop",
+						save: "skill-save",
+						list: "skill-list",
+						delete: "skill-delete"
+					}[req.op] || "record-stop";
+					const res = await desktop.webDriveAction({
+						action,
+						...req.name ? { name: req.name } : {}
+					});
+					if (res && res.error) throw new Error(String(res.error));
+					return JSON.stringify(res);
+				},
+				replay: async (req) => {
+					const res = await desktop.webDriveAction({
+						action: "replay",
+						...req.name ? { name: req.name } : {},
+						...req.steps ? { steps: req.steps } : {},
+						...req.stepDelay ? { stepDelay: req.stepDelay } : {}
+					});
+					if (res && res.error) throw new Error(String(res.error));
+					return JSON.stringify(res);
+				}
+			} : void 0,
+			uia: desktop?.uiaAction ? { inspect: async (req) => {
+				if (req.action === "invoke" || req.action === "setvalue" || req.action === "focus") await ensureDesktopGate();
+				const res = await desktop.uiaAction({ ...req });
+				const err = res && typeof res === "object" && "error" in res ? res.error : void 0;
+				if (err) throw new Error(err);
+				return typeof res === "string" ? res : JSON.stringify(res);
+			} } : void 0,
+			ssh: desktop?.sshAction ? { exec: async (req) => {
+				await ensureDesktopGate();
+				const res = await desktop.sshAction({
+					action: req.op === "test" ? "test" : "exec",
+					host: req.host,
+					command: req.command,
+					user: req.user,
+					port: req.port,
+					identityFile: req.identityFile,
+					timeoutMs: req.timeoutMs
+				});
+				if (res && res.error) throw new Error(String(res.error));
+				return JSON.stringify(res);
+			} } : void 0,
 			browser: { fetchPage: async (url) => {
 				const desktop = desktopRuntime();
 				const isLoopback = url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost") || url.startsWith("http://[::1]");
@@ -23940,10 +24972,18 @@ function XiaoluoBrainPanel({ canvasId, models, onGenerateMedia, selectedModelId,
 		externalItems?.length
 	]);
 	const task = brain.currentTask;
+	const [skillScanTick, setSkillScanTick] = (0, import_react.useState)(0);
 	(0, import_react.useEffect)(() => {
-		if (busy) return;
+		const onChange = () => setSkillScanTick((tick) => tick + 1);
+		window.addEventListener("xiaoluo:skills-changed", onChange);
+		return () => window.removeEventListener("xiaoluo:skills-changed", onChange);
+	}, []);
+	(0, import_react.useEffect)(() => {
 		let live = true;
+		let scanning = false;
 		const scan = async () => {
+			if (scanning) return;
+			scanning = true;
 			try {
 				const dirs = ((await brainFs("list", "skills")).entries ?? []).filter((e) => e.isDir).slice(0, 50);
 				const items = [];
@@ -23981,14 +25021,43 @@ function XiaoluoBrainPanel({ canvasId, models, onGenerateMedia, selectedModelId,
 						} catch {}
 					}
 				} catch {}
+				if (workspaceId) try {
+					const reg = await (await fetch("/api/v2/registry?workspaceId=" + encodeURIComponent(workspaceId))).json().catch(() => ({}));
+					const owned = new Set(items.map((it) => it.name));
+					for (const pkg of reg.packages ?? []) {
+						if (pkg.packageType !== "skill" || pkg.lifecycleState === "uninstalled" || !pkg.name) continue;
+						const name = pkg.name;
+						if (owned.has(name)) continue;
+						const cap = (reg.capabilities ?? []).find((c) => c.packageId === pkg.id && c.contributionType === "skill" && c.enabled !== false);
+						const instructions = String(cap?.instructions ?? "").trim() || String(pkg.description ?? "").trim() || String(cap?.title ?? name).trim();
+						const md = "---\nname: " + name + "\ndescription: " + String(pkg.description ?? cap?.title ?? name).replace(/\r?\n/g, " ").slice(0, 200) + "\nmodality: " + (cap?.modality || "text") + "\n---\n\n" + instructions + "\n";
+						try {
+							await brainFs("write", "skills/" + name + "/SKILL.md", md);
+						} catch {
+							continue;
+						}
+						owned.add(name);
+						items.push({
+							name,
+							description: String(pkg.description ?? "").trim()
+						});
+					}
+				} catch {}
 				if (live) setSkillCatalog(items);
-			} catch {}
+			} catch {} finally {
+				scanning = false;
+			}
 		};
 		scan();
+		const timer = window.setInterval(() => void scan(), 3e4);
 		return () => {
 			live = false;
+			window.clearInterval(timer);
 		};
-	}, [busy]);
+	}, [busy, skillScanTick]);
+	(0, import_react.useEffect)(() => {
+		onSkillCatalogChange?.(skillCatalog);
+	}, [skillCatalog]);
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		style: {
 			display: "flex",
@@ -24102,12 +25171,25 @@ function attachmentLabel(attachment) {
 	const kindLabel = attachment.kind === "image" ? "图片" : attachment.kind === "video" ? "视频" : attachment.kind === "audio" ? "音频" : "文件";
 	return ext ? kindLabel + " · " + ext : kindLabel;
 }
-function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState, planApplied = false, onClose, capabilities, models, canvasAssets, nodes, canvasId, onGenerateMedia, onBrainResult, mcpServers = [], pickedMcps = [], onToggleMcp, onClearMcps, onOpenResult, onPinProgram, onFocusNode, onSubmit, onQuickAnswer, onGenerate, onUploadAttachments, onConfirmPlan, onUpdatePlan, onRejectPlan, onStart, onPause, onCancel, onDeleteConversation, onNewConversation, activeConversationId, conversationHistory = [], onFetchHistory, onRestoreConversation, onRenameConversation }) {
+function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState, planApplied = false, onClose, capabilities, models, canvasAssets, nodes, canvasId, workspaceId = "", registrySkills = [], makeSame = null, onGenerateMedia, onBrainResult, mcpServers = [], pickedMcps = [], onToggleMcp, onClearMcps, onOpenResult, onPinProgram, onFocusNode, onSubmit, onQuickAnswer, onGenerate, onUploadAttachments, onConfirmPlan, onUpdatePlan, onRejectPlan, onStart, onPause, onCancel, onDeleteConversation, onNewConversation, activeConversationId, conversationHistory = [], onFetchHistory, onRestoreConversation, onRenameConversation }) {
 	const [draft, setDraft] = (0, import_react.useState)("");
 	/** 小逻大脑忙态：输入条发送按钮切"停止" */
 	const [brainBusy, setBrainBusy] = (0, import_react.useState)(false);
 	/** QUEUE-TURN：小逻执行中排队的新任务（大脑面板上报） */
 	const [brainQueue, setBrainQueue] = (0, import_react.useState)([]);
+	/** 大脑面板上报的技能目录：输入条 / 斜杠补全 + 发送期显式引用指令 */
+	const [brainSkillCatalog, setBrainSkillCatalog] = (0, import_react.useState)([]);
+	/** 斜杠菜单 = 脑面板扫描目录 ∪ 注册表可用包：扫描迟到/漏触发也与"可用 Skill"对齐（2026-09-22 根治） */
+	const slashSkillCatalog = (0, import_react.useMemo)(() => {
+		const seen = new Set(brainSkillCatalog.map((skill) => skill.name));
+		const merged = [...brainSkillCatalog];
+		for (const skill of registrySkills) {
+			if (seen.has(skill.name)) continue;
+			seen.add(skill.name);
+			merged.push(skill);
+		}
+		return merged;
+	}, [brainSkillCatalog, registrySkills]);
 	/** 权限模式：default 仅工作区 / auto 越界只读自动放行 / full 本机任意读写（高风险命令仍确认） */
 	const [permissionMode, setPermissionMode] = (0, import_react.useState)(() => {
 		try {
@@ -24287,6 +25369,21 @@ function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState,
 			}];
 		});
 	}
+	const { dragIndex: chipDragIndex, chipDragProps } = useChipReorderDrag((from, to) => setAttachments((current) => {
+		const next = [...current];
+		const [moved] = next.splice(from, 1);
+		if (!moved) return current;
+		next.splice(to, 0, moved);
+		return next;
+	}));
+	const makeSameSeqRef = (0, import_react.useRef)(0);
+	(0, import_react.useEffect)(() => {
+		if (!makeSame || makeSame.seq === makeSameSeqRef.current) return;
+		makeSameSeqRef.current = makeSame.seq;
+		setComposerMode("brain");
+		setDraft(makeSame.prompt);
+		for (const sourceNodeId of makeSame.sourceNodeIds) attachCanvasAsset(sourceNodeId);
+	}, [makeSame]);
 	function submit() {
 		{
 			const activeModel = quickAnswerModels.find((model) => model.id === preferredModelId) ?? professionalRules?.model ?? null;
@@ -24298,7 +25395,9 @@ function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState,
 		const outgoing = mcpBlock + (composerMode === "brain" && pickedMemoryTexts.length ? "【记忆引用】以下是老板确认过的偏好/约定，供本次任务参考：\n" + pickedMemoryTexts.map((t) => "- " + t).join("\n") + "\n\n" : "") + quoteBlock + draft;
 		if (composerMode === "brain") {
 			if (!draft.trim()) return;
-			brainSendRef.current?.send(outgoing, attachments);
+			const referenced = Array.from(new Set((draft.match(/(?:^|\s)\/([^\s/]+)(?=\s|$)/g) ?? []).map((token) => token.trim().slice(1)).filter((name) => slashSkillCatalog.some((skill) => skill.name === name))));
+			const directive = referenced.length ? referenced.map((name) => `【明确引用技能：/${name}】请先 load_skill("${name}") 并严格按其正文执行下述任务。`).join("\n") + "\n" : "";
+			brainSendRef.current?.send(directive + outgoing, attachments);
 		} else if (professionalMode) {
 			if (!draft.trim() && !skillMode) return;
 			if (skillMode && attachments.length === 0) return;
@@ -24389,6 +25488,7 @@ function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState,
 		}) : null, message.resultNodeId ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MessageResultPreview, {
 			node: nodes.find((item) => item.id === message.resultNodeId),
 			kind: message.resultKind,
+			snapshotUrl: message.resultAssetUrl,
 			onFocus: onFocusNode
 		}) : null] });
 		const actions = /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
@@ -24695,6 +25795,8 @@ function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState,
 					sendRef: brainSendRef,
 					onBusyChange: setBrainBusy,
 					onQueueChange: setBrainQueue,
+					onSkillCatalogChange: setBrainSkillCatalog,
+					workspaceId,
 					permissionMode,
 					externalItems,
 					externalFooter,
@@ -24772,9 +25874,10 @@ function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState,
 								children: "当前模型未开放参考素材"
 							}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "composer-input-asset-grid",
-								children: [attachments.map((attachment) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "composer-input-asset-card",
+								children: [attachments.map((attachment, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: `composer-input-asset-card ${chipDragIndex === index ? "is-chip-drag" : ""}`,
 									title: attachment.name,
+									...chipDragProps(index),
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(InputAssetPreview, { asset: {
 										sourceNodeId: attachment.sourceNodeId ?? `attachment:${attachment.id}`,
 										assetId: attachment.id,
@@ -24893,6 +25996,7 @@ function IntentConsole({ messages, plan, isPlanning, isQuickAnswering, runState,
 									onChange: setDraft,
 									onAttach: attachCanvasAsset,
 									onSubmitShortcut: submit,
+									slashSkills: composerMode === "brain" ? slashSkillCatalog : [],
 									onPasteFiles: addFilesAsAttachments,
 									"aria-label": composerMode === "quick" ? "输入快速问答问题" : "描述你的创作目标",
 									placeholder: composerMode === "brain" ? brainBusy ? "小逻正在执行，可继续添加新任务，执行完按序发送…" : "让小逻写代码 / 出预览 / 做任何事…" : skillMode ? "已选 Skill，输入素材后可直接执行（提示词可选）" : "描述你想完成的目标…"
@@ -25242,8 +26346,28 @@ var KIND_LABEL = {
 	audio: "音频",
 	document: "文档"
 };
-function MessageResultPreview({ node, kind, onFocus }) {
-	if (!node) return null;
+function MessageResultPreview({ node, kind, snapshotUrl, onFocus }) {
+	if (!node) {
+		const archived = snapshotUrl?.trim();
+		if (archived && (kind === "image" || kind === "video")) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "message-result-card message-result-archived",
+			children: [kind === "image" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", {
+				src: archived,
+				alt: "结果快照缩略图",
+				loading: "lazy",
+				decoding: "async"
+			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("video", {
+				src: `${archived}#t=0.1`,
+				muted: true,
+				preload: "metadata",
+				"aria-hidden": "true"
+			}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: "结果快照 · 节点已不在画布" })]
+		});
+		return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+			className: "message-result-card message-result-gone",
+			children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: "结果节点已不在画布，缩略图不可用" })
+		});
+	}
 	const kernelOutput = node.parameters?.kernelOutput;
 	const assetUrl = kernelOutput?.assetUrl?.trim() || void 0;
 	const textResult = node.result?.trim() || kernelOutput?.text?.trim() || kernelOutput?.result?.trim() || "";
@@ -27036,8 +28160,6 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 	const [minimapOpen, setMinimapOpen] = (0, import_react.useState)(true);
 	/** 小逻大脑结果面板：最新代码产物/预览快照 + 开关 */
 	const [brainResult, setBrainResult] = (0, import_react.useState)(null);
-	/** 是否已有结果：仅无结果→有结果的第一次自动弹面板，之后更新快照不打扰老板 */
-	const hadBrainResultRef = (0, import_react.useRef)(false);
 	const [layersOpen, setLayersOpen] = (0, import_react.useState)(false);
 	const [shareOpen, setShareOpen] = (0, import_react.useState)(false);
 	const [intentDockWidth, setIntentDockWidth] = (0, import_react.useState)(() => {
@@ -27078,6 +28200,25 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 		canvasRevision: os.canvasRevision,
 		cursorRef: collaborationCursorRef
 	});
+	const autoSyncInFlight = (0, import_react.useRef)(false);
+	(0, import_react.useEffect)(() => {
+		if (collaboration.remoteRevision <= 0 || collaboration.accessRevoked) return;
+		if (autoSyncInFlight.current) return;
+		if (os.hasUnsavedCanvasChanges()) return;
+		autoSyncInFlight.current = true;
+		(async () => {
+			try {
+				await os.reloadActiveCanvas();
+				collaboration.acknowledgeRemoteRevision();
+			} catch {} finally {
+				autoSyncInFlight.current = false;
+			}
+		})();
+	}, [
+		collaboration.remoteRevision,
+		collaboration.accessRevoked,
+		os.cloudStatus
+	]);
 	/** 小逻大脑产出新结果时自动弹出独立面板 */
 	const [dockFocus, setDockFocus] = (0, import_react.useState)(null);
 	const openBrainDock = (0, import_react.useCallback)((tab) => {
@@ -27126,13 +28267,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 		setPickedMcps((current) => current.includes(name) ? current.filter((n) => n !== name) : [...current, name]);
 	}, []);
 	const handleBrainResult = (0, import_react.useCallback)((snapshot) => {
-		if (snapshot.artifact || snapshot.preview) {
-			setBrainResult(snapshot);
-			if (!hadBrainResultRef.current) {
-				hadBrainResultRef.current = true;
-				onBrainDockOpenChange(true);
-			}
-		}
+		if (snapshot.artifact || snapshot.preview) setBrainResult(snapshot);
 	}, []);
 	/** 分享到能力中心：将当前代码产物生成插件并安装 */
 	const handleShareToCapability = (0, import_react.useCallback)(async () => {
@@ -27244,6 +28379,31 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 			maxY: Math.max(...os.nodes.map((node) => node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT)))
 		};
 	}, [nodeHeights, os.nodes]);
+	const selectionBounds = (0, import_react.useMemo)(() => {
+		if (os.selectedNodeIds.length < 2) return null;
+		const selected = os.nodes.filter((node) => os.selectedNodeIds.includes(node.id));
+		if (selected.length < 2) return null;
+		let minX = Infinity;
+		let minY = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		for (const node of selected) {
+			minX = Math.min(minX, node.x);
+			minY = Math.min(minY, node.y);
+			maxX = Math.max(maxX, node.x + widthForNode(node));
+			maxY = Math.max(maxY, node.y + (nodeHeights[node.id] ?? NODE_FIT_HEIGHT));
+		}
+		return {
+			minX,
+			minY,
+			maxX,
+			maxY
+		};
+	}, [
+		nodeHeights,
+		os.nodes,
+		os.selectedNodeIds
+	]);
 	const groupBounds = (0, import_react.useMemo)(() => {
 		if (!os.groups.length) return nodeBounds;
 		return {
@@ -27378,7 +28538,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 		if (!stage) return;
 		const canvasStage = stage;
 		function wheel(event) {
-			if (event.target.closest(".schema-fields, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select")) return;
+			if (event.target.closest(".select-menu, .schema-fields, .canvas-bulk-bar, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .brain-result-dock, input, textarea, select")) return;
 			event.preventDefault();
 			const current = viewportRef.current;
 			if (gesturePreset === "zoom-wheel" || event.ctrlKey || event.metaKey) {
@@ -27543,7 +28703,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 		zoomAtCenter
 	]);
 	function isCanvasOverlay(target) {
-		return Boolean(target.closest(".canvas-node, .canvas-group-header, .canvas-group-resize, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button"));
+		return Boolean(target.closest(".canvas-node, .canvas-group-header, .canvas-group-resize, .canvas-bulk-bar, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-context-menu, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button"));
 	}
 	function handleStagePointerDown(event) {
 		const target = event.target;
@@ -27580,7 +28740,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 	function handleStageContextMenu(event) {
 		event.preventDefault();
 		const target = event.target;
-		if (target.closest(".canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button")) {
+		if (target.closest(".canvas-bulk-bar, .canvas-toolbar, .zoom-controls, .minimap, .minimap-toggle, .canvas-mode-chip, .canvas-navigation-hint, .open-console-button")) {
 			setContextMenu(null);
 			return;
 		}
@@ -28028,6 +29188,27 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 		}] : [];
 	}
 	const availableMediaPlugins = (0, import_react.useMemo)(() => os.packages.filter((item) => item.packageType === "plugin" && item.enabled && item.permissions.includes("assets:read") && Boolean(item.runtimeUrl) && packageInstallStatus(item).available), [os.packages]);
+	const registrySkillItems = (0, import_react.useMemo)(() => os.packages.filter((item) => item.packageType === "skill" && item.lifecycleState !== "uninstalled" && Boolean(item.name)).map((item) => ({
+		name: item.name,
+		description: String(item.description ?? "").trim()
+	})), [os.packages]);
+	const [makeSame, setMakeSame] = (0, import_react.useState)(null);
+	const makeSameFromNode = (0, import_react.useCallback)((id) => {
+		const clicked = os.nodes.find((item) => item.id === id);
+		if (!clicked) return;
+		let recipe = clicked;
+		if (clicked.role === "result") {
+			const incoming = os.edges.find((edge) => edge.target === clicked.id);
+			const producer = incoming ? os.nodes.find((item) => item.id === incoming.source) : void 0;
+			if (producer) recipe = producer;
+		}
+		setMakeSame({
+			seq: Date.now(),
+			prompt: recipe.prompt,
+			sourceNodeIds: (inputAssetsByNode.get(recipe.id) ?? []).map((asset) => asset.sourceNodeId)
+		});
+		os.setConsoleOpen(true);
+	}, [inputAssetsByNode, os]);
 	const visibleEdgeIds = spatialIndex.queryEdgeIds(expandBounds(visibleBounds, 360));
 	if (selectedEdgeId) visibleEdgeIds.add(selectedEdgeId);
 	const visibleEdges = [...visibleEdgeIds].map((id) => spatialIndex.edgeById.get(id)).filter((edge) => Boolean(edge));
@@ -28288,6 +29469,16 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 									className: "canvas-content",
 									style: worldStyle,
 									children: [
+										selectionBounds && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "canvas-selection-region",
+											"aria-hidden": "true",
+											style: {
+												left: selectionBounds.minX - 12,
+												top: selectionBounds.minY - 12,
+												width: selectionBounds.maxX - selectionBounds.minX + 24,
+												height: selectionBounds.maxY - selectionBounds.minY + 24
+											}
+										}),
 										collaboration.presence.filter((item) => item.userId !== collaboration.selfId && item.sessionId !== os.collaborationSessionId && item.cursorX !== null && item.cursorY !== null).map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 											className: "remote-collaboration-cursor",
 											style: {
@@ -28329,7 +29520,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 											canvasId: os.activeCanvasId,
 											workspaceId: os.workspaceId,
 											selected: node.id === os.selectedNodeId,
-											multiSelected: os.selectedNodeIds.includes(node.id),
+											multiSelected: os.selectedNodeIds.length >= 2 && os.selectedNodeIds.includes(node.id),
 											zoom: os.zoom,
 											panMode: os.activeTool === "hand" || spaceHeld,
 											capabilities: os.capabilities,
@@ -28353,6 +29544,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 												os.connectNodes(sourceNodeId, node.id, void 0, "reference");
 											},
 											onRemoveInputAsset: (edgeId) => os.deleteEdge(edgeId),
+											onReorderInputAssets: (orderedEdgeIds) => os.reorderInputAssets(orderedEdgeIds),
 											onUploadInputAssets: async (files) => {
 												await importFilesToCanvas(files, {
 													x: node.x - MATERIAL_NODE_COLUMN_GAP,
@@ -28365,6 +29557,7 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 											connectionDataType: displayedConnectionDraft?.sourceId === node.id ? void 0 : displayedConnectionDraft?.dataType,
 											onRun: () => void os.startRun(node.id),
 											onRerunBranch: () => void os.rerunBranch(node.id),
+											onRemake: () => makeSameFromNode(node.id),
 											onDelete: () => void os.deleteNode(node.id),
 											onOpenPlugin: (mode = "window") => {
 												const installedPlugin = installedPluginForNode(node);
@@ -28462,6 +29655,40 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 									className: "canvas-navigation-hint",
 									children: "拖动空白处平移 · 右键快捷菜单 · Ctrl/⌘ + 滚轮缩放 · Space 抓手 · 0 适配全部"
+								}),
+								os.selectedNodeIds.length >= 2 && selectionBounds && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("nav", {
+									className: "canvas-bulk-bar",
+									"aria-label": "多选批量操作",
+									style: {
+										left: pan.x + (selectionBounds.minX + selectionBounds.maxX) / 2 * scale,
+										top: Math.max(8, pan.y + (selectionBounds.minY - 12) * scale - 44)
+									},
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("strong", { children: [
+											"已选 ",
+											os.selectedNodeIds.length,
+											" 个"
+										] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											className: "result-text-action",
+											onClick: () => os.copySelected(),
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Copy, { size: 14 }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "复制" })]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											className: "result-text-action is-danger",
+											title: "删除选中节点及其连线",
+											onClick: () => void os.deleteSelected(),
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "删除" })]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											className: "result-text-action",
+											onClick: () => os.setSelectedNodeId(null),
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { size: 14 }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "取消选择" })]
+										})
+									]
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ZoomControls, {
 									zoom: os.zoom,
@@ -28650,6 +29877,9 @@ function CanvasWorkspace({ os, brainDockOpen, onBrainDockOpenChange }) {
 					canvasAssets,
 					nodes: os.nodes,
 					canvasId: os.activeCanvasId,
+					workspaceId: os.workspaceId,
+					registrySkills: registrySkillItems,
+					makeSame,
 					onFocusNode: focusNodeOnCanvas,
 					onClose: () => os.setConsoleOpen(false),
 					onSubmit: os.submitIntent,
@@ -29518,6 +30748,55 @@ function isRecord(value) {
 function isNodeKind(value) {
 	return skillTypeOrder.includes(value);
 }
+async function skillFileAction(action, path, content) {
+	const bridge = window.xiaoluoDesktop;
+	if (bridge && typeof bridge.fsAction === "function") {
+		const res = await bridge.fsAction({
+			action,
+			path,
+			content,
+			mode: "default"
+		});
+		if (res.error) return {
+			ok: false,
+			error: res.error
+		};
+		return {
+			ok: true,
+			content: res.content
+		};
+	}
+	try {
+		const resp = await fetch("/api/v2/brain/fs", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				action,
+				path,
+				content,
+				mode: "default"
+			})
+		});
+		const data = await resp.json().catch(() => ({}));
+		if (!resp.ok) return {
+			ok: false,
+			error: data.error ?? "文件操作失败"
+		};
+		return {
+			ok: true,
+			content: data.content
+		};
+	} catch (reason) {
+		return {
+			ok: false,
+			error: reason instanceof Error ? reason.message : "文件操作失败"
+		};
+	}
+}
+/** SKILL.md 序列化（frontmatter + 正文）：文件与注册表投影共用同一契约 */
+function skillMarkdownOf(name, description, modality, body) {
+	return "---\nname: " + name + "\ndescription: " + description.replace(/\r?\n/g, " ").slice(0, 200) + "\nmodality: " + (modality || "text") + "\n---\n\n" + body.trim() + "\n";
+}
 function getSkillTypeLabels(item, capabilities) {
 	const modalities = /* @__PURE__ */ new Set();
 	const contributes = isRecord(item.manifest?.contributes) ? item.manifest.contributes : null;
@@ -29813,6 +31092,159 @@ function PluginCardQuickSettings({ item, disabled, onSave }) {
 function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, marketplacePackages, status, error, onRefresh, onEditPackage, onEditSkill, onNotice }) {
 	const [category, setCategory] = (0, import_react.useState)("skill");
 	const [source, setSource] = (0, import_react.useState)("installed");
+	const [workspaceSkills, setWorkspaceSkills] = (0, import_react.useState)([]);
+	const [workspaceScanTick, setWorkspaceScanTick] = (0, import_react.useState)(0);
+	const [editingSkill, setEditingSkill] = (0, import_react.useState)(null);
+	(0, import_react.useEffect)(() => {
+		if (category !== "skill") return;
+		let live = true;
+		const fsAction = async (action, path) => {
+			const bridge = window.xiaoluoDesktop;
+			if (bridge && typeof bridge.fsAction === "function") {
+				const res = await bridge.fsAction({
+					action,
+					path,
+					mode: "default"
+				});
+				if (res.error) throw new Error(res.error);
+				return res;
+			}
+			const resp = await fetch("/api/v2/brain/fs", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					action,
+					path,
+					mode: "default"
+				})
+			});
+			const data = await resp.json().catch(() => ({}));
+			if (!resp.ok) throw new Error(data.error ?? "读取失败");
+			return data;
+		};
+		const readSkillFile = async (rel) => {
+			try {
+				const content = (await fsAction("read", rel)).content ?? "";
+				const matched = /description:\s*(.+)/.exec(content);
+				const modMatched = /modality:\s*(.+)/.exec(content);
+				const fmEnd = content.startsWith("---\n") ? content.indexOf("\n---", 4) : -1;
+				return {
+					description: matched ? matched[1].trim() : "",
+					modality: modMatched ? modMatched[1].trim() : "text",
+					body: fmEnd >= 0 ? content.slice(fmEnd + 4).trim() : content.trim()
+				};
+			} catch {
+				return {
+					description: "",
+					modality: "text",
+					body: ""
+				};
+			}
+		};
+		(async () => {
+			try {
+				const items = [];
+				const dirs = ((await fsAction("list", "skills")).entries ?? []).filter((entry) => entry.isDir).slice(0, 50);
+				for (const dir of dirs) {
+					const name = String(dir.path).split("/").pop() ?? "";
+					if (!name) continue;
+					const file = await readSkillFile(`skills/${name}/SKILL.md`);
+					items.push({
+						name,
+						description: file.description,
+						source: "工作区",
+						body: file.body,
+						modality: file.modality
+					});
+				}
+				try {
+					const pluginDirs = ((await fsAction("list", "plugins")).entries ?? []).filter((entry) => entry.isDir).slice(0, 5);
+					for (const pluginDir of pluginDirs) {
+						const pluginName = String(pluginDir.path).split("/").pop() ?? "";
+						if (!pluginName) continue;
+						try {
+							const skillDirs = ((await fsAction("list", `plugins/${pluginName}/skills`)).entries ?? []).filter((entry) => entry.isDir).slice(0, 20);
+							for (const skillDir of skillDirs) {
+								const skillName = String(skillDir.path).split("/").pop() ?? "";
+								if (!skillName) continue;
+								const pluginFile = await readSkillFile(`plugins/${pluginName}/skills/${skillName}/SKILL.md`);
+								items.push({
+									name: skillName,
+									description: pluginFile.description,
+									source: `插件 ${pluginName}`,
+									body: pluginFile.body,
+									modality: pluginFile.modality
+								});
+							}
+						} catch {}
+					}
+				} catch {}
+				if (os.workspaceId) try {
+					const reg = await (await fetch("/api/v2/registry?workspaceId=" + encodeURIComponent(os.workspaceId))).json().catch(() => ({}));
+					const owned = new Set(items.map((it) => it.name));
+					for (const pkg of reg.packages ?? []) {
+						if (pkg.packageType !== "skill" || pkg.lifecycleState === "uninstalled" || !pkg.name || owned.has(pkg.name)) continue;
+						const cap = (reg.capabilities ?? []).find((c) => c.packageId === pkg.id && c.contributionType === "skill" && c.enabled !== false);
+						const instructions = String(cap?.instructions ?? "").trim() || String(pkg.description ?? "").trim() || pkg.name;
+						const md = skillMarkdownOf(pkg.name, String(pkg.description ?? "").trim() || pkg.name, cap?.modality || "text", instructions);
+						if (!(await skillFileAction("write", `skills/${pkg.name}/SKILL.md`, md)).ok) continue;
+						owned.add(pkg.name);
+						items.push({
+							name: pkg.name,
+							description: String(pkg.description ?? "").trim(),
+							source: "工作区",
+							body: instructions,
+							modality: cap?.modality || "text"
+						});
+					}
+				} catch {}
+				if (live) setWorkspaceSkills(items);
+				if (live) window.dispatchEvent(new CustomEvent("xiaoluo:skills-changed"));
+			} catch {}
+		})();
+		return () => {
+			live = false;
+		};
+	}, [category, workspaceScanTick]);
+	const skillSyncBusy = (0, import_react.useRef)(false);
+	(0, import_react.useEffect)(() => {
+		if (category !== "skill" || !workspaceSkills.length) return;
+		if (skillSyncBusy.current) return;
+		skillSyncBusy.current = true;
+		(async () => {
+			try {
+				const skillPackages = os.packages.filter((item) => item.packageType === "skill" && item.lifecycleState !== "uninstalled");
+				const byName = new Map(skillPackages.map((item) => [item.name, item]));
+				let changed = false;
+				for (const skill of workspaceSkills) {
+					if (skill.source !== "工作区" || !skill.body) continue;
+					const pkg = byName.get(skill.name);
+					const capability = pkg ? os.capabilities.find((c) => c.packageId === pkg.id && c.contributionType === "skill") : void 0;
+					const drifted = pkg && capability ? (capability.instructions ?? "").trim() !== (skill.body ?? "").trim() || (pkg.description ?? "") !== skill.description || capability.modality !== (skill.modality || "text") : false;
+					if (pkg && !drifted) continue;
+					try {
+						const manifest = skillManifestFromMarkdown(skillMarkdownOf(skill.name, skill.description, skill.modality || "text", skill.body ?? ""), skill.name + ".md");
+						manifest.name = skill.name;
+						const skillEntry = manifest.contributes?.skills?.[0];
+						if (skillEntry) skillEntry.title = skill.name;
+						if (pkg) {
+							manifest.id = pkg.packageKey ?? manifest.id;
+							manifest.version = pkg.version ?? "1.0.0";
+							manifest.access = { scope: pkg.accessScope ?? "personal" };
+						}
+						if ((await fetch("/api/v2/packages", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ manifest })
+						})).ok) changed = true;
+					} catch {}
+				}
+				if (changed) await onRefresh();
+			} finally {
+				skillSyncBusy.current = false;
+			}
+		})();
+	}, [category, workspaceSkills]);
 	const [skillMarketListings, setSkillMarketListings] = (0, import_react.useState)([]);
 	const [marketStatus, setMarketStatus] = (0, import_react.useState)("idle");
 	const [marketError, setMarketError] = (0, import_react.useState)("");
@@ -29833,34 +31265,141 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 		}
 	}
 	(0, import_react.useEffect)(() => {
-		if (category === "skill" && source === "market") loadSkillMarket();
+		if (category === "skill") loadSkillMarket();
 	}, [category, source]);
-	async function marketAct(listing, action) {
-		if (action === "unpublish") {
-			if (!await dialog.confirm("下架该技能后，它将不再出现在其他用户的技能市场；已安装到别人工作区的副本不受影响。确认下架 " + listing.name + " ？", {
-				title: "下架技能",
-				confirmText: "确认下架",
-				tone: "danger"
-			})) return;
-		}
-		setBusyId("market:" + listing.publisherId + "/" + listing.name);
+	const hasDesktopFs = typeof window.xiaoluoDesktop?.fsAction === "function";
+	async function desktopFsAction(action, path, content) {
+		const bridge = window.xiaoluoDesktop;
+		if (!bridge || typeof bridge.fsAction !== "function") return {
+			ok: false,
+			error: "无桌面通道"
+		};
+		const res = await bridge.fsAction({
+			action,
+			path,
+			content,
+			mode: "default"
+		});
+		if (res.error) return {
+			ok: false,
+			error: res.error
+		};
+		return {
+			ok: true,
+			content: res.content
+		};
+	}
+	async function workspaceFs(action, path, content) {
+		if (hasDesktopFs) return desktopFsAction(action, path, content);
 		try {
-			const resp = await fetch("/api/v2/brain/skill-market", {
+			const resp = await fetch("/api/v2/brain/fs", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(action === "install" ? {
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
 					action,
-					name: listing.name,
-					publisherId: listing.publisherId
-				} : {
-					action,
-					name: listing.name
+					path,
+					content,
+					mode: "default"
 				})
 			});
-			const payload = await resp.json().catch(() => ({}));
-			if (!resp.ok) throw new Error(payload.error ?? (action === "install" ? "安装失败" : "下架失败"));
-			if (action === "install") onNotice(listing.name + " 已安装到小逻工作区技能库。");
-			else onNotice(listing.name + " 已下架。");
+			const data = await resp.json().catch(() => ({}));
+			if (!resp.ok) return {
+				ok: false,
+				error: data.error ?? "文件操作失败"
+			};
+			return {
+				ok: true,
+				content: data.content
+			};
+		} catch (reason) {
+			return {
+				ok: false,
+				error: reason instanceof Error ? reason.message : "文件操作失败"
+			};
+		}
+	}
+	async function openWorkspaceSkillEditor(skill) {
+		setBusyId("edit:" + skill.name);
+		try {
+			const res = await workspaceFs("read", `skills/${skill.name}/SKILL.md`);
+			if (!res.ok || res.content === void 0) throw new Error(res.error ?? "读取 SKILL.md 失败");
+			setEditingSkill({
+				name: skill.name,
+				content: res.content
+			});
+		} catch (reason) {
+			onNotice(reason instanceof Error ? reason.message : "读取 SKILL.md 失败", "error");
+		} finally {
+			setBusyId("");
+		}
+	}
+	async function saveWorkspaceSkillEdit() {
+		if (!editingSkill) return;
+		setBusyId("edit-save:" + editingSkill.name);
+		try {
+			const res = await workspaceFs("write", `skills/${editingSkill.name}/SKILL.md`, editingSkill.content);
+			if (!res.ok) throw new Error(res.error ?? "保存失败");
+			onNotice(editingSkill.name + " 已保存，对话与斜杠引用即按新内容生效。");
+			setEditingSkill(null);
+			setWorkspaceScanTick((tick) => tick + 1);
+		} catch (reason) {
+			onNotice(reason instanceof Error ? reason.message : "保存失败", "error");
+		} finally {
+			setBusyId("");
+		}
+	}
+	async function deleteUnifiedSkill(skill) {
+		if (!await dialog.confirm(`删除 Skill“${skill.name}”？将同时移除工作区 SKILL.md 与注册表包：画布节点与对话/斜杠条目一并消失。`, {
+			title: "删除 Skill",
+			confirmText: "确认删除",
+			tone: "danger"
+		})) return;
+		setBusyId("del:" + skill.name);
+		try {
+			if (skill.pkg) await os.uninstallPackage(skill.pkg.id);
+			await skillFileAction("delete", `skills/${skill.name}`);
+			onNotice(skill.name + " 已删除（画布与对话同步移除）。");
+			setWorkspaceScanTick((tick) => tick + 1);
+			await onRefresh();
+		} catch (reason) {
+			onNotice(reason instanceof Error ? reason.message : "删除失败", "error");
+		} finally {
+			setBusyId("");
+		}
+	}
+	async function marketAct(listing) {
+		setBusyId("market:" + listing.publisherId + "/" + listing.name);
+		try {
+			if (hasDesktopFs) {
+				if ((await desktopFsAction("read", `skills/${listing.name}/SKILL.md`)).ok) throw new Error("本地工作区已有同名技能 skills/" + listing.name + "，请先删除后再安装。");
+				const src = await fetch("/api/v2/brain/skill-market", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						action: "read",
+						name: listing.name,
+						publisherId: listing.publisherId
+					})
+				});
+				const srcPayload = await src.json().catch(() => ({}));
+				if (!src.ok) throw new Error(srcPayload.error ?? "读取共享技能正文失败");
+				const wrote = await desktopFsAction("write", `skills/${listing.name}/SKILL.md`, srcPayload.content ?? "");
+				if (!wrote.ok) throw new Error(wrote.error ?? "写入本地工作区失败");
+			} else {
+				const resp = await fetch("/api/v2/brain/skill-market", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						action: "install",
+						name: listing.name,
+						publisherId: listing.publisherId
+					})
+				});
+				const payload = await resp.json().catch(() => ({}));
+				if (!resp.ok) throw new Error(payload.error ?? "安装失败");
+			}
+			onNotice(listing.name + " 已安装为私有技能（仅你可用）。");
+			setWorkspaceScanTick((tick) => tick + 1);
 			await loadSkillMarket();
 		} catch (reason) {
 			onNotice(reason instanceof Error ? reason.message : "操作失败", "error");
@@ -29873,6 +31412,20 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 	const ownedSharedPackageItems = myPackageItems.filter((item) => item.ownerScope === "personal" && item.accessScope !== "personal");
 	const ownedSharedKeys = new Set(ownedSharedPackageItems.map((item) => item.packageKey).filter(Boolean));
 	const otherSharedPackageItems = publicPackageItems.filter((item) => !ownedSharedKeys.has(item.packageKey));
+	const installedSkillNames = new Set(workspaceSkills.map((skill) => skill.name));
+	const myPublishedSkillNames = new Set(skillMarketListings.filter((listing) => listing.publisherId === userId).map((listing) => listing.name));
+	const skillPackageByName = new Map(myPackageItems.filter((item) => item.packageType === "skill").map((item) => [item.name, item]));
+	const unifiedSkills = category === "skill" ? [...workspaceSkills.map((skill) => ({
+		name: skill.name,
+		description: skill.description,
+		body: skill.body,
+		modality: skill.modality,
+		pkg: skillPackageByName.get(skill.name)
+	})), ...myPackageItems.filter((item) => item.packageType === "skill" && !workspaceSkills.some((skill) => skill.name === item.name)).map((item) => ({
+		name: item.name,
+		description: item.description ?? "",
+		pkg: item
+	}))] : [];
 	async function install(item) {
 		setBusyId(item.id);
 		try {
@@ -30002,7 +31555,6 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 						className: category === value ? "is-active" : "",
 						onClick: () => {
 							setCategory(value);
-							if (value !== "skill" && source === "market") setSource("installed");
 						},
 						children: [value === "workflow" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Workflow, { size: 15 }) : value === "plugin" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PlugZap, { size: 15 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 15 }), label]
 					}, value))
@@ -30041,14 +31593,6 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 						className: source === "shared" ? "is-active" : "",
 						onClick: () => setSource("shared"),
 						children: category === "skill" ? "共享 Skill" : "共享插件"
-					}),
-					category === "skill" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-						type: "button",
-						role: "tab",
-						"aria-selected": source === "market",
-						className: source === "market" ? "is-active" : "",
-						onClick: () => setSource("market"),
-						children: "技能市场"
 					})
 				]
 			}),
@@ -30153,9 +31697,56 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 						children: "重试"
 					})
 				]
-			}) : source === "installed" && myPackageItems.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+			}) : source === "installed" && (myPackageItems.length || category === "skill" && workspaceSkills.length) ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: "workflow-market-grid",
-				children: myPackageItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
+				children: [unifiedSkills.map((skill) => {
+					const pkg = skill.pkg;
+					const modalityLabels = pkg ? getSkillTypeLabels(pkg, os.capabilities) : [skillTypeLabel[skill.modality ?? "text"] ?? "未标注类型"];
+					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
+						className: "workflow-market-card package-market-card is-success",
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: skill.name }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: pkg ? `v${pkg.version} · ${runtimeMeta[pkg.runtimeType].label}` : "工作区 · SKILL.md" })] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: pkg ? accessScopeLabel[pkg.accessScope ?? "personal"] : myPublishedSkillNames.has(skill.name) ? "共享" : "私有" })
+							] }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: skill.description || "未填写说明" }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "workflow-card-tags",
+								children: [modalityLabels.map((label) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: label }, label)), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["/", skill.name] })]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("footer", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "package-install-status is-success",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { size: 13 }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "已安装" }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "画布与对话 / 斜杠引用皆可用" })
+								]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "package-manage-actions",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: "secondary-button compact",
+									disabled: busyId === "edit:" + skill.name,
+									onClick: () => {
+										if (pkg) {
+											onEditSkill(pkg);
+											return;
+										}
+										openWorkspaceSkillEditor({ name: skill.name });
+									},
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SquarePen, { size: 14 }), "修改 Skill"]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: "danger-text-button",
+									disabled: busyId === "del:" + skill.name,
+									onClick: () => void deleteUnifiedSkill(skill),
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), "删除"]
+								})]
+							})] })
+						]
+					}, `uni/${skill.name}`);
+				}), myPackageItems.filter((item) => !(category === "skill" && item.packageType === "skill")).map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
 					className: `workflow-market-card package-market-card is-${packageInstallStatus(item).kind}`,
 					children: [
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
@@ -30230,7 +31821,7 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 							]
 						})] })
 					]
-				}, item.id))
+				}, item.id))]
 			}) : source === "private" && privatePackageItems.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 				className: "workflow-market-grid",
 				children: privatePackageItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
@@ -30267,160 +31858,206 @@ function MarketplacePanel({ os, dialog, isSystemAdmin, userId, workflows, market
 						}) })
 					]
 				}, item.id))
-			}) : source === "shared" && (ownedSharedPackageItems.length || otherSharedPackageItems.length) ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			}) : source === "shared" && (ownedSharedPackageItems.length || otherSharedPackageItems.length || category === "skill" && skillMarketListings.length) ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: "workflow-market-grid",
-				children: [ownedSharedPackageItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-					className: "workflow-market-card package-market-card",
-					children: [
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: category === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PlugZap, { size: 19 }) }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: item.name }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-								"v",
-								item.version,
-								" · ",
-								runtimeMeta[item.runtimeType].label
-							] })] }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "我的共享" })
-						] }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: item.description || "未填写说明" }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-							className: "workflow-card-tags",
-							children: category === "skill" ? getSkillTypeLabels(item, os.capabilities).map((label) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: label }, label)) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [item.contributionCount, " 项能力"] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: item.enabled ? "已发布" : item.trustState === "quarantined" ? "已隔离" : "等待安全审核" })] })
-						}),
-						item.canManage && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("footer", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "package-manage-actions",
-							children: [
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-									type: "button",
-									className: "secondary-button compact",
-									disabled: busyId === item.id,
-									onClick: () => item.packageType === "plugin" ? onEditPackage(item) : onEditSkill(item),
-									children: [busyId === item.id ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
-										size: 14,
-										className: "spin"
-									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SquarePen, { size: 14 }), "修改"]
-								}),
-								item.packageType === "plugin" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PluginCardQuickSettings, {
-									item,
-									disabled: busyId === item.id,
-									onSave: (settings) => savePluginSettings(item, settings)
-								}, `${item.id}:${item.accessScope}:${mediaPluginTypes(item).join(",")}`),
-								item.packageType === "skill" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-									type: "button",
-									className: "danger-text-button",
-									disabled: busyId === item.id,
-									onClick: () => void deleteSharedSkill(item),
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), "删除"]
-								})
-							]
-						}) })
-					]
-				}, item.id)), otherSharedPackageItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-					className: "workflow-market-card package-market-card",
-					children: [
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: category === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PlugZap, { size: 19 }) }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: item.name }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-								"@",
-								item.publisher.username,
-								" · v",
-								item.version,
-								" ·",
-								" ",
-								runtimeMeta[item.runtimeType].label
-							] })] }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: item.publisher.platformRole === "system_admin" ? "管理员共享" : "用户共享" })
-						] }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: item.description || "未填写说明" }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-							className: "workflow-card-tags",
-							children: category === "skill" ? getSkillTypeLabels(item, os.capabilities).map((label) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: label }, label)) : item.permissions.length ? item.permissions.slice(0, 4).map((permission) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: permission }, permission)) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "零权限" })
-						}),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("footer", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							className: "primary-button compact",
-							disabled: item.installed || busyId === item.id,
-							onClick: () => void addMarketplacePackage(item),
-							children: [busyId === item.id ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
-								size: 14,
-								className: "spin"
-							}) : item.packageType === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PackagePlus, { size: 14 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { size: 14 }), item.installed ? item.packageType === "skill" ? "已添加" : "已安装" : item.packageType === "skill" ? "添加到可用 Skill" : "安装"]
-						}), isSystemAdmin && item.packageType === "skill" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							className: "danger-text-button",
-							disabled: busyId === item.id,
-							onClick: () => void deleteSharedSkill(item),
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), "删除"]
-						})] })
-					]
-				}, item.id))]
-			}) : source === "market" && category === "skill" ? marketStatus === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RegistryLoading, { label: "正在读取技能市场" }) : marketStatus === "error" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "registry-banner is-error",
 				children: [
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { size: 16 }),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: marketError }),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-						type: "button",
-						onClick: () => void loadSkillMarket(),
-						children: "重试"
-					})
-				]
-			}) : skillMarketListings.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-				className: "workflow-market-grid",
-				children: skillMarketListings.map((item) => {
-					const key = item.publisherId + "/" + item.name;
-					const mine = item.publisherId === userId;
-					return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
+					ownedSharedPackageItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
 						className: "workflow-market-card package-market-card",
 						children: [
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: category === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PlugZap, { size: 19 }) }),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: item.name }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-									"@",
-									item.publisherName || "匿名",
+									"v",
+									item.version,
 									" · ",
-									item.publishedAt.slice(0, 10)
+									runtimeMeta[item.runtimeType].label
 								] })] }),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: mine ? "我发布的" : item.localCopy ? "已安装" : "技能市场" })
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "我的共享" })
 							] }),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: item.description || "未填写说明" }),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 								className: "workflow-card-tags",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "SKILL.md" }), item.localCopy ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "本地已有" }) : null]
+								children: category === "skill" ? getSkillTypeLabels(item, os.capabilities).map((label) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: label }, label)) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [item.contributionCount, " 项能力"] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: item.enabled ? "已发布" : item.trustState === "quarantined" ? "已隔离" : "等待安全审核" })] })
+							}),
+							item.canManage && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("footer", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "package-manage-actions",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										className: "secondary-button compact",
+										disabled: busyId === item.id,
+										onClick: () => item.packageType === "plugin" ? onEditPackage(item) : onEditSkill(item),
+										children: [busyId === item.id ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
+											size: 14,
+											className: "spin"
+										}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SquarePen, { size: 14 }), "修改"]
+									}),
+									item.packageType === "plugin" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PluginCardQuickSettings, {
+										item,
+										disabled: busyId === item.id,
+										onSave: (settings) => savePluginSettings(item, settings)
+									}, `${item.id}:${item.accessScope}:${mediaPluginTypes(item).join(",")}`),
+									item.packageType === "skill" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										className: "danger-text-button",
+										disabled: busyId === item.id,
+										onClick: () => void deleteSharedSkill(item),
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), "删除"]
+									})
+								]
+							}) })
+						]
+					}, item.id)),
+					otherSharedPackageItems.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
+						className: "workflow-market-card package-market-card",
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: category === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PlugZap, { size: 19 }) }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: item.name }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+									"@",
+									item.publisher.username,
+									" · v",
+									item.version,
+									" ·",
+									" ",
+									runtimeMeta[item.runtimeType].label
+								] })] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: item.publisher.platformRole === "system_admin" ? "管理员共享" : "用户共享" })
+							] }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: item.description || "未填写说明" }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+								className: "workflow-card-tags",
+								children: category === "skill" ? getSkillTypeLabels(item, os.capabilities).map((label) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: label }, label)) : item.permissions.length ? item.permissions.slice(0, 4).map((permission) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: permission }, permission)) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "零权限" })
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("footer", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 								type: "button",
 								className: "primary-button compact",
-								disabled: item.localCopy || busyId === key,
-								onClick: () => void marketAct(item, "install"),
-								children: [busyId === key ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
+								disabled: item.installed || busyId === item.id,
+								onClick: () => void addMarketplacePackage(item),
+								children: [busyId === item.id ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
 									size: 14,
 									className: "spin"
-								}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PackagePlus, { size: 14 }), item.localCopy ? "已安装" : "安装到小逻工作区"]
-							}), mine ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								}) : item.packageType === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PackagePlus, { size: 14 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { size: 14 }), item.installed ? item.packageType === "skill" ? "已添加" : "已安装" : item.packageType === "skill" ? "添加到可用 Skill" : "安装"]
+							}), isSystemAdmin && item.packageType === "skill" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 								type: "button",
 								className: "danger-text-button",
-								disabled: busyId === key,
-								onClick: () => void marketAct(item, "unpublish"),
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), "下架"]
-							}) : null] })
+								disabled: busyId === item.id,
+								onClick: () => void deleteSharedSkill(item),
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Trash2, { size: 14 }), "删除"]
+							})] })
 						]
-					}, key);
-				})
-			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-				className: "extension-empty",
-				children: [
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 24 }) }),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "技能市场还是空的" }),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "在小逻面板展开技能市场，把自己的技能发布出去，就会出现在这里，别的小逻可以一键安装。" })
+					}, item.id)),
+					category === "skill" && skillMarketListings.map((item) => {
+						const key = item.publisherId + "/" + item.name;
+						const mine = item.publisherId === userId;
+						const installed = hasDesktopFs ? installedSkillNames.has(item.name) : item.localCopy;
+						return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
+							className: "workflow-market-card package-market-card",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 19 }) }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: item.name }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+										"@",
+										item.publisherName || "匿名",
+										" · ",
+										item.publishedAt.slice(0, 10)
+									] })] }),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: mine ? "我发布的" : installed ? "已安装" : "共享技能库" })
+								] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: item.description || "未填写说明" }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "workflow-card-tags",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "SKILL.md" }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "装进小逻工作区" }),
+										installed ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "本地已有" }) : null
+									]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("footer", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									className: "primary-button compact",
+									disabled: installed || busyId === key,
+									onClick: () => void marketAct(item),
+									children: [busyId === key ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
+										size: 14,
+										className: "spin"
+									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PackagePlus, { size: 14 }), installed ? "已安装" : "安装"]
+								}) })
+							]
+						}, key);
+					}),
+					category === "skill" && marketStatus === "error" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "registry-banner is-error",
+						style: { gridColumn: "1 / -1" },
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleAlert, { size: 16 }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["共享技能库读取失败：", marketError] }),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => void loadSkillMarket(),
+								children: "重试"
+							})
+						]
+					})
 				]
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 				className: "extension-empty",
 				children: [
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: category === "skill" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CodeXml, { size: 24 }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PlugZap, { size: 24 }) }),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: source === "installed" ? `当前账号还没有可用${category === "skill" ? " Skill" : "插件"}` : source === "private" ? `还没有私有${category === "skill" ? " Skill" : "插件"}` : `暂时没有共享${category === "skill" ? " Skill" : "插件"}` }),
-					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: source === "installed" ? "通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。" : source === "private" ? `创建或安装${category === "skill" ? " Skill" : "插件"}时选择“私有”，它只会对你本人显示。` : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}，以及用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，都会显示在这里供所有用户添加。` })
+					/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [source === "installed" ? "通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。" : source === "private" ? `创建或安装${category === "skill" ? " Skill" : "插件"}时选择“私有”，它只会对你本人显示。` : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}、用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，都会显示在这里供所有用户添加。`, category === "skill" ? "也可以直接对小逻说“安装 XX 技能”，从共享技能库一步装好。" : ""] })
 				]
+			}),
+			editingSkill && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+				className: "extension-modal-backdrop",
+				role: "presentation",
+				onMouseDown: () => setEditingSkill(null),
+				children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "extension-modal package-modal",
+					role: "dialog",
+					"aria-modal": "true",
+					"aria-label": `修改 Skill ${editingSkill.name}`,
+					onMouseDown: (event) => event.stopPropagation(),
+					style: { width: "min(760px, 92vw)" },
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "modal-heading",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h2", { children: ["修改 Skill：", editingSkill.name] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "直接编辑 SKILL.md 正文，保存后对话与斜杠引用即按新内容生效。" })] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => setEditingSkill(null),
+								children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { size: 18 })
+							})]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("textarea", {
+							className: "skill-editor-textarea",
+							value: editingSkill.content,
+							onChange: (event) => setEditingSkill({
+								name: editingSkill.name,
+								content: event.target.value
+							}),
+							rows: 18,
+							spellCheck: false
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "modal-actions",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "secondary-button",
+								onClick: () => setEditingSkill(null),
+								children: "取消"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								type: "button",
+								className: "primary-button",
+								disabled: busyId === "edit-save:" + editingSkill.name,
+								onClick: () => void saveWorkspaceSkillEdit(),
+								children: [busyId === "edit-save:" + editingSkill.name ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, {
+									size: 14,
+									className: "spin"
+								}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { size: 14 }), "保存"]
+							})]
+						})
+					]
+				})
 			})
 		]
 	});
@@ -31003,6 +32640,9 @@ function SkillBuilderDialog({ initial, packages, onClose, onInstall }) {
 		setError("");
 		try {
 			await onInstall(JSON.stringify(manifest));
+			try {
+				await skillFileAction("write", `skills/${name}/SKILL.md`, skillMarkdownOf(name, description, modality, instructions));
+			} catch {}
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : "创建 Skill 失败");
 		} finally {

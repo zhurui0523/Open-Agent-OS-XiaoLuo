@@ -171,6 +171,9 @@ interface XiaoLuoDesktopBridge {
   openExternal?: (payload: { url: string }) => Promise<{ ok?: boolean }>;
   browserAction?: (payload: Record<string, unknown>) => Promise<{ ok?: boolean; error?: string; dataUrl?: string; width?: number; height?: number; result?: string }>;
   desktopAction?: (payload: Record<string, unknown>) => Promise<{ ok?: boolean; error?: string; code?: string; enabled?: boolean; dataUrl?: string; width?: number; height?: number }>;
+  webDriveAction?: (payload: Record<string, unknown>) => Promise<{ ok?: boolean; error?: string; dataUrl?: string; width?: number; height?: number; result?: string; url?: string; title?: string; connected?: boolean }>; // WEB-DRIVE-TS
+  uiaAction?: (payload: Record<string, unknown>) => Promise<unknown>; // UIA-PANEL
+  sshAction?: (payload: Record<string, unknown>) => Promise<unknown>; // SSH-PANEL
   writeClipboard?: (payload: { text: string }) => Promise<{ ok?: boolean }>;
 }
 declare global {
@@ -387,6 +390,8 @@ interface XiaoluoBrainPanelProps {
   onQueueChange?: (items: Array<{ id: number; text: string }>) => void;
   /** 技能目录（工作区技能+插件技能）上报宿主，供输入条 / 斜杠补全与显式引用 */
   onSkillCatalogChange?: (items: Array<{ name: string; description: string }>) => void;
+  /** 工作区 id：注册表包技能物化拉取用（注册表 API 无 workspaceId 拒请求） */
+  workspaceId?: string;
   /** 权限模式：default=仅工作区 / auto=越界只读自动放行 / full=本机任意读写 */
   permissionMode?: "default" | "auto" | "full";
   /** 最新代码产物/预览上报口（画布独立结果面板） */
@@ -912,6 +917,7 @@ export function XiaoluoBrainPanel({
   onBusyChange,
   onQueueChange,
   onSkillCatalogChange,
+  workspaceId = "",
   permissionMode = "default",
 }: XiaoluoBrainPanelProps) {
   const [askDraft, setAskDraft] = useState("");
@@ -1285,6 +1291,69 @@ export function XiaoluoBrainPanel({
               const res = await desktop.desktopAction!({ action: 'operate', approved: true, op: req.op, x: req.x, y: req.y, text: req.text, key: req.key, dx: req.dx, dy: req.dy });
               if (res.error) throw new Error(res.error);
               return '整桌操作已执行：' + req.op;
+            },
+          }
+        : undefined,
+      webdriver: desktop?.webDriveAction
+        ? {
+            navigate: async (url: string) => {
+              const res = await desktop.webDriveAction!({ action: 'navigate', url });
+              if (res.error) throw new Error(res.error);
+              return '外部浏览器已打开：' + (res.url ?? url) + (res.title ? '（' + res.title + '）' : '');
+            },
+            dom: async (mode?: 'dom' | 'text', max?: number) => {
+              const res = await desktop.webDriveAction!({ action: mode === 'text' ? 'text' : 'dom', ...(max ? { max } : {}) });
+              if (res.error) throw new Error(res.error);
+              return res.result ?? '';
+            },
+            capture: async () => {
+              const res = await desktop.webDriveAction!({ action: 'screenshot' });
+              if (res.error || !res.dataUrl) throw new Error(res.error ?? '外部浏览器截图失败');
+              return { dataUrl: res.dataUrl, width: res.width ?? 0, height: res.height ?? 0 };
+            },
+            operate: async (req: { op: string; selector?: string; x?: number; y?: number; text?: string; key?: string; dx?: number; dy?: number; clear?: boolean }) => {
+              const res = await desktop.webDriveAction!({ action: req.op === 'dblclick' ? 'click' : req.op, double: req.op === 'dblclick', selector: req.selector, x: req.x, y: req.y, text: req.text, key: req.key, dx: req.dx, dy: req.dy, clear: req.clear });
+              if (res.error) throw new Error(res.error);
+              return '外部浏览器操作已执行：' + req.op + (req.selector ? '（' + req.selector + '）' : '');
+            },
+            eval: async (js: string, awaitPromise?: boolean) => {
+              const res = await desktop.webDriveAction!({ action: 'eval', js, awaitPromise });
+              if (res.error) throw new Error(res.error);
+              return res.result ?? '';
+            },
+            record: async (req: { op: string; name?: string }) => {
+              const map: Record<string, string> = { start: 'record-start', stop: 'record-stop', save: 'skill-save', list: 'skill-list', delete: 'skill-delete' };
+              const action = map[req.op] || 'record-stop';
+              const res = await desktop.webDriveAction!({ action, ...(req.name ? { name: req.name } : {}) }) as Record<string, unknown>;
+              if (res && res.error) throw new Error(String(res.error));
+              return JSON.stringify(res); // RECORD-PANEL
+            },
+            replay: async (req: { name?: string; steps?: unknown[]; stepDelay?: number }) => {
+              const res = await desktop.webDriveAction!({ action: 'replay', ...(req.name ? { name: req.name } : {}), ...(req.steps ? { steps: req.steps } : {}), ...(req.stepDelay ? { stepDelay: req.stepDelay } : {}) }) as Record<string, unknown>;
+              if (res && res.error) throw new Error(String(res.error));
+              return JSON.stringify(res);
+            },
+          }
+        : undefined,
+      uia: desktop?.uiaAction
+        ? {
+            inspect: async (req: { action: string; pid?: number; name?: string; automationId?: string; controlType?: string; depth?: number; max?: number; text?: string }) => {
+              const mutate = req.action === 'invoke' || req.action === 'setvalue' || req.action === 'focus';
+              if (mutate) await ensureDesktopGate();
+              const res = await desktop.uiaAction!({ ...req });
+              const err = res && typeof res === 'object' && 'error' in res ? (res as { error?: string }).error : undefined;
+              if (err) throw new Error(err);
+              return typeof res === 'string' ? res : JSON.stringify(res);
+            },
+          }
+        : undefined,
+      ssh: desktop?.sshAction
+        ? {
+            exec: async (req: { host: string; command?: string; user?: string; port?: number; identityFile?: string; timeoutMs?: number; op?: string }) => {
+              await ensureDesktopGate();
+              const res = await desktop.sshAction!({ action: req.op === 'test' ? 'test' : 'exec', host: req.host, command: req.command, user: req.user, port: req.port, identityFile: req.identityFile, timeoutMs: req.timeoutMs }) as Record<string, unknown>;
+              if (res && res.error) throw new Error(String(res.error));
+              return JSON.stringify(res); // SSH-PANEL
             },
           }
         : undefined,
@@ -2333,10 +2402,19 @@ export function XiaoluoBrainPanel({
   // 小逻的记忆：入口挪到结果面板标题栏（brain-result-dock），面板不再渲染记忆 UI
 
   // 技能库扫描：打开面板扫一次；每轮结束（busy 落回 false）重扫，save_skill 落盘的技能下轮可见
+  const [skillScanTick, setSkillScanTick] = useState(0);
   useEffect(() => {
-    if (busy) return;
+    const onChange = () => setSkillScanTick((tick) => tick + 1);
+    window.addEventListener("xiaoluo:skills-changed", onChange);
+    return () => window.removeEventListener("xiaoluo:skills-changed", onChange);
+  }, []);
+  useEffect(() => {
+    // busy 期间不再回避重扫：长任务执行中技能变更也要实时进菜单（2026-09-22 菜单陈旧修复）
     let live = true;
+    let scanning = false;
     const scan = async () => {
+      if (scanning) return;
+      scanning = true;
       try {
         const res = await brainFs("list", "skills");
         const dirs = (res.entries ?? []).filter((e: any) => e.isDir).slice(0, 50);
@@ -2371,13 +2449,49 @@ export function XiaoluoBrainPanel({
             } catch { /* 插件无 skills 目录跳过 */ }
           }
         } catch { /* plugins 目录不存在跳过 */ }
+        // 物种合一：注册表包技能自动物化为工作区 SKILL.md（对话器 /斜杠 与 load_skill 和画布完全同权）
+        if (workspaceId) try {
+          const regResp = await fetch("/api/v2/registry?workspaceId=" + encodeURIComponent(workspaceId));
+          const reg = (await regResp.json().catch(() => ({}))) as {
+            packages?: Array<{ id?: string; name?: string; packageType?: string; lifecycleState?: string; description?: string; ownerScope?: string; availabilitySource?: string }>;
+            capabilities?: Array<{ packageId?: string; title?: string; modality?: string; contributionType?: string; instructions?: string; enabled?: boolean }>;
+          };
+          const owned = new Set(items.map((it) => it.name));
+          for (const pkg of reg.packages ?? []) {
+            if (pkg.packageType !== "skill" || pkg.lifecycleState === "uninstalled" || !pkg.name) continue;
+            // 物化口径与能力中心"可用 Skill"页签对齐：可用包全部物化（2026-09-22 裁决：斜杠菜单全量显示）
+            const name = pkg.name;
+            if (owned.has(name)) continue;
+            const cap = (reg.capabilities ?? []).find(
+              (c) => c.packageId === pkg.id && c.contributionType === "skill" && c.enabled !== false,
+            );
+            // 正文回退链：instructions → description → 标题，保证可用技能必进菜单
+            const instructions =
+              String(cap?.instructions ?? "").trim() ||
+              String(pkg.description ?? "").trim() ||
+              String(cap?.title ?? name).trim();
+            const md =
+              "---\nname: " + name +
+              "\ndescription: " + String(pkg.description ?? cap?.title ?? name).replace(/\r?\n/g, " ").slice(0, 200) +
+              "\nmodality: " + (cap?.modality || "text") +
+              "\n---\n\n" + instructions + "\n";
+            try {
+              await brainFs("write", "skills/" + name + "/SKILL.md", md);
+            } catch { continue; }
+            owned.add(name);
+            items.push({ name, description: String(pkg.description ?? "").trim() });
+          }
+        } catch { /* 注册表不可用时跳过物化 */ }
         if (live) setSkillCatalog(items);
       } catch { /* skills 目录不存在按空库处理 */ }
+      finally { scanning = false; }
     };
     void scan();
-    return () => { live = false; };
+    // 自愈：每 30 秒周期重扫，跨窗口/跨事件漏触发兜底，菜单恒与"可用 Skill"对齐
+    const timer = window.setInterval(() => void scan(), 30_000);
+    return () => { live = false; window.clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy]);
+  }, [busy, skillScanTick]);
 
   // 技能目录上报宿主：对话输入条的 / 斜杠补全菜单与发送期显式引用消费
   useEffect(() => {

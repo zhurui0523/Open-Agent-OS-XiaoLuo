@@ -394,6 +394,147 @@ async function fetchJson(
     sourceSignal?.removeEventListener("abort", abortFromSource);
   }
 }
+type StreamMode = "openai" | "anthropic" | "responses" | "gemini";
+function streamTextDelta(mode: StreamMode, data: unknown): string {
+  const record = data as Record<string, unknown>;
+  if (mode === "openai") {
+    const choices = record.choices as
+      | Array<{ delta?: { content?: unknown } }>
+      | undefined;
+    const content = choices?.[0]?.delta?.content;
+    return typeof content === "string" ? content : "";
+  }
+  if (mode === "anthropic") {
+    const delta = record.delta as
+      | { type?: unknown; text?: unknown }
+      | undefined;
+    return delta?.type === "text_delta" && typeof delta.text === "string"
+      ? delta.text
+      : "";
+  }
+  if (mode === "responses") {
+    return record.type === "response.output_text.delta" &&
+      typeof record.delta === "string"
+      ? record.delta
+      : "";
+  }
+  const candidates = record.candidates as
+    | Array<{ content?: { parts?: Array<{ text?: unknown }> } }>
+    | undefined;
+  return (candidates?.[0]?.content?.parts ?? [])
+    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .join("");
+}
+function geminiStreamEndpoint(url: string): string | null {
+  return /:generateContent$/i.test(url)
+    ? url.replace(/:generateContent$/i, ":streamGenerateContent?alt=sse")
+    : null;
+}
+async function fetchStreamedText(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  mode: StreamMode,
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const sourceSignal = init.signal;
+  const abortFromSource = () => controller.abort();
+  sourceSignal?.addEventListener("abort", abortFromSource, { once: true });
+  // 块级空闲闸：100 秒无任何数据即认定链路被代理空闲截断，提前中止报错
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), 100_000);
+  };
+  try {
+    let response: Response;
+    try {
+      armIdle();
+      response = await fetchExternalEndpoint(
+        url,
+        { ...init, signal: controller.signal },
+        timeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof ModelExecutionError) throw error;
+      const message =
+        error instanceof Error
+          ? error.message
+          : "无法连接远程模型服务，请检查接口地址、服务器网络或服务状态";
+      throw new ModelExecutionError(message, {
+        status: controller.signal.aborted ? 504 : 502,
+        code: controller.signal.aborted
+          ? "PROVIDER_TIMEOUT"
+          : "PROVIDER_NETWORK_ERROR",
+      });
+    }
+    if (!response.ok) {
+      const payload = await readResponseJsonLimited(
+        response,
+        2 * 1024 * 1024,
+      ).catch(() => null);
+      const detail =
+        payload && typeof payload === "object" && "error" in payload
+          ? JSON.stringify(payload.error)
+          : `HTTP ${response.status}`;
+      const retryAfter = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
+      throw new ModelExecutionError(`执行器返回失败：${detail}`, {
+        status: response.status,
+        retryAfterMs: Number.isFinite(retryAfterSeconds)
+          ? Math.max(0, retryAfterSeconds * 1000)
+          : null,
+        code:
+          response.status === 429
+            ? "RATE_LIMITED"
+            : response.status >= 500
+              ? "PROVIDER_UNAVAILABLE"
+              : `HTTP_${response.status}`,
+      });
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!response.body || !contentType.includes("text/event-stream")) {
+      // 提供方忽略 stream 请求返回完整 JSON：按非流形态取文本
+      const payload = await readResponseJsonLimited(
+        response,
+        2 * 1024 * 1024,
+      ).catch(() => null);
+      return modelResponseText(payload) ?? "";
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    while (true) {
+      armIdle();
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, "").trim();
+        buffer = buffer.slice(newline + 1);
+        if (line.startsWith("data:")) {
+          const data = line.slice(5).trim();
+          if (data && data !== "[DONE]") {
+            try {
+              text += streamTextDelta(mode, JSON.parse(data));
+            } catch {
+              // 跳过无法解析的块，不中断整条流
+            }
+          }
+        }
+        newline = buffer.indexOf("\n");
+      }
+    }
+    return text;
+  } finally {
+    clearTimeout(timeout);
+    if (idleTimer) clearTimeout(idleTimer);
+    sourceSignal?.removeEventListener("abort", abortFromSource);
+  }
+}
 
 function credentialHeaders(model: ModelRow, credential?: string) {
   const headers = new Headers({
@@ -1480,6 +1621,8 @@ export async function executeModel(
   const base = endpoint.toString();
   let url = base;
   let body: Record<string, unknown>;
+  // 流式通道标记：文本节点优先 SSE，避免长篇生成被上游代理 120 秒读超时截断（2026-09-26）
+  let streamMode: StreamMode | null = null;
 
   if (model.protocol === "runninghub-rh-image-2") {
     body = runningHubImageEditBody(
@@ -1556,6 +1699,7 @@ export async function executeModel(
       throw new Error("Gemini 连接当前仅支持文本或图片节点");
     }
     url = resolveModelApiEndpoint(base);
+    if (node.kind === "text") streamMode = "gemini";
     if (node.kind === "image") {
       const aspectRatio =
         typeof modelParameters.aspectRatio === "string"
@@ -1587,6 +1731,7 @@ export async function executeModel(
       throw new Error("原生 Claude 格式连接当前只支持文本节点");
     }
     url = resolveModelApiEndpoint(base);
+    streamMode = "anthropic";
     body = {
       ...modelParameters,
       max_tokens: 4096,
@@ -1598,6 +1743,7 @@ export async function executeModel(
       throw new Error("OpenAI Responses 格式连接当前只支持文本节点");
     }
     url = resolveModelApiEndpoint(base);
+    streamMode = "responses";
     body = {
       ...modelParameters,
       model: model.modelName,
@@ -1605,6 +1751,7 @@ export async function executeModel(
     };
   } else if (node.kind === "text") {
     url = resolveModelApiEndpoint(base);
+    streamMode = "openai";
     body = {
       ...modelParameters,
       model: model.modelName,
@@ -1663,6 +1810,48 @@ export async function executeModel(
     );
   }
 
+  // 流式优先：文本节点走 SSE 分块传输，避免长篇生成被上游代理 120 秒读超时截断（Cloudflare 524 类）；
+  // 4xx（接口不支持 stream 参数）或空流时落回下方非流式路径（2026-09-26）
+  if (streamMode && !isRunningHubProtocol(model.protocol)) {
+    const streamUrl = streamMode === "gemini" ? geminiStreamEndpoint(url) : url;
+    if (streamUrl) {
+      try {
+        const streamed = await fetchStreamedText(
+          streamUrl,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(
+              streamMode === "gemini" ? body : { ...body, stream: true },
+            ),
+            signal,
+          },
+          600_000,
+          streamMode,
+        );
+        if (streamed.trim()) {
+          const executorLabel = `model:${model.id}`;
+          return {
+            executor: executorLabel,
+            result: streamed,
+            output: {
+              type: "text",
+              text: streamed,
+              data: { streamed: true, text: streamed },
+              executor: executorLabel,
+            },
+          };
+        }
+      } catch (error) {
+        const fallbackable =
+          error instanceof ModelExecutionError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          error.status !== 429;
+        if (!fallbackable) throw error;
+      }
+    }
+  }
   const payload = await fetchJson(
     url,
     {
@@ -1671,7 +1860,13 @@ export async function executeModel(
       body: JSON.stringify(body),
       signal,
     },
-    60_000,
+    // 非流式调用要等全文返回：分镜脚本等长文本生成远超旧 60 秒闸门，
+    // 会被自家超时闸刀截断报“已取消或超时”（对话器流式链路不受此限）；2026-09-22 按 kind 放宽
+    node.kind === "text" || node.kind === "video"
+      ? 300_000
+      : node.kind === "image"
+        ? 180_000
+        : 60_000,
     model.protocol === "dall-e-3" ||
       (model.protocol === "gemini" && node.kind === "image")
       ? 25 * 1024 * 1024

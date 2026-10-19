@@ -14,6 +14,9 @@ import {
 } from "electron";
 import { handleCommandPayload, handleDeployPayload, handleFsPayload, handleFetchPayload, handleServicePayload, initLocalRuntime, shutdownLocalServices, cancelAllCommands } from "./local-runtime.mjs";
 import { handleMcpPayload, initMcpRuntime, shutdownMcp } from "./mcp-runtime.mjs";
+import { initWebDriver, handleWebDriverPayload, shutdownWebDriver } from "./webdrive-runtime.mjs"; // WEB-DRIVE-WIRED
+import { initUia, handleUiaPayload } from "./uia-runtime.mjs"; // UIA-WIRED
+import { initSsh, handleSshPayload } from "./ssh-runtime.mjs"; // SSH-WIRED
 import { handleAppServerPayload, initAppServerIpc, shutdownAppServer } from "./app-server-ipc.mjs"; // P21-import
 import { registerLocalAiIpc, shutdownLocalAi } from "./local-ai/ipc.mjs";
 import { initAppData } from "./app-data.mjs";
@@ -148,6 +151,9 @@ let lastStatus = {
 app.setName(copy.appName);
 initLocalRuntime(app.getPath("userData"));
 initMcpRuntime(join(app.getPath("userData"), "brain-workspace", "workspace"));
+initWebDriver(app.getPath("userData")); // WEB-DRIVE
+initUia(app.getPath("userData")); // UIA
+initSsh(app.getPath("userData")); // SSH
 registerLocalAiIpc();
 // DATA-DIR 存储位置设置：配置落 userData/data-dir.json
 initAppData(app.getPath("userData"));
@@ -774,6 +780,32 @@ ipcMain.handle("brain:fetch", (_event, payload) => handleFetchPayload(payload));
 ipcMain.handle("brain:mcp", (_event, payload) => handleMcpPayload(payload));
 ipcMain.handle("brain:browser", (_event, payload) => handleBrowserPayload(payload)); // VISION-OPS
 ipcMain.handle("brain:desktop", (_event, payload) => handleDesktopPayload(payload)); // DESKTOP-OPS
+// WEB-DRIVE：外部浏览器 DOM 控制（CDP 接管系统 Edge/Chrome）。变更类动作受"允许小逻控制本机"开关门控。
+ipcMain.handle("brain:webdrive", (_event, payload) => {
+  const act = String((payload && payload.action) || "");
+  if (act !== "status" && act !== "close" && !desktopControlEnabled()) {
+    return { error: "外部浏览器控制未开启：请先在客户端设置里打开「允许小逻控制本机」开关" };
+  }
+  return handleWebDriverPayload(payload);
+});
+// UIA：Windows UI Automation 桌面控件语义识别（枚举窗口/控件树、按 名称/AutomationId/控件类型 定位并语义操作）。
+// read 类动作（windows/tree/find）只读放行；mutate 类（invoke/setvalue/focus）受"允许小逻控制本机"开关门控。
+ipcMain.handle("brain:uia", (_event, payload) => {
+  const act = String((payload && payload.action) || "");
+  const readOnly = act === "windows" || act === "tree" || act === "find";
+  if (!readOnly && !desktopControlEnabled()) {
+    return { error: "桌面控件操作未开启：请先在客户端设置里打开「允许小逻控制本机」开关" };
+  }
+  return handleUiaPayload(payload);
+});
+// SSH：远程执行工作区（走系统 OpenSSH 客户端，只密钥认证，绝不存密码）。exec/test 受"允许小逻控制本机"开关门控。
+ipcMain.handle("brain:ssh", (_event, payload) => {
+  const act = String((payload && payload.action) || "");
+  if (act !== "status" && !desktopControlEnabled()) {
+    return { error: "SSH 远程执行未开启：请先在客户端设置里打开「允许小逻控制本机」开关" };
+  }
+  return handleSshPayload(payload);
+});
 ipcMain.handle("brain:appserver", (_event, payload) => handleAppServerPayload(payload)); // P21-ipc
 ipcMain.handle("desktop:get-status", () => lastStatus);
 // SERVER-URL 设置页「运行模式」自定义连接地址（status/test/set，应用后自动重启）
@@ -851,6 +883,7 @@ if (!hasSingleInstanceLock) {
 app.on("before-quit", () => {
   shutdownLocalServices();
   shutdownMcp();
+  shutdownWebDriver(); // WEB-DRIVE
   shutdownLocalAi();
 shutdownAppServer(); // P21-quit
 });

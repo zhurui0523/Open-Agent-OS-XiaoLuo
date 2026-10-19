@@ -581,6 +581,8 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   resultNodeId?: string;
   resultKind?: NodeKind;
+  /** 结果资产快照地址：节点被删/重载后缩略图仍可渲染（2026-09-23） */
+  resultAssetUrl?: string;
 }
 
 export interface ChatAttachment {

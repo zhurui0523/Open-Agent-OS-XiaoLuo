@@ -1,0 +1,4 @@
+﻿后台/xiaoluo-server/server-*.log
+后台/xiaoluo-server/*.bak-*
+.env.local
+node_modules/

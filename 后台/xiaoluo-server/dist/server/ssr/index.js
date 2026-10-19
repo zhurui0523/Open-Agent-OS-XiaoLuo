@@ -11641,7 +11641,7 @@ var client_references_default = {
 		} };
 	},
 	"b6e357c07b7f": async () => {
-		const m = await import("./assets/app-shell-DHTThwHO.js");
+		const m = await import("./assets/app-shell-CbE07HWV.js");
 		return { get "AppShell"() {
 			return m["AppShell"];
 		} };

@@ -150,12 +150,20 @@ function inlineTextResult(node: CanvasNode) {
   }
 }
 
+// 下载文件名唯一后缀：时间戳+随机码，避免保存对话框重名需手动改（2026-09-26 用户裁决）
+function downloadUniqueSuffix() {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `${stamp}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function textDownloadName(title: string) {
   const safeTitle = title
     .trim()
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
     .replace(/[.\s]+$/g, "");
-  return `${safeTitle || "文本结果"}.txt`;
+  return `${safeTitle || "文本结果"}-${downloadUniqueSuffix()}.txt`;
 }
 
 interface NodeCardProps {
@@ -187,10 +195,12 @@ interface NodeCardProps {
   ) => void;
   onAttachInputAsset: (sourceNodeId: string) => void;
   onRemoveInputAsset: (edgeId: string) => void;
+  onReorderInputAssets: (orderedEdgeIds: string[]) => void;
   onUploadInputAssets: (files: File[]) => Promise<void>;
   connectionDataType?: PortDataType;
   onRun: () => void;
   onRerunBranch: () => void;
+  onRemake: () => void;
   onDelete: () => void;
   onOpenPlugin: (mode?: PluginRuntimeMode) => void;
   onOpenMediaPlugin: (plugin: InstalledPackage) => void;
@@ -800,12 +810,14 @@ export function NodePromptEditor({
           <section className="node-asset-mention-group" aria-label="工作区技能">
             <strong>技能（回车选用）</strong>
             {matchingSkills.length ? (
-              matchingSkills.slice(0, 8).map((skill, index) => (
+              matchingSkills.map((skill, index) => (
                 <button
                   type="button"
                   role="option"
                   aria-selected={index === slashIndex}
-                  className={index === slashIndex ? "is-active" : ""}
+                  className={
+                    "node-skill-option" + (index === slashIndex ? " is-active" : "")
+                  }
                   key={skill.name}
                   onPointerDown={(event) => {
                     event.preventDefault();
@@ -814,9 +826,6 @@ export function NodePromptEditor({
                   onClick={() => chooseSkill(skill)}
                 >
                   <span>{skill.name}</span>
-                  <small style={{ color: "#9ca3af", marginLeft: 6 }}>
-                    {skill.description}
-                  </small>
                 </button>
               ))
             ) : (
@@ -936,16 +945,76 @@ function PromptEditorDialog({
   );
 }
 
+// 输入素材芯片拖拽排序：4px 激活避开节点卡 8px 拖移阈，激活后劫持指针事件实时换位（2026-09-27 用户裁决）
+export function useChipReorderDrag(onMove: (from: number, to: number) => void) {
+  const dragRef = useRef<{ pointerId: number; index: number; startX: number; startY: number; active: boolean } | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const moveRef = useRef(onMove);
+  moveRef.current = onMove;
+  function endChipDrag() {
+    dragRef.current = null;
+    setDragIndex(null);
+  }
+  function chipDragProps(index: number) {
+    return {
+      "data-chip-index": index,
+      onPointerDown: (event: React.PointerEvent<HTMLElement>) => {
+        if (event.pointerType === "mouse" && event.button !== 0) return;
+        dragRef.current = { pointerId: event.pointerId, index, startX: event.clientX, startY: event.clientY, active: false };
+      },
+      onPointerMove: (event: React.PointerEvent<HTMLElement>) => {
+        const state = dragRef.current;
+        if (!state || state.pointerId !== event.pointerId) return;
+        if (!state.active) {
+          if (Math.hypot(event.clientX - state.startX, event.clientY - state.startY) < 4) return;
+          state.active = true;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setDragIndex(state.index);
+        }
+        event.stopPropagation();
+        event.preventDefault();
+        const container = event.currentTarget.parentElement;
+        if (!container) return;
+        const chips = Array.from(container.querySelectorAll<HTMLElement>("[data-chip-index]"));
+        let hover = chips.length - 1;
+        for (const chip of chips) {
+          const rect = chip.getBoundingClientRect();
+          if (event.clientX < rect.left + rect.width / 2) {
+            hover = Number(chip.dataset.chipIndex);
+            break;
+          }
+        }
+        if (hover !== state.index) {
+          moveRef.current(state.index, hover);
+          state.index = hover;
+          setDragIndex(hover);
+        }
+      },
+      onPointerUp: (event: React.PointerEvent<HTMLElement>) => {
+        const state = dragRef.current;
+        if (!state || state.pointerId !== event.pointerId) return;
+        if (state.active) event.stopPropagation();
+        endChipDrag();
+      },
+      onPointerCancel: endChipDrag,
+      onLostPointerCapture: endChipDrag,
+    };
+  }
+  return { dragIndex, chipDragProps };
+}
+
 function NodeInputAssets({
   assets,
   constraints,
   onRemove,
   onUpload,
+  onReorder,
 }: {
   assets: NodeInputAssetReference[];
   constraints: ModelInputConstraints;
   onRemove: (edgeId: string) => void;
   onUpload: (files: File[]) => Promise<void>;
+  onReorder: (orderedEdgeIds: string[]) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -953,6 +1022,20 @@ function NodeInputAssets({
   const visibleAssets = expanded ? assets : assets.slice(0, 12);
   const hiddenCount = Math.max(0, assets.length - visibleAssets.length);
   const canUpload = constraints.maxTotal > 0 && assets.length < constraints.maxTotal;
+  const { dragIndex, chipDragProps } = useChipReorderDrag(handleReorder);
+
+  function handleReorder(from: number, to: number) {
+    const fromId = visibleAssets[from]?.edgeId;
+    const toId = visibleAssets[to]?.edgeId;
+    if (!fromId || !toId || fromId === toId) return;
+    const ordered = assets.map((asset) => asset.edgeId);
+    const fromFull = ordered.indexOf(fromId);
+    const toFull = ordered.indexOf(toId);
+    if (fromFull < 0 || toFull < 0) return;
+    ordered.splice(fromFull, 1);
+    ordered.splice(toFull, 0, fromId);
+    onReorder(ordered);
+  }
 
   return (
     <section
@@ -972,13 +1055,14 @@ function NodeInputAssets({
         </p>
       ) : (
         <div className="node-input-asset-grid">
-          {visibleAssets.map((asset) => {
+          {visibleAssets.map((asset, index) => {
             return (
               <article
                 key={asset.edgeId}
-                className="node-input-asset-card"
+                className={`node-input-asset-card ${dragIndex === index ? "is-chip-drag" : ""}`}
                 data-kind={asset.kind}
                 aria-label={asset.title}
+                {...chipDragProps(index)}
               >
                 <InputAssetPreview asset={asset} />
                 <button
@@ -1185,10 +1269,12 @@ export function NodeCard({
   onConnectionStart,
   onAttachInputAsset,
   onRemoveInputAsset,
+  onReorderInputAssets,
   onUploadInputAssets,
   connectionDataType,
   onRun,
   onRerunBranch,
+  onRemake,
   onDelete,
   onOpenPlugin,
   onOpenMediaPlugin,
@@ -1375,19 +1461,21 @@ export function NodeCard({
       node.kind === "video" ? "mp4" : node.kind === "audio" ? "mp3" : "png";
     const base = (node.title || fallbackLabel).replace(/[\\/:*?"<>|]/g, "_").trim() || fallbackLabel;
     const extension = (mediaSourceUrl.split(".").pop() ?? "").split("?")[0];
+    const suffix = downloadUniqueSuffix();
     return /^[a-z0-9]{1,10}$/i.test(extension)
-      ? `${base}.${extension.toLowerCase()}`
-      : `${base}.${fallbackExtension}`;
+      ? `${base}-${suffix}.${extension.toLowerCase()}`
+      : `${base}-${suffix}.${fallbackExtension}`;
   })();
   const isEmptyResultPlaceholder = role === "result" && !hasResultOutput;
   const isSizedTextResult =
     role === "result" && node.kind === "text" && hasResultOutput;
+  // 多选态只保留选区批量操作条：单节点操作条（做同款/插件/放大/下载）隐藏（2026-09-24 用户裁决）
   const hasTextResultActions =
-    selected && role === "result" && node.kind === "text" && hasResultOutput;
+    selected && !multiSelected && role === "result" && node.kind === "text" && hasResultOutput;
   const hasMediaActions =
-    selected && (node.kind === "image" || node.kind === "video") && hasMediaAssetOutput;
+    selected && !multiSelected && (node.kind === "image" || node.kind === "video") && hasMediaAssetOutput;
   const hasAudioActions =
-    selected && node.kind === "audio" && hasMediaAssetOutput;
+    selected && !multiSelected && node.kind === "audio" && hasMediaAssetOutput;
   const isExecutionNode = role === "execution";
   const hasResultTextSurface =
     role === "result" &&
@@ -2199,12 +2287,24 @@ export function NodeCard({
           )}
         </div>
 
-        {selected && mediaUrl && (node.kind === "image" || node.kind === "video" || node.kind === "audio") && (
+        {selected && !multiSelected && mediaUrl && (node.kind === "image" || node.kind === "video" || node.kind === "audio") && (
           <nav
             className="result-action-nav"
             aria-label={node.kind === "video" ? "视频功能导航" : node.kind === "audio" ? "音频功能导航" : "图片功能导航"}
             onPointerDown={(event) => event.stopPropagation()}
           >
+            <button
+              type="button"
+              className="result-text-action"
+              title="素材与提示词同步到对话器做同款"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemake();
+              }}
+            >
+              <Sparkles size={14} />
+              <span>做同款</span>
+            </button>
             <AssetPluginMenu
               plugins={mediaPlugins}
               mediaKind={node.kind as MediaPluginType}
@@ -2614,6 +2714,18 @@ export function NodeCard({
             aria-label={node.kind === "video" ? "视频功能导航" : node.kind === "audio" ? "音频功能导航" : "图片功能导航"}
             onPointerDown={(event) => event.stopPropagation()}
           >
+            <button
+              type="button"
+              className="result-text-action"
+              title="素材与提示词同步到对话器做同款"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemake();
+              }}
+            >
+              <Sparkles size={14} />
+              <span>做同款</span>
+            </button>
             <AssetPluginMenu
               plugins={mediaPlugins}
               mediaKind={node.kind as MediaPluginType}
@@ -2696,6 +2808,18 @@ export function NodeCard({
             aria-label="音频功能导航"
             onPointerDown={(event) => event.stopPropagation()}
           >
+            <button
+              type="button"
+              className="result-text-action"
+              title="素材与提示词同步到对话器做同款"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemake();
+              }}
+            >
+              <Sparkles size={14} />
+              <span>做同款</span>
+            </button>
             <AssetPluginMenu
               plugins={mediaPlugins}
               mediaKind="audio"
@@ -2800,6 +2924,13 @@ export function NodeCard({
       ) : (
         <>
       {role === "result" && node.kind === "text" && (
+        <>
+        {/* 顶部拖拽把手条：文本域占满整卡无抓握余量，加空白条方便整体移动（2026-09-28 用户要求） */}
+        <div
+          className="text-result-drag-handle node-drag-handle"
+          aria-hidden="true"
+          title="拖动移动节点"
+        />
         <div className="node-workbench-content">
           <textarea
             className="text-result-editor"
@@ -2812,6 +2943,7 @@ export function NodeCard({
             onChange={(event) => updateTextResult(event.target.value)}
           />
         </div>
+        </>
       )}
 
       {(role === "execution" ||
@@ -2828,6 +2960,7 @@ export function NodeCard({
               constraints={inputConstraints}
               onRemove={onRemoveInputAsset}
               onUpload={onUploadInputAssets}
+              onReorder={onReorderInputAssets}
             />
           )}
 

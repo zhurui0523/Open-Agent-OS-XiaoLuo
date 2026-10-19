@@ -95,6 +95,61 @@ function isNodeKind(value: unknown): value is NodeKind {
   return skillTypeOrder.includes(value as NodeKind);
 }
 
+// 物种合一：SKILL.md 双通道文件操作模块级入口（组件与 SkillBuilderDialog 共用）
+async function skillFileAction(
+  action: "read" | "write" | "delete",
+  path: string,
+  content?: string,
+): Promise<{ ok: boolean; error?: string; content?: string }> {
+  const bridge = (
+    window as unknown as {
+      xiaoluoDesktop?: {
+        fsAction?: (payload: unknown) => Promise<{ error?: string; content?: string }>;
+      };
+    }
+  ).xiaoluoDesktop;
+  if (bridge && typeof bridge.fsAction === "function") {
+    const res = await bridge.fsAction({ action, path, content, mode: "default" });
+    if (res.error) return { ok: false, error: res.error };
+    return { ok: true, content: res.content };
+  }
+  try {
+    const resp = await fetch("/api/v2/brain/fs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, path, content, mode: "default" }),
+    });
+    const data = (await resp.json().catch(() => ({}))) as {
+      error?: string;
+      content?: string;
+    };
+    if (!resp.ok) return { ok: false, error: data.error ?? "文件操作失败" };
+    return { ok: true, content: data.content };
+  } catch (reason) {
+    return { ok: false, error: reason instanceof Error ? reason.message : "文件操作失败" };
+  }
+}
+
+/** SKILL.md 序列化（frontmatter + 正文）：文件与注册表投影共用同一契约 */
+function skillMarkdownOf(
+  name: string,
+  description: string,
+  modality: string,
+  body: string,
+) {
+  return (
+    "---\nname: " +
+    name +
+    "\ndescription: " +
+    description.replace(/\r?\n/g, " ").slice(0, 200) +
+    "\nmodality: " +
+    (modality || "text") +
+    "\n---\n\n" +
+    body.trim() +
+    "\n"
+  );
+}
+
 function getSkillTypeLabels(
   item: InstalledPackage | MarketplacePackage,
   capabilities: Capability[],
@@ -561,9 +616,19 @@ function MarketplacePanel({
     "installed" | "private" | "shared"
   >("installed");
   const [workspaceSkills, setWorkspaceSkills] = useState<
-    Array<{ name: string; description: string; source: string }>
+    Array<{
+      name: string;
+      description: string;
+      source: string;
+      body?: string;
+      modality?: string;
+    }>
   >([]);
   const [workspaceScanTick, setWorkspaceScanTick] = useState(0);
+  const [editingSkill, setEditingSkill] = useState<{
+    name: string;
+    content: string;
+  } | null>(null);
 
   // 工作区技能扫描（工作区 skills/ + 插件自带技能）：能力中心显示便于管理，对话 /名字 引用
   useEffect(() => {
@@ -600,13 +665,22 @@ function MarketplacePanel({
       if (!resp.ok) throw new Error(data.error ?? "读取失败");
       return data;
     };
-    const readDescription = async (rel: string) => {
+    const readSkillFile = async (rel: string) => {
       try {
         const res = await fsAction("read", rel);
-        const matched = /description:\s*(.+)/.exec(res.content ?? "");
-        return matched ? matched[1].trim() : "";
+        const content = res.content ?? "";
+        const matched = /description:\s*(.+)/.exec(content);
+        const modMatched = /modality:\s*(.+)/.exec(content);
+        const fmEnd = content.startsWith("---\n")
+          ? content.indexOf("\n---", 4)
+          : -1;
+        return {
+          description: matched ? matched[1].trim() : "",
+          modality: modMatched ? modMatched[1].trim() : "text",
+          body: fmEnd >= 0 ? content.slice(fmEnd + 4).trim() : content.trim(),
+        };
       } catch {
-        return "";
+        return { description: "", modality: "text", body: "" };
       }
     };
     void (async () => {
@@ -618,10 +692,13 @@ function MarketplacePanel({
         for (const dir of dirs) {
           const name = String(dir.path).split("/").pop() ?? "";
           if (!name) continue;
+          const file = await readSkillFile(`skills/${name}/SKILL.md`);
           items.push({
             name,
-            description: await readDescription(`skills/${name}/SKILL.md`),
+            description: file.description,
             source: "工作区",
+            body: file.body,
+            modality: file.modality,
           });
         }
         try {
@@ -641,12 +718,15 @@ function MarketplacePanel({
               for (const skillDir of skillDirs) {
                 const skillName = String(skillDir.path).split("/").pop() ?? "";
                 if (!skillName) continue;
+                const pluginFile = await readSkillFile(
+                  `plugins/${pluginName}/skills/${skillName}/SKILL.md`,
+                );
                 items.push({
                   name: skillName,
-                  description: await readDescription(
-                    `plugins/${pluginName}/skills/${skillName}/SKILL.md`,
-                  ),
+                  description: pluginFile.description,
                   source: `插件 ${pluginName}`,
+                  body: pluginFile.body,
+                  modality: pluginFile.modality,
                 });
               }
             } catch {
@@ -656,7 +736,41 @@ function MarketplacePanel({
         } catch {
           /* plugins 目录不存在跳过 */
         }
+        // 物种合一：尚未落进工作区的包技能物化为 SKILL.md（与面板同一逻辑，画布与对话同权）
+        if (os.workspaceId) try {
+          const regResp = await fetch("/api/v2/registry?workspaceId=" + encodeURIComponent(os.workspaceId));
+          const reg = (await regResp.json().catch(() => ({}))) as {
+            packages?: Array<{ id?: string; name?: string; packageType?: string; lifecycleState?: string; description?: string; ownerScope?: string; availabilitySource?: string }>;
+            capabilities?: Array<{ packageId?: string; modality?: string; contributionType?: string; instructions?: string; enabled?: boolean }>;
+          };
+          const owned = new Set(items.map((it) => it.name));
+          for (const pkg of reg.packages ?? []) {
+            if (pkg.packageType !== "skill" || pkg.lifecycleState === "uninstalled" || !pkg.name || owned.has(pkg.name)) continue;
+            // 物化口径与"可用 Skill"页签对齐：可用包全部物化（2026-09-22 裁决：斜杠菜单全量显示）
+            const cap = (reg.capabilities ?? []).find(
+              (c) => c.packageId === pkg.id && c.contributionType === "skill" && c.enabled !== false,
+            );
+            // 正文回退链：instructions → description → 名称，保证可用技能必进菜单
+            const instructions =
+              String(cap?.instructions ?? "").trim() ||
+              String(pkg.description ?? "").trim() ||
+              pkg.name;
+            const md = skillMarkdownOf(pkg.name, String(pkg.description ?? "").trim() || pkg.name, cap?.modality || "text", instructions);
+            const wrote = await skillFileAction("write", `skills/${pkg.name}/SKILL.md`, md);
+            if (!wrote.ok) continue;
+            owned.add(pkg.name);
+            items.push({
+              name: pkg.name,
+              description: String(pkg.description ?? "").trim(),
+              source: "工作区",
+              body: instructions,
+              modality: cap?.modality || "text",
+            });
+          }
+        } catch { /* 注册表不可用时跳过物化 */ }
         if (live) setWorkspaceSkills(items);
+        // 通知对话器面板重扫技能目录（物化结果同轮进斜杠菜单）
+        if (live) window.dispatchEvent(new CustomEvent("xiaoluo:skills-changed"));
       } catch {
         /* 工作区不存在按空库处理 */
       }
@@ -665,6 +779,71 @@ function MarketplacePanel({
       live = false;
     };
   }, [category, workspaceScanTick]);
+
+  // 物种合一：工作区 SKILL.md 自动注册为注册表包（画布/设置/权限同权）；文件比注册表新时以文件为准刷新
+  const skillSyncBusy = useRef(false);
+  useEffect(() => {
+    if (category !== "skill" || !workspaceSkills.length) return;
+    if (skillSyncBusy.current) return;
+    skillSyncBusy.current = true;
+    void (async () => {
+      try {
+        const skillPackages = os.packages.filter(
+          (item) =>
+            item.packageType === "skill" && item.lifecycleState !== "uninstalled",
+        );
+        const byName = new Map(skillPackages.map((item) => [item.name, item]));
+        let changed = false;
+        for (const skill of workspaceSkills) {
+          if (skill.source !== "工作区" || !skill.body) continue;
+          const pkg = byName.get(skill.name);
+          const capability = pkg
+            ? os.capabilities.find(
+                (c) => c.packageId === pkg.id && c.contributionType === "skill",
+              )
+            : undefined;
+          const drifted =
+            pkg && capability
+              ? (capability.instructions ?? "").trim() !== (skill.body ?? "").trim() ||
+                (pkg.description ?? "") !== skill.description ||
+                capability.modality !== (skill.modality || "text")
+              : false;
+          if (pkg && !drifted) continue;
+          try {
+            const manifest = skillManifestFromMarkdown(
+              skillMarkdownOf(
+                skill.name,
+                skill.description,
+                skill.modality || "text",
+                skill.body ?? "",
+              ),
+              skill.name + ".md",
+            );
+            manifest.name = skill.name;
+            const skillEntry = manifest.contributes?.skills?.[0];
+            if (skillEntry) skillEntry.title = skill.name;
+            if (pkg) {
+              manifest.id = pkg.packageKey ?? manifest.id;
+              manifest.version = pkg.version ?? "1.0.0";
+              manifest.access = {
+                scope: (pkg.accessScope as "personal" | "marketplace") ?? "personal",
+              };
+            }
+            const resp = await fetch("/api/v2/packages", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ manifest }),
+            });
+            if (resp.ok) changed = true;
+          } catch { /* 单条失败跳过 */ }
+        }
+        if (changed) await onRefresh();
+      } finally {
+        skillSyncBusy.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category, workspaceSkills]);
   // ---- 共享技能库（小逻工作区 SKILL.md 流通层；listings 并入共享 Skill 页签统一展示） ----
   const [skillMarketListings, setSkillMarketListings] = useState<
     SkillMarketListing[]
@@ -710,7 +889,7 @@ function MarketplacePanel({
       window as unknown as { xiaoluoDesktop?: { fsAction?: unknown } }
     ).xiaoluoDesktop?.fsAction === "function";
   async function desktopFsAction(
-    action: "read" | "write" | "list",
+    action: "read" | "write" | "list" | "delete",
     path: string,
     content?: string,
   ): Promise<{ ok: boolean; error?: string; content?: string }> {
@@ -732,20 +911,98 @@ function MarketplacePanel({
     return { ok: true, content: res.content };
   }
 
-  async function marketAct(
-    listing: SkillMarketListing,
-    action: "install" | "unpublish",
-  ) {
-    if (action === "unpublish") {
-      const confirmed = await dialog.confirm(
-        "下架该技能后，它将不再出现在共享 Skill 列表；已安装到别人工作区的副本不受影响。确认下架 " + listing.name + " ？",
-        { title: "下架技能", confirmText: "确认下架", tone: "danger" },
-      );
-      if (!confirmed) return;
+  // 工作区文件双通道：Electron 走本地桥，浏览器模式走服务端 /api/v2/brain/fs（技能修改/删除统一入口）
+  async function workspaceFs(
+    action: "read" | "write" | "delete",
+    path: string,
+    content?: string,
+  ): Promise<{ ok: boolean; error?: string; content?: string }> {
+    if (hasDesktopFs) return desktopFsAction(action, path, content);
+    try {
+      const resp = await fetch("/api/v2/brain/fs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, path, content, mode: "default" }),
+      });
+      const data = (await resp.json().catch(() => ({}))) as {
+        error?: string;
+        content?: string;
+      };
+      if (!resp.ok) return { ok: false, error: data.error ?? "文件操作失败" };
+      return { ok: true, content: data.content };
+    } catch (reason) {
+      return {
+        ok: false,
+        error: reason instanceof Error ? reason.message : "文件操作失败",
+      };
     }
+  }
+
+  async function openWorkspaceSkillEditor(skill: { name: string }) {
+    setBusyId("edit:" + skill.name);
+    try {
+      const res = await workspaceFs("read", `skills/${skill.name}/SKILL.md`);
+      if (!res.ok || res.content === undefined) {
+        throw new Error(res.error ?? "读取 SKILL.md 失败");
+      }
+      setEditingSkill({ name: skill.name, content: res.content });
+    } catch (reason) {
+      onNotice(
+        reason instanceof Error ? reason.message : "读取 SKILL.md 失败",
+        "error",
+      );
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function saveWorkspaceSkillEdit() {
+    if (!editingSkill) return;
+    setBusyId("edit-save:" + editingSkill.name);
+    try {
+      const res = await workspaceFs(
+        "write",
+        `skills/${editingSkill.name}/SKILL.md`,
+        editingSkill.content,
+      );
+      if (!res.ok) throw new Error(res.error ?? "保存失败");
+      onNotice(editingSkill.name + " 已保存，对话与斜杠引用即按新内容生效。");
+      setEditingSkill(null);
+      setWorkspaceScanTick((tick) => tick + 1);
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "保存失败", "error");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function deleteUnifiedSkill(skill: {
+    name: string;
+    pkg?: InstalledPackage;
+  }) {
+    const confirmed = await dialog.confirm(
+      `删除 Skill“${skill.name}”？将同时移除工作区 SKILL.md 与注册表包：画布节点与对话/斜杠条目一并消失。`,
+      { title: "删除 Skill", confirmText: "确认删除", tone: "danger" },
+    );
+    if (!confirmed) return;
+    setBusyId("del:" + skill.name);
+    try {
+      if (skill.pkg) await os.uninstallPackage(skill.pkg.id);
+      await skillFileAction("delete", `skills/${skill.name}`);
+      onNotice(skill.name + " 已删除（画布与对话同步移除）。");
+      setWorkspaceScanTick((tick) => tick + 1);
+      await onRefresh();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "删除失败", "error");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function marketAct(listing: SkillMarketListing) {
     setBusyId("market:" + listing.publisherId + "/" + listing.name);
     try {
-      if (action === "install" && hasDesktopFs) {
+      if (hasDesktopFs) {
         // 桌面模式：正文从服务端共享库取，落盘走本地桥；否则"已安装"只落在服务端工作区，本机看不见也用不了
         const probe = await desktopFsAction("read", `skills/${listing.name}/SKILL.md`);
         if (probe.ok) {
@@ -775,23 +1032,19 @@ function MarketplacePanel({
         const resp = await fetch("/api/v2/brain/skill-market", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            action === "install"
-              ? { action, name: listing.name, publisherId: listing.publisherId }
-              : { action, name: listing.name },
-          ),
+          body: JSON.stringify({
+            action: "install",
+            name: listing.name,
+            publisherId: listing.publisherId,
+          }),
         });
         const payload = (await resp.json().catch(() => ({}))) as { error?: string };
         if (!resp.ok) {
-          throw new Error(payload.error ?? (action === "install" ? "安装失败" : "下架失败"));
+          throw new Error(payload.error ?? "安装失败");
         }
       }
-      if (action === "install") {
-        onNotice(listing.name + " 已安装为私有技能（仅你可用）。");
-        setWorkspaceScanTick((tick) => tick + 1);
-      } else {
-        onNotice(listing.name + " 已下架。");
-      }
+      onNotice(listing.name + " 已安装为私有技能（仅你可用）。");
+      setWorkspaceScanTick((tick) => tick + 1);
       await loadSkillMarket();
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : "操作失败", "error");
@@ -799,50 +1052,6 @@ function MarketplacePanel({
       setBusyId("");
     }
   }
-  async function publishWorkspaceSkill(
-    name: string,
-    action: "publish" | "unpublish",
-  ) {
-    if (action === "unpublish") {
-      const confirmed = await dialog.confirm(
-        "下架后它将不再出现在共享 Skill 列表；别人已安装的副本不受影响。确认下架 " + name + " ？",
-        { title: "下架技能", confirmText: "确认下架", tone: "danger" },
-      );
-      if (!confirmed) return;
-    }
-    setBusyId("publish:" + name);
-    try {
-      let body: { action: string; name: string; content?: string } = { action, name };
-      if (action === "publish" && hasDesktopFs) {
-        // 桌面模式：本地 SKILL.md 读出来随请求带上，服务端工作区没有本机文件
-        const local = await desktopFsAction("read", `skills/${name}/SKILL.md`);
-        if (!local.ok || !local.content) {
-          throw new Error("本地工作区不存在 skills/" + name + "/SKILL.md，无法发布");
-        }
-        body = { action, name, content: local.content };
-      }
-      const resp = await fetch("/api/v2/brain/skill-market", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const payload = (await resp.json().catch(() => ({}))) as { error?: string };
-      if (!resp.ok) {
-        throw new Error(payload.error ?? (action === "publish" ? "发布失败" : "下架失败"));
-      }
-      onNotice(
-        action === "publish"
-          ? name + " 已发布到共享 Skill，其他用户可安装。"
-          : name + " 已下架。",
-      );
-      await loadSkillMarket();
-    } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "操作失败", "error");
-    } finally {
-      setBusyId("");
-    }
-  }
-
   const publicPackageItems = marketplacePackages.filter(
     (item) => item.packageType === category,
   );
@@ -868,6 +1077,41 @@ function MarketplacePanel({
       .filter((listing) => listing.publisherId === userId)
       .map((listing) => listing.name),
   );
+  // 物种合一：一个技能一张卡（工作区文件 + 注册表包按名字合并）
+  const skillPackageByName = new Map(
+    myPackageItems
+      .filter((item) => item.packageType === "skill")
+      .map((item) => [item.name, item]),
+  );
+  const unifiedSkills: Array<{
+    name: string;
+    description: string;
+    body?: string;
+    modality?: string;
+    pkg?: InstalledPackage;
+  }> =
+    category === "skill"
+      ? [
+          ...workspaceSkills.map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            body: skill.body,
+            modality: skill.modality,
+            pkg: skillPackageByName.get(skill.name),
+          })),
+          ...myPackageItems
+            .filter(
+              (item) =>
+                item.packageType === "skill" &&
+                !workspaceSkills.some((skill) => skill.name === item.name),
+            )
+            .map((item) => ({
+              name: item.name,
+              description: item.description ?? "",
+              pkg: item,
+            })),
+        ]
+      : [];
 
   async function install(item: WorkflowMarketplaceItem) {
     setBusyId(item.id);
@@ -1126,80 +1370,6 @@ function MarketplacePanel({
         </div>
       )}
 
-      {category === "skill" &&
-        source === "installed" &&
-        workspaceSkills.length > 0 && (
-          <section aria-label="私有技能" style={{ marginBottom: 18 }}>
-            <div className="section-title-row">
-              <div>
-                <h2>私有技能</h2>
-                <p>
-                  你从共享库安装的与你自己工作区沉淀的技能，都是私有、仅自己可见；对话输入框键入 / 加名字即可引用，也可一键发布到共享。共享技能需先安装才能使用。
-                </p>
-              </div>
-              <span className="registry-version">
-                {workspaceSkills.length} 个
-              </span>
-            </div>
-            <div className="workflow-market-grid">
-              {workspaceSkills.map((skill) => (
-                <article
-                  className="workflow-market-card package-market-card"
-                  key={`${skill.source}/${skill.name}`}
-                >
-                  <header>
-                    <span>
-                      <Code2 size={19} />
-                    </span>
-                    <div>
-                      <h3>{skill.name}</h3>
-                      <small>{skill.source}</small>
-                    </div>
-                    <b>{myPublishedSkillNames.has(skill.name) ? "共享（已发布）" : "私有"}</b>
-                  </header>
-                  <p>{skill.description || "未填写说明"}</p>
-                  <div className="workflow-card-tags">
-                    <span>/{skill.name}</span>
-                    <span>对话输入 / 引用</span>
-                  </div>
-                  {skill.source === "工作区" && (
-                    <footer>
-                      <button
-                        type="button"
-                        className={
-                          myPublishedSkillNames.has(skill.name)
-                            ? "danger-text-button"
-                            : "secondary-button compact"
-                        }
-                        disabled={busyId === "publish:" + skill.name}
-                        onClick={() =>
-                          void publishWorkspaceSkill(
-                            skill.name,
-                            myPublishedSkillNames.has(skill.name)
-                              ? "unpublish"
-                              : "publish",
-                          )
-                        }
-                      >
-                        {busyId === "publish:" + skill.name ? (
-                          <LoaderCircle size={14} className="spin" />
-                        ) : myPublishedSkillNames.has(skill.name) ? (
-                          <Trash2 size={14} />
-                        ) : (
-                          <PackagePlus size={14} />
-                        )}
-                        {myPublishedSkillNames.has(skill.name)
-                          ? "下架"
-                          : "发布到共享"}
-                      </button>
-                    </footer>
-                  )}
-                </article>
-              ))}
-            </div>
-          </section>
-        )}
-
       {category === "workflow" ? (
         status === "loading" ? (
           <RegistryLoading label="正在读取 Workflow 商城" />
@@ -1296,9 +1466,92 @@ function MarketplacePanel({
             重试
           </button>
         </div>
-      ) : source === "installed" && myPackageItems.length ? (
+      ) : source === "installed" &&
+        (myPackageItems.length ||
+          (category === "skill" && workspaceSkills.length)) ? (
         <div className="workflow-market-grid">
-          {myPackageItems.map((item) => (
+          {unifiedSkills.map((skill) => {
+            const pkg = skill.pkg;
+            const modalityLabels = pkg
+              ? getSkillTypeLabels(pkg, os.capabilities)
+              : [
+                  skillTypeLabel[(skill.modality as NodeKind) ?? "text"] ??
+                    "未标注类型",
+                ];
+            return (
+              <article
+                className="workflow-market-card package-market-card is-success"
+                key={`uni/${skill.name}`}
+              >
+                <header>
+                  <span>
+                    <Code2 size={19} />
+                  </span>
+                  <div>
+                    <h3>{skill.name}</h3>
+                    <small>
+                      {pkg
+                        ? `v${pkg.version} · ${runtimeMeta[pkg.runtimeType].label}`
+                        : "工作区 · SKILL.md"}
+                    </small>
+                  </div>
+                  <b>
+                    {pkg
+                      ? accessScopeLabel[pkg.accessScope ?? "personal"]
+                      : myPublishedSkillNames.has(skill.name)
+                        ? "共享"
+                        : "私有"}
+                  </b>
+                </header>
+                <p>{skill.description || "未填写说明"}</p>
+                <div className="workflow-card-tags">
+                  {modalityLabels.map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
+                  <span>/{skill.name}</span>
+                </div>
+                <footer>
+                  <div className="package-install-status is-success">
+                    <Check size={13} />
+                    <strong>已安装</strong>
+                    <span>画布与对话 / 斜杠引用皆可用</span>
+                  </div>
+                  <div className="package-manage-actions">
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      disabled={busyId === "edit:" + skill.name}
+                      onClick={() => {
+                        if (pkg) {
+                          onEditSkill(pkg);
+                          return;
+                        }
+                        void openWorkspaceSkillEditor({ name: skill.name });
+                      }}
+                    >
+                      <SquarePen size={14} />
+                      修改 Skill
+                    </button>
+                    <button
+                      type="button"
+                      className="danger-text-button"
+                      disabled={busyId === "del:" + skill.name}
+                      onClick={() => void deleteUnifiedSkill(skill)}
+                    >
+                      <Trash2 size={14} />
+                      删除
+                    </button>
+                  </div>
+                </footer>
+              </article>
+            );
+          })}
+          {myPackageItems
+            .filter(
+              (item) =>
+                !(category === "skill" && item.packageType === "skill"),
+            )
+            .map((item) => (
             <article className={`workflow-market-card package-market-card is-${packageInstallStatus(item).kind}`} key={item.id}>
               <header>
                 <span>
@@ -1665,7 +1918,7 @@ function MarketplacePanel({
                       type="button"
                       className="primary-button compact"
                       disabled={installed || busyId === key}
-                      onClick={() => void marketAct(item, "install")}
+                      onClick={() => void marketAct(item)}
                     >
                       {busyId === key ? (
                         <LoaderCircle size={14} className="spin" />
@@ -1674,17 +1927,6 @@ function MarketplacePanel({
                       )}
                       {installed ? "已安装" : "安装"}
                     </button>
-                    {mine ? (
-                      <button
-                        type="button"
-                        className="danger-text-button"
-                        disabled={busyId === key}
-                        onClick={() => void marketAct(item, "unpublish")}
-                      >
-                        <Trash2 size={14} />
-                        下架
-                      </button>
-                    ) : null}
                   </footer>
                 </article>
               );
@@ -1717,11 +1959,73 @@ function MarketplacePanel({
               ? "通过“创建 Skill”或“导入 Package”接入后，会同步到这里和画布。"
               : source === "private"
                 ? `创建或安装${category === "skill" ? " Skill" : "插件"}时选择“私有”，它只会对你本人显示。`
-                : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}、用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，以及发布到共享技能库的 SKILL.md 技能，都会显示在这里供所有用户添加。`}
+                : `系统管理员发布的${category === "skill" ? " Skill" : "插件"}、用户主动设为共享的${category === "skill" ? " Skill" : "插件"}，都会显示在这里供所有用户添加。`}
             {category === "skill"
-              ? "也可以在小逻面板把工作区技能发布到共享，或直接对小逻说“安装 XX 技能”一步装好。"
+              ? "也可以直接对小逻说“安装 XX 技能”，从共享技能库一步装好。"
               : ""}
           </p>
+        </div>
+      )}
+      {editingSkill && (
+        <div
+          className="extension-modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setEditingSkill(null)}
+        >
+          <div
+            className="extension-modal package-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`修改 Skill ${editingSkill.name}`}
+            onMouseDown={(event) => event.stopPropagation()}
+            style={{ width: "min(760px, 92vw)" }}
+          >
+            <div className="modal-heading">
+              <div>
+                <h2>修改 Skill：{editingSkill.name}</h2>
+                <p>
+                  直接编辑 SKILL.md 正文，保存后对话与斜杠引用即按新内容生效。
+                </p>
+              </div>
+              <button type="button" onClick={() => setEditingSkill(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <textarea
+              className="skill-editor-textarea"
+              value={editingSkill.content}
+              onChange={(event) =>
+                setEditingSkill({
+                  name: editingSkill.name,
+                  content: event.target.value,
+                })
+              }
+              rows={18}
+              spellCheck={false}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setEditingSkill(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busyId === "edit-save:" + editingSkill.name}
+                onClick={() => void saveWorkspaceSkillEdit()}
+              >
+                {busyId === "edit-save:" + editingSkill.name ? (
+                  <LoaderCircle size={14} className="spin" />
+                ) : (
+                  <Check size={14} />
+                )}
+                保存
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -2738,6 +3042,14 @@ function SkillBuilderDialog({
     setError("");
     try {
       await onInstall(JSON.stringify(manifest));
+      // 物种合一：编辑器结果同步回写工作区 SKILL.md（对话/斜杠与画布共用同一正文）
+      try {
+        await skillFileAction(
+          "write",
+          `skills/${name}/SKILL.md`,
+          skillMarkdownOf(name, description, modality, instructions),
+        );
+      } catch { /* 回写失败不阻断注册表保存 */ }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建 Skill 失败");
     } finally {

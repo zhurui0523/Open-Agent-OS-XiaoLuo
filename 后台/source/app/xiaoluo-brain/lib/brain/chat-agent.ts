@@ -60,6 +60,15 @@ import type {
   ReadBrowserDomArgs,
   NavigateBrowserArgs,
   DesktopOperateArgs,
+  DesktopInspectArgs, // UIA-AGENT
+  WebNavigateArgs,
+  WebDomArgs,
+  WebEvalArgs,
+  WebOperateArgs, // WEB-DRIVE-TS
+  WebRecordArgs,
+  WebReplayArgs, // RECORD-AGENT
+  ReviewCodeArgs, // REVIEW-AGENT
+  SshExecArgs, // SSH-AGENT
 } from "./chat-tools";
 import { buildPreviewDocument, isPreviewable, smokeCheckPreview } from "./preview";
 import { buildMemorySection, isDuplicateMemory, sanitizeMemoryText } from "./memory-store";
@@ -159,6 +168,27 @@ export interface DesktopPort {
   operate(req: DesktopOperateArgs): Promise<string>;
 }
 
+/** 外部浏览器口：CDP 接管系统 Edge/Chrome，DOM 级导航/读取/操作/截图（桌面端通道；不实现则不注册） */
+export interface WebDriverPort {
+  navigate(url: string): Promise<string>;
+  dom(mode?: 'dom' | 'text', max?: number): Promise<string>;
+  capture(): Promise<{ dataUrl: string; width: number; height: number }>;
+  operate(req: WebOperateArgs): Promise<string>;
+  eval(js: string, awaitPromise?: boolean): Promise<string>;
+  record(req: WebRecordArgs): Promise<string>;
+  replay(req: WebReplayArgs): Promise<string>; // RECORD-AGENT
+}
+
+/** 桌面控件语义口：Windows UI Automation 枚举窗口/控件树、按语义定位并操作（桌面端通道；不实现则 desktop_inspect 不可用） */
+export interface UiaPort {
+  inspect(req: DesktopInspectArgs): Promise<string>;
+}
+
+/** SSH 远程执行口：在远程主机跑命令（系统 OpenSSH，只密钥认证；不实现则 ssh_exec 不可用） */
+export interface SshPort {
+  exec(req: SshExecArgs): Promise<string>;
+}
+
 export interface ChatAgentPorts {
   /** LLM 网关（现有模型通道，需支持 tool calling；流中断抛 BrainLLMError；signal 中止在途调用） */
   callLLM(req: {
@@ -214,6 +244,12 @@ export interface ChatAgentPorts {
 
   /** 整桌控制口（desktop_screenshot / desktop_operate；不实现则不注册） */
   desktop?: DesktopPort;
+  /** 外部浏览器口（web_* 五工具；CDP 接管系统 Edge/Chrome；不实现则不注册） */
+  webdriver?: WebDriverPort;
+  /** 桌面控件语义口（desktop_inspect；Windows UI Automation；不实现则不注册） */ // UIA-AGENT
+  uia?: UiaPort;
+  /** SSH 远程执行口（ssh_exec；系统 OpenSSH，只密钥认证；不实现则不注册） */ // SSH-AGENT
+  ssh?: SshPort;
   /** 网页浏览口（browse_page） */
   browser?: BrowserPort;
 
@@ -502,6 +538,9 @@ export class ChatAgent {
           service: Boolean(ports.service),
           vision: Boolean(ports.vision),
           desktop: Boolean(ports.desktop),
+          web: Boolean(ports.webdriver), // WEB-DRIVE-CAPS
+          review: true, // REVIEW-CAPS
+          ssh: Boolean(ports.ssh), // SSH-CAPS
           browser: Boolean(ports.browser),
           memory: Boolean(ports.memory),
           deploy: Boolean(ports.deployProgram),
@@ -566,6 +605,9 @@ export class ChatAgent {
       serviceEnabled: Boolean(ports.service),
       visionEnabled: Boolean(ports.vision),
       desktopEnabled: Boolean(ports.desktop),
+      webEnabled: Boolean(ports.webdriver),
+      reviewEnabled: true, // REVIEW-AGENT
+      sshEnabled: Boolean(ports.ssh), // SSH-AGENT
       browserEnabled: Boolean(ports.browser),
       memoryEnabled: Boolean(ports.memory),
       deployEnabled: Boolean(ports.deployProgram),
@@ -1035,6 +1077,26 @@ export class ChatAgent {
         return await this.execDesktopScreenshot(call);
       case "desktop_operate":
         return await this.execDesktopOperate(call);
+      case "desktop_inspect":
+        return await this.execDesktopInspect(call);
+      case "web_navigate":
+        return await this.execWebNavigate(call);
+      case "web_dom":
+        return await this.execWebDom(call);
+      case "web_screenshot":
+        return await this.execWebScreenshot(call);
+      case "web_operate":
+        return await this.execWebOperate(call);
+      case "web_eval":
+        return await this.execWebEval(call);
+      case "web_record":
+        return await this.execWebRecord(call);
+      case "web_replay":
+        return await this.execWebReplay(call);
+      case "review_code":
+        return await this.execReviewCode(call);
+      case "ssh_exec":
+        return await this.execSshExec(call);
       case "browse_page":
         return await this.execBrowsePage(call);
       case "deploy_program":
@@ -1139,6 +1201,140 @@ export class ChatAgent {
     return summary;
   }
 
+  private async execDesktopInspect(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.uia) return '当前环境未接入桌面控件语义口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as DesktopInspectArgs;
+    const out = await ports.uia.inspect(args);
+    const mutate = args.action === 'invoke' || args.action === 'setvalue' || args.action === 'focus';
+    if (mutate) ports.postUI('status', '桌面控件语义操作：' + args.action + (args.name ? '（' + args.name + '）' : ''), { tool: 'desktop_inspect', ok: true });
+    return out;
+  }
+
+  private async execWebNavigate(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as WebNavigateArgs;
+    const url = String(args.url ?? '').trim();
+    if (!url) return this.trackFailure('web_navigate', 'url 为空');
+    const out = await ports.webdriver.navigate(url);
+    ports.postUI('status', '外部浏览器导航：' + url, { tool: 'web_navigate', ok: true });
+    return out;
+  }
+
+  private async execWebDom(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as WebDomArgs;
+    return await ports.webdriver.dom(args.mode ?? 'dom', args.max);
+  }
+
+  private async execWebScreenshot(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const shot = await ports.webdriver.capture();
+    if (ports.vision?.modelVision === false) {
+      const dom = await ports.webdriver.dom('dom').catch(() => '');
+      this.visionCheckedThisTurn = true; // VISION-GATE 降级也算做过自检
+      return '外部浏览器截图已拿到但当前模型无视觉能力，已降级为 DOM 快照：' + dom.slice(0, 1800);
+    }
+    this.pendingVisionImages.push({ mimeType: 'image/png', dataUrl: shot.dataUrl });
+    this.visionCheckedThisTurn = true; // VISION-GATE 记账：本轮已自己看过画面
+    ports.postUI('status', '外部浏览器截图完成（' + shot.width + '×' + shot.height + '）', { tool: 'web_screenshot', ok: true });
+    return '外部浏览器截图完成（' + shot.width + '×' + shot.height + '）。图片将随下一条消息附上；web_operate 坐标以此为准。';
+  }
+
+  private async execWebOperate(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as WebOperateArgs;
+    const summary = await ports.webdriver.operate(args);
+    ports.postUI('status', '外部浏览器操作：' + args.op + (args.selector ? '（' + args.selector + '）' : ''), { tool: 'web_operate', ok: true });
+    return summary;
+  }
+
+  private async execWebEval(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as WebEvalArgs;
+    const js = String(args.js ?? '').trim();
+    if (!js) return this.trackFailure('web_eval', 'js 为空');
+    return await ports.webdriver.eval(js, args.awaitPromise);
+  }
+
+  private async execWebRecord(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as WebRecordArgs;
+    const out = await ports.webdriver.record(args);
+    if (args.op === 'start' || args.op === 'stop' || args.op === 'save') ports.postUI('status', '录制：' + args.op, { tool: 'web_record', ok: true });
+    return out;
+  }
+
+  private async execWebReplay(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.webdriver) return '当前环境未接入外部浏览器口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as WebReplayArgs;
+    const out = await ports.webdriver.replay(args);
+    ports.postUI('status', '回放技能' + (args.name ? '：' + args.name : ''), { tool: 'web_replay', ok: true });
+    return out;
+  }
+
+  /** Auto Review：多维代码审查（正确性/安全/健壮性/性能/可维护性），LLM 出结构化发现 */
+  private async execReviewCode(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!this.lastCode || !this.lastCode.files.length) return '当前对话还没有代码产物：先用 write_code 产出程序再审查。';
+    const args = (call.arguments || {}) as unknown as ReviewCodeArgs;
+    const wanted = args.file?.trim();
+    const files = wanted ? this.lastCode.files.filter((f) => f.path === wanted) : this.lastCode.files;
+    if (!files.length) return `产物里没有 "${wanted}" 这个文件。当前产物：${this.lastCode.files.map((f) => f.path).join('、')}`;
+    const MAX = 40000;
+    let body = files.map((f) => `=== ${f.path} ===\n${f.content}`).join('\n\n');
+    if (body.length > MAX) body = body.slice(0, MAX) + '\n[代码过长，仅审查前 ' + MAX + ' 字符]';
+    ports.postUI('status', '正在多维审查代码…', { tool: 'review_code', ok: true });
+    let review: { summary: string; findings: ReviewFinding[] };
+    try {
+      const resp = await ports.callLLM({
+        messages: [
+          { role: 'system', content: REVIEW_PROMPT },
+          { role: 'user', content: (args.focus ? '[审查重点] ' + args.focus + '\n\n' : '') + '[代码产物]\n' + body },
+        ],
+        tools: [],
+        model: this.opts.model,
+      });
+      this.usedTokens += resp.usage.promptTokens + resp.usage.completionTokens;
+      review = parseReview(resp.content);
+    } catch (e) {
+      return this.trackFailure('review_code', '审查调用失败：' + (e instanceof Error ? e.message : String(e)));
+    }
+    const findings = review.findings;
+    const critical = findings.filter((f) => f.severity === 'critical').length;
+    const major = findings.filter((f) => f.severity === 'major').length;
+    const lines = ['【代码审查】' + review.summary];
+    if (!findings.length) lines.push('未发现需要处理的问题。');
+    for (const f of findings) {
+      lines.push(`- [${f.severity}][${f.dimension}] ${f.file ? f.file + '：' : ''}${f.issue}${f.fix ? '（建议：' + f.fix + '）' : ''}`);
+    }
+    const report = lines.join('\n');
+    ports.postUI('status', `代码审查完成：${findings.length} 条发现（critical ${critical} / major ${major}）`, { tool: 'review_code', ok: true, findings: findings.slice(0, 12) });
+    if (critical || major) {
+      return report + '\n\n[系统提示] 审查发现 critical/major 级问题：请逐条修复后重新 write_code 并再跑一次验证；修完可再 review_code 复查，直到没有 critical/major。';
+    }
+    return report;
+  }
+
+  /** SSH 远程执行：在远程主机跑命令，回传 stdout/stderr/退出码 */
+  private async execSshExec(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.ssh) return '当前环境未接入 SSH 远程执行口（桌面客户端内才可用）';
+    const args = call.arguments as unknown as SshExecArgs;
+    const host = String(args.host ?? '').trim();
+    if (!host) return this.trackFailure('ssh_exec', 'host 为空');
+    const out = await ports.ssh.exec(args);
+    ports.postUI('status', 'SSH 远程执行：' + host + (args.op === 'test' ? '（连通性探测）' : ''), { tool: 'ssh_exec', ok: true, target: host });
+    return out;
+  }
+
   /** 长期记忆：老板偏好/约定入账，对话流出一条「记住了」事件行 */
   private async execAddMemory(call: ToolCall): Promise<string> {
     const { ports } = this.opts;
@@ -1221,8 +1417,9 @@ export class ChatAgent {
 
     const warnings = scanCodeRisk(artifact);
     const previewHint = isPreviewable(artifact) ? "产物可预览，可调 preview_code 展示效果。" : "";
+    const reviewHint = "写完请立刻 review_code 做一次多维代码审查（正确性/安全/健壮性/性能/可维护性）；发现 critical/major 问题就修到干净再交付。";
     const warnText = warnings.length ? `风险提醒（需如实告知老板）：${warnings.join("；")}` : "";
-    return ["代码已写入并展示给老板。", summarizeCodeArtifact(artifact), warnText, previewHint]
+    return ["代码已写入并展示给老板。", summarizeCodeArtifact(artifact), warnText, previewHint, reviewHint]
       .filter(Boolean)
       .join("\n");
   }
@@ -1664,7 +1861,7 @@ export class ChatAgent {
     const { ports } = this.opts;
     if (!ports.fs) return "当前环境未接入文件系统，无法加载技能。";
     const args = call.arguments as unknown as LoadSkillArgs;
-    const name = String(args.name ?? "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const name = String(args.name ?? "").trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
     if (!name) return "load_skill 需要 name（技能库里的精确名字）。";
     try {
       const res = await ports.fs.readFile("skills/" + name + "/SKILL.md");
@@ -1729,7 +1926,7 @@ export class ChatAgent {
     const { ports } = this.opts;
     if (!ports.fs) return "当前环境未接入文件系统，无法安装技能。";
     const args = (call.arguments ?? {}) as { name?: string; publisherId?: string };
-    const name = String(args.name ?? "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const name = String(args.name ?? "").trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
     if (!name) return "install_skill 需要 name（共享技能库里的精确名字）。";
     try {
       await ports.fs.readFile("skills/" + name + "/SKILL.md");
@@ -1768,7 +1965,7 @@ export class ChatAgent {
     await ports.fs.writeFile("skills/" + name + "/SKILL.md", content);
     this.journal.append("tool_result", "安装共享技能：" + name, { tool: "install_skill", target: name, ok: true });
     this.opts.ports.postUI("status", "安装共享技能：" + name + "（私有）", { tool: "install_skill", target: name, ok: true });
-    return "已安装《" + name + "》为私有技能（仅你可用）；来源：共享技能库 @" + (hit.publisherName || hit.publisherId) + "。下一轮起 /" + name + " 或 load_skill 即可使用；想让别人也用，去能力中心把它发布到共享。";
+    return "已安装《" + name + "》为私有技能（仅你可用）；来源：共享技能库 @" + (hit.publisherName || hit.publisherId) + "。下一轮起 /" + name + " 或 load_skill 即可使用。";
   }
 
   /** 技能验收激活（差距五硬化）：frontmatter 声明 verify/verifyMatch → 写盘后系统强制跑；未声明则清空 */
@@ -1786,7 +1983,7 @@ export class ChatAgent {
     const { ports } = this.opts;
     if (!ports.fs) return "当前环境未接入文件系统，无法保存技能。";
     const args = call.arguments as unknown as SaveSkillArgs;
-    const name = String(args.name ?? "").trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const name = String(args.name ?? "").trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
     const description = String(args.description ?? "").trim().slice(0, 200);
     const content = String(args.content ?? "").trim();
     if (!name || !description || content.length < 20) return "save_skill 需要 name（kebab-case）、description（一句话）与 content（≥20 字的具体步骤正文）。";
@@ -2881,6 +3078,50 @@ const CONTEXT_SUMMARY_PROMPT = [
   "必须覆盖：1) 目标与需求的要点索引（一句话指向）；2) 已达成的关键决定与结论；3) 当前产物/代码状态（只写文件名与要点，不贴代码全文）；4) 工具执行的关键结果与教训；5) 未决问题或待办。",
   "要求：不超过 800 字；只输出摘要正文，不要寒暄与解释；信息有取舍时优先保留与最近话题相关的内容。",
 ].join("\n");
+
+interface ReviewFinding {
+  dimension: string;
+  severity: 'critical' | 'major' | 'minor' | string;
+  file?: string;
+  issue: string;
+  fix?: string;
+}
+
+const REVIEW_PROMPT = [
+  '你是资深代码审查员，对给定代码产物做多维审查。维度：',
+  '- correctness 正确性（逻辑错误、边界条件、空值、异步/竞态）',
+  '- security 安全（注入、XSS、密钥硬编码、越权、路径穿越）',
+  '- robustness 健壮性（错误处理、异常吞没、资源泄漏、失败降级）',
+  '- performance 性能（明显低效、N+1、无谓重渲染/循环）',
+  '- maintainability 可维护性（重复、命名、结构、魔法数）',
+  '只输出 JSON：{"summary":"一句话总体结论","findings":[{"dimension":"correctness","severity":"critical|major|minor","file":"路径","issue":"问题","fix":"修法"}]}。',
+  '口径：只报真实可验证的问题，按严重度排序，最多 8 条；无问题输出 {"summary":"未发现问题","findings":[]}。不臆测需求，不评价个人偏好。',
+].join('\n');
+
+/** 解析审查返回：宽松提取 summary/findings；无法解析时按无发现处理 */
+function parseReview(content: string): { summary: string; findings: ReviewFinding[] } {
+  try {
+    const start = content.indexOf('{');
+    const stop = content.lastIndexOf('}');
+    if (start < 0 || stop <= start) return { summary: '审查结果无法解析', findings: [] };
+    const parsed = JSON.parse(content.slice(start, stop + 1)) as { summary?: unknown; findings?: unknown };
+    const summary = typeof parsed.summary === 'string' ? parsed.summary : '审查完成';
+    const arr = Array.isArray(parsed.findings) ? parsed.findings : [];
+    const findings: ReviewFinding[] = arr.slice(0, 8).map((f) => {
+      const o = (f || {}) as Record<string, unknown>;
+      return {
+        dimension: String(o.dimension || 'general'),
+        severity: String(o.severity || 'minor'),
+        file: o.file ? String(o.file) : undefined,
+        issue: String(o.issue || '').trim(),
+        fix: o.fix ? String(o.fix) : undefined,
+      };
+    }).filter((f) => f.issue);
+    return { summary, findings };
+  } catch {
+    return { summary: '审查结果无法解析', findings: [] };
+  }
+}
 
 const INTENT_CHECK_PROMPT = [
   "你是交付物核对员。对照老板的原始需求与代码产物摘要，判断产物是否完整满足需求。",

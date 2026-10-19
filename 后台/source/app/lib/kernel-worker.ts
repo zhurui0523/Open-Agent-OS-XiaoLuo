@@ -147,8 +147,19 @@ async function executeQueuedTask(
     )
     .limit(1);
   if (!task || task.status === "succeeded") return task;
-  if (task.attempt >= task.maxAttempts) {
-    throw new Error(`节点 ${node.title} 已达到最大重试次数`);
+  // 进程崩溃/服务重启会把任务留在 running 且租约过期：这次回收不算一次重试，
+  // 否则重启后重跑只会看到“已达到最大重试次数”包装错，真错误被盖掉（2026-09-22 修复）
+  const leaseDead =
+    task.status === "running" &&
+    task.leaseExpiresAt !== null &&
+    new Date(task.leaseExpiresAt).getTime() < Date.now();
+  const attemptBudget = leaseDead ? Math.max(0, task.attempt - 1) : task.attempt;
+  if (attemptBudget >= task.maxAttempts) {
+    throw new Error(
+      task.error
+        ? `节点 ${node.title} 已达到最大重试次数（最后一次错误：${task.error}）`
+        : `节点 ${node.title} 已达到最大重试次数`,
+    );
   }
 
   const dependencies = JSON.parse(task.dependenciesJson) as string[];
@@ -181,7 +192,7 @@ async function executeQueuedTask(
     .update(kernelTasks)
     .set({
       status: "running",
-      attempt: task.attempt + 1,
+      attempt: attemptBudget + 1,
       leaseOwner: workerId,
       leaseExpiresAt: futureMysql(60_000),
       inputJson: JSON.stringify(inputs),
@@ -193,7 +204,7 @@ async function executeQueuedTask(
   await appendRunEvent(
     run.id,
     "task.started",
-    { attempt: task.attempt + 1 },
+    { attempt: attemptBudget + 1 },
     node.id,
   );
 
@@ -728,13 +739,33 @@ export async function dispatchKernelRun(runId: string, userId: string) {
       return readKernelRun(runId, userId);
     }
 
-    const settled = await Promise.allSettled(
-      level.map(async (nodeId) => {
-        const node = graph.nodes.find((item) => item.id === nodeId);
-        if (!node) throw new Error(`节点 ${nodeId} 不存在`);
-        return executeTaskWithFailurePolicy(run, node, graph, workerId);
-      }),
-    );
+    // 长任务（如数分钟文本生成）会超过 90 秒 run 租约：等待本层期间定时续租，
+    // 否则 worker/tick 误判租约过期二次派发，同节点被并发执行（2026-09-22 修复）
+    const leaseKeepAlive = setInterval(() => {
+      void mysqlExecute(
+        `UPDATE xiaoluo_v2_kernel_runs
+         SET lease_expires_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 90 SECOND),
+             heartbeat_at = CURRENT_TIMESTAMP(3),
+             updated_at = CURRENT_TIMESTAMP(3)
+         WHERE id = ?
+           AND desired_status = 'running'`,
+        [runId],
+      ).catch(() => undefined);
+    }, 30_000);
+    let settled: PromiseSettledResult<
+      Awaited<ReturnType<typeof executeTaskWithFailurePolicy>>
+    >[];
+    try {
+      settled = await Promise.allSettled(
+        level.map(async (nodeId) => {
+          const node = graph.nodes.find((item) => item.id === nodeId);
+          if (!node) throw new Error(`节点 ${nodeId} 不存在`);
+          return executeTaskWithFailurePolicy(run, node, graph, workerId);
+        }),
+      );
+    } finally {
+      clearInterval(leaseKeepAlive);
+    }
     const rejected = settled.find(
       (item): item is PromiseRejectedResult => item.status === "rejected",
     );

@@ -2029,6 +2029,18 @@ body.is-resizing-node * {
   box-shadow: none;
 }
 
+/* 文本结果卡顶部拖拽把手条：对齐执行卡可抓握顶缘，方便整体移动（2026-09-28 用户要求） */
+.canvas-node.node-role-result.node-kind-text > .text-result-drag-handle {
+  flex: 0 0 22px;
+  width: 100%;
+  border-radius: 10px;
+  background: #eef2f6;
+}
+
+html[data-theme="night"] .canvas-node.node-role-result.node-kind-text > .text-result-drag-handle {
+  background: #1e2c47;
+}
+
 .canvas-node.node-role-result.node-kind-text:not(.is-empty-result-placeholder)
   > .node-workbench-content {
   display: flex;
@@ -2407,6 +2419,49 @@ body.is-resizing-node * {
 
 .result-text-action > svg {
   flex: 0 0 auto;
+}
+
+/* 多选批量操作条：贴选区专属框上沿居中（left/top 由画布按选区世界坐标换算内联下发），一次性删除/复制（2026-09-23 改） */
+.canvas-bulk-bar {
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid #e6e8ec;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(10px);
+}
+
+.canvas-bulk-bar > strong {
+  margin-right: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475467;
+  white-space: nowrap;
+}
+
+.canvas-bulk-bar .result-text-action.is-danger {
+  color: #d92d20;
+}
+
+.canvas-bulk-bar .result-text-action.is-danger:hover {
+  background: #fff1f0;
+  color: #b42318;
+}
+
+/* 多选选区专属框：圈住全部被选节点的世界坐标包围盒，批量操作条贴其上沿（2026-09-23） */
+.canvas-selection-region {
+  position: absolute;
+  z-index: 40;
+  border: 1.5px dashed #6366f1;
+  border-radius: 12px;
+  background: rgba(99, 102, 241, 0.07);
+  pointer-events: none;
 }
 
 .asset-plugin-menu {
@@ -3531,6 +3586,11 @@ body.is-resizing-node * {
   white-space: nowrap;
 }
 
+/* 斜杠技能菜单项无缩略图：单列网格让名称占满整行，不被 32px 缩略图列挤截 */
+.node-asset-mention-group > button.node-skill-option {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .node-asset-mention-menu > p,
 .node-asset-mention-group > p {
   margin: 0;
@@ -3590,6 +3650,19 @@ body.is-resizing-node * {
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+}
+
+.node-input-asset-card,
+.composer-input-asset-card {
+  cursor: grab;
+  touch-action: none;
+}
+
+.node-input-asset-card.is-chip-drag,
+.composer-input-asset-card.is-chip-drag {
+  opacity: 0.55;
+  outline: 2px solid #6366f1;
+  cursor: grabbing;
 }
 
 .node-input-asset-card {
@@ -15059,7 +15132,7 @@ html[data-theme="night"] .canvas-view.canvas-background-night .canvas-stage {
   bottom: calc(100% + 10px);
   left: 0;
   width: 100%;
-  max-height: min(300px, 42vh);
+  max-height: min(420px, 56vh);
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -15090,11 +15163,16 @@ html[data-theme="night"] .canvas-view.canvas-background-night .canvas-stage {
   background: rgba(99, 102, 241, 0.1);
 }
 
+/* 结果缩略图按原图比例等比缩小完整显示，不裁剪（2026-09-23 用户裁决） */
 .message-result-card img,
 .message-result-card video {
-  width: 100%;
-  max-height: 160px;
-  object-fit: cover;
+  display: block;
+  align-self: center;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 220px;
+  object-fit: contain;
   border-radius: 8px;
   background: rgba(8, 12, 24, 0.35);
   pointer-events: none;
@@ -15103,6 +15181,15 @@ html[data-theme="night"] .canvas-view.canvas-background-night .canvas-stage {
 .message-result-card small {
   opacity: 0.65;
   font-size: 11px;
+}
+
+.message-result-card.message-result-archived,
+.message-result-card.message-result-gone {
+  cursor: default;
+}
+
+.message-result-card.message-result-gone small {
+  opacity: 0.55;
 }
 
 .message-result-text p {
@@ -17051,4 +17138,23 @@ body.is-resizing-intent-dock iframe {
 }
 .auth-server-url-msg.is-ok {
   color: #16a34a;
+}
+
+/* 能力中心：工作区技能 SKILL.md 编辑器（修改 Skill 模态） */
+.skill-editor-textarea {
+  width: 100%;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid #d8dceb;
+  border-radius: 10px;
+  background: #f8f9fd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  resize: vertical;
+  color: #23283b;
+}
+.skill-editor-textarea:focus {
+  outline: 2px solid rgba(79, 86, 255, 0.35);
+  border-color: #4f56ff;
 }

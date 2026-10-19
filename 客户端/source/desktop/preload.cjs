@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld("xiaoluoDesktop", {
   serverUrl: (payload) => ipcRenderer.invoke("server-url", payload), // SERVER-URL 连接地址设置
   browserAction: (payload) => ipcRenderer.invoke("brain:browser", payload), // VISION-OPS 截图/鼠标口
   desktopAction: (payload) => ipcRenderer.invoke("brain:desktop", payload), // DESKTOP-OPS 整桌口
+  webDriveAction: (payload) => ipcRenderer.invoke("brain:webdrive", payload), // WEB-DRIVE-PRELOAD 外部浏览器 DOM 控制
+  uiaAction: (payload) => ipcRenderer.invoke("brain:uia", payload), // UIA-PRELOAD 桌面控件语义识别(UI Automation)
+  sshAction: (payload) => ipcRenderer.invoke("brain:ssh", payload), // SSH-PRELOAD SSH 远程执行
   onLocalAiEvent: (listener) => {
     const wrappedListener = (_event, event) => listener(event);
     ipcRenderer.on("local-ai:event", wrappedListener);
