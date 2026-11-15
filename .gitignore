@@ -1,0 +1,57 @@
+# 仓库根 .gitignore：后台（Next.js/Vinext）与客户端（Electron）两个源码树共用
+# 只忽略"可重建的产物"和"本地数据"，源码、锁文件、文档一律入库
+
+# 依赖
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# 后台构建产物
+后台/source/.next/
+后台/source/.vinext/
+后台/source/out/
+后台/source/dist/
+后台/source/coverage/
+
+# 客户端构建产物（Electron 打包目录很大，绝不入库）
+客户端/source/electron-dist-43.3.0/
+客户端/source/desktop/dist/
+客户端/source/desktop/dist2/
+客户端/source/desktop/release-*/
+客户端/source/desktop/current-package-*/
+
+# 本地数据 / 运行时状态
+.data/
+*.db
+*.db-journal
+*__*.jsonl
+
+# 日志（门禁日志是本地证据，不入库）
+gate-*.log
+p0-*-test-*.log
+p*-test-*.log
+
+# 本机运行时副本 / 部署快照（含 node_modules、dist、.env.local、用户数据，绝不入库）
+后台/xiaoluo-server/
+后台/xiaoluo-deploy-*/
+
+# 打包出来的安装包
+客户端/*.exe
+客户端/*.msi
+
+# 部署归档（每份 6–16MB，历史版本没必要进仓库）
+后台/*.tar.gz
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.pem
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*

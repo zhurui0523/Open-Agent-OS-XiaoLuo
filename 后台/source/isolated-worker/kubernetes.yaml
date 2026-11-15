@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xiaoluo-isolated-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: xiaoluo-isolated-worker }
+  template:
+    metadata:
+      labels: { app: xiaoluo-isolated-worker }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: registry.example/xiaoluo-isolated-worker:2.0.0
+          ports: [{ containerPort: 8788 }]
+          env:
+            - name: ISOLATED_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: xiaoluo-isolated-worker, key: token }
+            - { name: MAX_CONCURRENCY, value: "2" }
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: temp, mountPath: /tmp }
+            - { name: packages, mountPath: /packages, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8788 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8788 }
+      volumes:
+        - name: temp
+          emptyDir: { sizeLimit: 1Gi }
+        - name: packages
+          persistentVolumeClaim: { claimName: xiaoluo-package-store }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xiaoluo-isolated-worker
+spec:
+  selector: { app: xiaoluo-isolated-worker }
+  ports: [{ port: 443, targetPort: 8788 }]
+  sessionAffinity: ClientIP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: xiaoluo-isolated-worker-deny-egress
+spec:
+  podSelector:
+    matchLabels: { app: xiaoluo-isolated-worker }
+  policyTypes: ["Egress"]
+  egress: []

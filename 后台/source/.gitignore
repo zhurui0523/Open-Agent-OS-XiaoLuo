@@ -1,0 +1,70 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+next-env.d.ts
+*.tsbuildinfo
+/dist/
+/.wrangler/
+/.pnpm-store/
+/outputs/
+/work/
+/.local-runtime/
+/.local-data/
+/.local-services/
+/.local-logs/
+/.next-stale-*/
+/.tmp-*/
+/.tmp-*
+/.codex-local-probe
+/.local-mysql-diagnostic*.txt
+/.local-processes-before.txt
+/_codex_local_diag.ps1
+/mysql-local-status.png
+/desktop/node_modules/
+/desktop/dist/
+
+# 用户运行时数据（工作区/市场/DB）不入库
+/.data/
+
+# 桌面包构建产物与日志（数百 MB 安装包，不入库）
+/desktop/release-*/
+/desktop/current-package-*/
+/desktop/builder-*.log
+/desktop/builder-*.err.log
+/desktop/builder-*.out.log
+*.broken-backup

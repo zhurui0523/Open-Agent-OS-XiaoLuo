@@ -1,0 +1,1 @@
+ALTER TABLE `xiaoluo_v2_canvas_nodes` MODIFY COLUMN `kind` enum('text','image','video','audio','document') NOT NULL;

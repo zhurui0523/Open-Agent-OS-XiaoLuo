@@ -1,0 +1,8 @@
+# 这个文件已迁到仓库根：`.github/workflows/gate.yml`
+#
+# 原因：GitHub Actions 只读仓库根目录下的 .github/workflows。
+# 仓库根 = D:\projects\xiaoluo ai agent OS（后台/ 与 客户端/ 都在它下面），
+# 所以工作流必须是 `<repo-root>/.github/workflows/gate.yml`，工作目录写成 `后台/source`。
+#
+# 本文件仅作为指路牌保留，避免有人回这里改一份"不会生效"的副本。
+# 要改门禁步骤请改：scripts/gate.mjs；要改 CI 请改：<repo-root>/.github/workflows/gate.yml

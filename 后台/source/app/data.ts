@@ -1,0 +1,402 @@
+import type {
+  AssetItem,
+  CanvasEdge,
+  CanvasNode,
+  CanvasSummary,
+  Capability,
+  ModelConnection,
+} from "./types";
+
+export const canvasList: CanvasSummary[] = [
+  {
+    id: "cv_campaign",
+    title: "夏日品牌短片",
+    project: "品牌内容实验室",
+    nodes: 4,
+    updatedAt: "刚刚",
+    starred: true,
+  },
+  {
+    id: "cv_character",
+    title: "角色视觉 DNA",
+    project: "品牌内容实验室",
+    nodes: 12,
+    updatedAt: "昨天 18:42",
+  },
+  {
+    id: "cv_pitch",
+    title: "新品路演提案",
+    project: "商业提案",
+    nodes: 8,
+    updatedAt: "7 月 20 日",
+  },
+];
+
+export const initialNodes: CanvasNode[] = [
+  {
+    id: "node_brief",
+    title: "创意简报",
+    prompt: "面向年轻户外人群，突出轻盈、自由与真实陪伴。",
+    kind: "text",
+    status: "succeeded",
+    capabilityId: "core.capability.text",
+    modelId: "unconfigured",
+    x: 92,
+    y: 168,
+    result: "核心主张：把夏天走成自己的路。",
+  },
+  {
+    id: "node_script",
+    title: "30 秒短片脚本",
+    prompt: "根据简报生成三幕式品牌短片，前 3 秒要有视觉钩子。",
+    kind: "text",
+    status: "succeeded",
+    capabilityId: "core.capability.text",
+    modelId: "unconfigured",
+    x: 426,
+    y: 110,
+    result: "清晨出发 / 山谷奔跑 / 日落相聚",
+  },
+  {
+    id: "node_visual",
+    title: "主视觉概念",
+    prompt: "清透夏日电影感，轻户外品牌调性，真实自然光。",
+    kind: "image",
+    status: "waiting",
+    capabilityId: "core.capability.image",
+    modelId: "unconfigured",
+    x: 760,
+    y: 92,
+    progress: 0,
+  },
+  {
+    id: "node_video",
+    title: "动态预演",
+    prompt: "将主视觉扩展为 6 秒品牌动态预演，镜头缓慢推进。",
+    kind: "video",
+    status: "waiting",
+    capabilityId: "core.capability.video",
+    modelId: "unconfigured",
+    x: 760,
+    y: 360,
+    progress: 0,
+  },
+];
+
+export const initialEdges: CanvasEdge[] = [
+  {
+    id: "edge_1",
+    source: "node_brief",
+    target: "node_script",
+    sourcePort: "text",
+    targetPort: "context",
+    dataType: "text",
+  },
+  {
+    id: "edge_2",
+    source: "node_script",
+    target: "node_visual",
+    sourcePort: "text",
+    targetPort: "prompt",
+    dataType: "text",
+  },
+  {
+    id: "edge_3",
+    source: "node_visual",
+    target: "node_video",
+    sourcePort: "image",
+    targetPort: "reference",
+    dataType: "image",
+  },
+];
+
+export const coreCapabilities: Capability[] = [
+  {
+    id: "core.capability.text",
+    title: "标准文本生成",
+    description: "系统级文本模态接口，等待你接入具体 Skill。",
+    modality: "text",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "Prompt · 引用 · 模型",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tone: {
+          type: "string",
+          title: "语气",
+          enum: ["品牌叙事", "电影感", "自然口语"],
+          default: "品牌叙事",
+        },
+        length: {
+          type: "string",
+          title: "长度",
+          enum: ["精简", "标准", "详细"],
+          default: "标准",
+        },
+        references: {
+          type: "array",
+          title: "参考资料",
+          items: { type: "string", format: "file", title: "文件" },
+        },
+      },
+    },
+    uiSchema: {
+      tone: { "ui:widget": "segmented" },
+    },
+    outputSchema: {
+      type: "object",
+      properties: { text: { type: "string", title: "文本结果" } },
+    },
+  },
+  {
+    id: "core.capability.image",
+    title: "标准图像生成",
+    description: "系统级图像模态接口，等待你接入具体 Skill。",
+    modality: "image",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "Prompt · 参考图 · 画幅",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reference: {
+          type: "string",
+          format: "image",
+          title: "参考图",
+        },
+        ratio: {
+          type: "string",
+          title: "画幅",
+          enum: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+          default: "16:9",
+        },
+        quality: {
+          type: "string",
+          title: "质量",
+          enum: ["草图", "高清", "超清"],
+          default: "高清",
+        },
+        count: {
+          type: "integer",
+          title: "数量",
+          minimum: 1,
+          maximum: 8,
+          default: 1,
+        },
+      },
+    },
+    uiSchema: {
+      ratio: { "ui:widget": "segmented" },
+      count: { "ui:widget": "slider" },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "image", title: "图像结果" },
+      },
+    },
+  },
+  {
+    id: "core.capability.video",
+    title: "标准视频生成",
+    description: "系统级异步视频接口，等待你接入具体 Skill。",
+    modality: "video",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "Prompt · 时长 · 画幅",
+    inputSchema: {
+      type: "object",
+      properties: {
+        firstFrame: {
+          type: "string",
+          format: "image",
+          title: "首帧图片",
+        },
+        referenceVideo: {
+          type: "string",
+          format: "video",
+          title: "参考视频",
+        },
+        duration: {
+          type: "integer",
+          title: "时长（秒）",
+          minimum: 1,
+          maximum: 60,
+          default: 6,
+        },
+        ratio: {
+          type: "string",
+          title: "画幅",
+          enum: ["16:9", "9:16", "1:1"],
+          default: "16:9",
+        },
+        quality: {
+          type: "string",
+          title: "清晰度",
+          enum: ["720p", "1080p", "4K"],
+          default: "1080p",
+        },
+      },
+    },
+    uiSchema: {
+      duration: { "ui:widget": "slider" },
+      ratio: { "ui:widget": "segmented" },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "video", title: "视频结果" },
+      },
+    },
+  },
+  {
+    id: "core.capability.audio",
+    title: "标准音频生成",
+    description: "系统级音频模态接口，等待你接入具体 Provider。",
+    modality: "audio",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "Prompt · 参考音频 · 格式",
+    inputSchema: {
+      type: "object",
+      properties: {
+        referenceAudio: {
+          type: "string",
+          format: "audio",
+          title: "参考音频",
+        },
+        format: {
+          type: "string",
+          title: "格式",
+          enum: ["mp3", "wav", "flac"],
+          default: "mp3",
+        },
+        sampleRate: {
+          type: "integer",
+          title: "采样率",
+          enum: [22050, 44100, 48000],
+          default: 44100,
+        },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "audio", title: "音频结果" },
+      },
+    },
+  },
+  {
+    id: "core.capability.document",
+    title: "标准文档生成",
+    description: "系统级文档与 Office Artifact 接口。",
+    modality: "document",
+    category: "系统",
+    enabled: true,
+    packageVersion: "2.0.0",
+    parameterHint: "内容 · 模板 · 输出格式",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sourceDocument: {
+          type: "string",
+          format: "file",
+          title: "参考文档",
+        },
+        format: {
+          type: "string",
+          title: "输出格式",
+          enum: ["pdf", "docx", "pptx", "xlsx"],
+          default: "pdf",
+        },
+        template: {
+          type: "string",
+          title: "模板说明",
+          maxLength: 200,
+        },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        assetUrl: { type: "string", format: "file", title: "文档结果" },
+      },
+    },
+  },
+];
+
+export const initialModels: ModelConnection[] = [];
+
+export const initialAssets: AssetItem[] = [
+  {
+    id: "asset_01",
+    title: "山谷晨光主视觉",
+    kind: "image",
+    color: "#dce9df",
+    source: "夏日品牌短片 / 主视觉概念",
+    model: "Image Studio 4",
+    createdAt: "今天 14:32",
+    tags: ["夏日", "户外", "主视觉"],
+    description: "清晨山谷中的人物主视觉，低饱和青绿色调与自然逆光。",
+  },
+  {
+    id: "asset_02",
+    title: "品牌短片脚本 v3",
+    kind: "text",
+    color: "#e6e9f7",
+    source: "夏日品牌短片 / 30 秒短片脚本",
+    model: "XiaoLuo Text Pro",
+    createdAt: "今天 14:18",
+    tags: ["脚本", "三幕式"],
+    description: "包含开场钩子、场景节奏、旁白和收束品牌主张的 30 秒脚本。",
+  },
+  {
+    id: "asset_03",
+    title: "角色定妆提案",
+    kind: "document",
+    color: "#efe6dc",
+    source: "角色视觉 DNA / 角色正交视图",
+    model: "Image Studio 4",
+    createdAt: "昨天 18:42",
+    tags: ["角色", "设定"],
+    description: "角色定妆、服装结构和多角度设定的汇总提案。",
+  },
+  {
+    id: "asset_04",
+    title: "日落奔跑动态预演",
+    kind: "video",
+    color: "#e9dfd8",
+    source: "夏日品牌短片 / 动态预演",
+    model: "Video Flow",
+    createdAt: "7 月 20 日",
+    tags: ["动态", "预演"],
+    description: "6 秒镜头预演，人物从林间跑向开阔山脊，镜头平滑跟随。",
+  },
+  {
+    id: "asset_05",
+    title: "新品路演叙事提纲",
+    kind: "text",
+    color: "#e2e9ef",
+    source: "新品路演提案 / 路演提纲",
+    model: "XiaoLuo Text Pro",
+    createdAt: "7 月 19 日",
+    tags: ["路演", "商业"],
+    description: "从市场洞察、产品价值到增长路线的 12 页路演叙事。",
+  },
+  {
+    id: "asset_06",
+    title: "露营地空间布局",
+    kind: "image",
+    color: "#dbe5e8",
+    source: "角色视觉 DNA / 场景空间设计",
+    model: "Image Studio 4",
+    createdAt: "7 月 18 日",
+    tags: ["场景", "空间"],
+    description: "含四个统一机位和俯视布局的露营地场景资产板。",
+  },
+];

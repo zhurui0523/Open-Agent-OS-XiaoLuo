@@ -1,0 +1,69 @@
+{
+  "name": "xiaoluo-desktop",
+  "version": "0.1.0",
+  "description": "小逻Agent OS——以意图驱动的 AI 工作台",
+  "author": "XiaoLuo",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "type": "module",
+  "main": "main.mjs",
+  "build": {
+    "appId": "cn.luosheji.xiaoluo.desktop",
+    "productName": "小逻Agent OS",
+    "electronVersion": "43.3.0",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.mjs",
+      "*.mjs",
+      "*.json",
+      "preload.cjs",
+      "loading.html",
+      "assets/**/*",
+      "local-ai/**/*",
+      "config.production.json",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "**/*.mjs",
+      "*.json",
+      "local-ai/**/*",
+      "**/*.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "../shared",
+        "to": "shared",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "assets/xiaoluo.ico",
+      "executableName": "XiaoLuoAgentOS",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "XiaoLuoAgentOS-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "小逻Agent OS",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

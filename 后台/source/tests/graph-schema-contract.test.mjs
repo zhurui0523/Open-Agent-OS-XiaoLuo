@@ -1,0 +1,294 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+
+async function source(path) {
+  return readFile(new URL(path, root), "utf8");
+}
+
+test("validates typed graph ports and rejects connections that form cycles", async () => {
+  const [{ validateEdgePorts }, { wouldCreateCycle }] = await Promise.all([
+    import("../app/lib/node-ports.ts"),
+    import("../app/lib/workflow-kernel.ts"),
+  ]);
+  const text = { id: "text", kind: "text" };
+  const image = { id: "image", kind: "image" };
+  const video = { id: "video", kind: "video" };
+  const edges = [
+    {
+      id: "text-image",
+      source: "text",
+      target: "image",
+      sourcePort: "text",
+      targetPort: "prompt",
+      dataType: "text",
+    },
+    {
+      id: "image-video",
+      source: "image",
+      target: "video",
+      sourcePort: "image",
+      targetPort: "reference",
+      dataType: "image",
+    },
+  ];
+
+  assert.equal(validateEdgePorts(edges[0], text, image), null);
+  assert.equal(validateEdgePorts(edges[1], image, video), null);
+  assert.match(
+    validateEdgePorts(
+      { ...edges[1], targetPort: "prompt" },
+      image,
+      video,
+    ),
+    /不能接收 image/,
+  );
+  assert.equal(wouldCreateCycle([text, image, video], edges, "text", "video"), false);
+  assert.equal(wouldCreateCycle([text, image, video], edges, "video", "text"), true);
+});
+
+test("all plugin nodes expose separate text and multi-media reference ports", async () => {
+  const { portsForNode, validateEdgePorts } = await import(
+    "../app/lib/node-ports.ts"
+  );
+  const referenceTypes = [
+    "image",
+    "video",
+    "audio",
+    "document",
+    "asset",
+    "asset_list",
+    "collection",
+  ];
+  const plugin = {
+    id: "plugin",
+    kind: "document",
+    role: "plugin",
+    parameters: {
+      capabilitySnapshot: {
+        ports: [
+          {
+            id: "configuration",
+            label: "Configuration",
+            direction: "input",
+            dataTypes: ["json"],
+          },
+          {
+            id: "result",
+            label: "Result",
+            direction: "output",
+            dataTypes: ["asset"],
+          },
+        ],
+      },
+    },
+  };
+  const ports = portsForNode(plugin);
+  const reference = ports.find(
+    (port) => port.direction === "input" && port.id === "materials",
+  );
+  const prompt = ports.find(
+    (port) => port.direction === "input" && port.dataTypes.includes("text"),
+  );
+
+  assert.ok(reference);
+  assert.ok(prompt);
+  assert.equal(prompt.label, "文本");
+  assert.deepEqual(prompt.dataTypes, ["text"]);
+  assert.equal(reference.cardinality, "many");
+  assert.equal(reference.label, "多媒体参考");
+  assert.deepEqual(reference.dataTypes, referenceTypes);
+  assert.ok(ports.some((port) => port.id === "configuration"));
+  assert.ok(ports.some((port) => port.id === "result"));
+
+  for (const dataType of ["image", "video", "audio", "document"]) {
+    const source = { id: `source-${dataType}`, kind: dataType };
+    assert.equal(
+      validateEdgePorts(
+        {
+          id: `edge-${dataType}`,
+          source: source.id,
+          target: plugin.id,
+          sourcePort: dataType,
+          targetPort: "materials",
+          dataType,
+        },
+        source,
+        plugin,
+      ),
+      null,
+    );
+  }
+
+  const textSource = { id: "source-text", kind: "text" };
+  assert.equal(
+    validateEdgePorts(
+      {
+        id: "edge-text",
+        source: textSource.id,
+        target: plugin.id,
+        sourcePort: "text",
+        targetPort: prompt.id,
+        dataType: "text",
+      },
+      textSource,
+      plugin,
+    ),
+    null,
+  );
+});
+
+test("legacy plugin text edges migrate from materials to the text input", async () => {
+  const { sanitizeCanvasEdges } = await import("../app/lib/node-ports.ts");
+  const text = { id: "text", kind: "text" };
+  const plugin = { id: "plugin", kind: "document", role: "plugin" };
+  const [edge] = sanitizeCanvasEdges(
+    [text, plugin],
+    [
+      {
+        id: "legacy-text",
+        source: text.id,
+        target: plugin.id,
+        sourcePort: "text",
+        targetPort: "materials",
+        dataType: "text",
+      },
+    ],
+  );
+
+  assert.ok(edge);
+  assert.equal(edge.targetPort, "prompt");
+  assert.equal(edge.dataType, "text");
+});
+
+test("validates nested Schema-driven input on client and server boundaries", async () => {
+  const { validateJsonSchema } = await import("../app/lib/json-schema.ts");
+  const schema = {
+    type: "object",
+    required: ["prompt", "shots"],
+    properties: {
+      prompt: { type: "string", minLength: 3 },
+      shots: {
+        type: "array",
+        minItems: 1,
+        uniqueItems: true,
+        items: {
+          type: "object",
+          required: ["duration"],
+          properties: {
+            duration: { type: "number", minimum: 1, maximum: 30 },
+          },
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(
+    validateJsonSchema(schema, {
+      prompt: "生成一段视频",
+      shots: [{ duration: 6 }],
+    }),
+    [],
+  );
+  const issues = validateJsonSchema(schema, {
+    prompt: "短",
+    shots: [{ duration: 0 }, { duration: 0 }],
+  });
+  assert.ok(issues.some((issue) => issue.path === "$.prompt"));
+  assert.ok(issues.some((issue) => issue.path === "$.shots"));
+  assert.ok(issues.some((issue) => issue.path === "$.shots[0].duration"));
+
+  const [renderer, outputRenderer, registry, invokeRoute] = await Promise.all([
+    source("app/components/schema-field.tsx"),
+    source("app/components/schema-output.tsx"),
+    source("app/lib/registry-serialization.ts"),
+    source("app/api/v2/runtime/invoke/route.ts"),
+  ]);
+  assert.match(renderer, /schema\.type === "object"/);
+  assert.match(renderer, /schema\.type === "array"/);
+  assert.match(renderer, /\/api\/v2\/files/);
+  assert.match(outputRenderer, /schema\.format === "video"/);
+  assert.match(outputRenderer, /schema\.format === "audio"/);
+  assert.match(outputRenderer, /download/);
+  assert.match(outputRenderer, /schema\.type === "array"/);
+  assert.match(registry, /outputSchemaJson/);
+  assert.match(invokeRoute, /capability\.inputSchema/);
+  assert.match(invokeRoute, /capability\.outputSchema/);
+});
+
+test("ships scalable canvas, asset management, sharing, and async task controls", async () => {
+  const [
+    canvas,
+    drawer,
+    controller,
+    edges,
+    assets,
+    fileBulk,
+    tasks,
+    share,
+    migration,
+    limiter,
+    kernelRuns,
+    artifactFormat,
+  ] =
+    await Promise.all([
+      source("app/components/canvas-view.tsx"),
+      source("app/components/canvas-drawer.tsx"),
+      source("app/hooks/use-intent-os.ts"),
+      source("app/components/canvas-edge-layer.tsx"),
+      source("app/components/assets-view.tsx"),
+      source("app/api/v2/files/bulk/route.ts"),
+      source("app/components/task-center.tsx"),
+      source("app/api/v2/canvases/share/route.ts"),
+      source("drizzle/0006_unknown_havok.sql"),
+      source("app/lib/rate-limit.ts"),
+      source("app/api/v2/kernel/runs/route.ts"),
+      source("app/lib/artifact-format.ts"),
+    ]);
+
+  assert.match(canvas, /visibleWorldBounds/);
+  assert.match(canvas, /requestAnimationFrame/);
+  assert.match(canvas, /selectionBox/);
+  assert.match(canvas, /os\.selectNodes/);
+  assert.match(canvas, /SUPPORTED_FILE_ACCEPT/);
+  assert.doesNotMatch(drawer, /已归档|回收站|当前项目|版本快照/);
+  assert.match(drawer, /修改画布名称/);
+  assert.match(drawer, /共享画布/);
+  assert.match(drawer, /删除画布/);
+  assert.match(drawer, /企业协作/);
+  assert.match(controller, /async function duplicateCanvas/);
+  assert.match(controller, /async function restoreCanvas/);
+  assert.doesNotMatch(
+    controller,
+    /startSimulatedRun|function submitIntent\(|setInterval.*progress/s,
+  );
+  assert.match(edges, /function curve/);
+  assert.match(edges, /visibleBounds/);
+  // 连线删除按钮贴着鼠标点击处，不再固定在曲线中点（2026-11-11 用户裁决）
+  assert.match(edges, /function nearestCurvePoint/);
+  assert.match(edges, /selectedEdgeAnchor/);
+  assert.match(edges, /translate\(\$\{removeAnchor\.x\} \$\{removeAnchor\.y\}\)/);
+  assert.match(canvas, /setSelectedEdgeAnchor\(point\)/);
+  assert.match(canvas, /clientToWorld=\{clientToWorld\}/);
+  assert.match(assets, /nextCursor/);
+  assert.match(assets, /批量下载/);
+  assert.doesNotMatch(assets, /来源|sourceFilter|sourceOptions|files\/lineage/);
+  assert.match(assets, /添加到画布/);
+  assert.match(controller, /function addAssetToCanvas/);
+  assert.match(controller, /function graphForBranch/);
+  assert.match(fileBulk, /action === "tags"/);
+  assert.match(tasks, /window\.setInterval\(refresh, 4_000\)/);
+  assert.match(tasks, /task-center-backdrop/);
+  assert.match(tasks, /role="dialog"/);
+  assert.match(tasks, /aria-modal="true"/);
+  assert.match(tasks, /event\.key === "Escape"/);
+  assert.match(tasks, /异步视频和工作流在关闭页面后继续运行/);
+  assert.match(share, /tokenHash/);
+  assert.match(migration, /source_port_id/);
+  assert.match(migration, /xiaoluo_v2_rate_limit_buckets/);
+  assert.match(limiter, /RATE_LIMITED/);
+  assert.match(kernelRuns, /"audio", "document"/);
+  assert.match(artifactFormat, /application\/pdf/);
+});

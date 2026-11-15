@@ -1,0 +1,54 @@
+﻿Already up to date
+Done in 239ms using pnpm v11.19.0
+pnpm : $ vinext build
+所在位置 行:1 字符: 59
++ ...  "D:\projects\xiaoluo ai agent OS\后台\source"; pnpm build 2>&1 | Out-F ...
++                                                   ~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ($ vinext build:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+  vinext build  (Vite 8.0.13)
+
+[34m[1/5] analyze client references...[39m
+[2K
+transforming...鉁?424 modules transformed.
+rendering chunks...
+[32m鉁?built in 613ms[39m
+[34m[2/5] analyze server references...[39m
+[2K
+transforming...鉁?271 modules transformed.
+[31m鉁?[39m Build failed in 248ms
+[31mBuild failed with 1 error:
+
+[31m[UNLOADABLE_DEPENDENCY] [0mCould not load app/components/media-viewer.tsx
+    [38;5;246m鈺?[0m[38;5;246m鈹€[0m[38;5;246m[[0m app/components/node-card.tsx:27:8 [38;5;246m][0m
+    [38;5;246m鈹?[0m
+ [38;5;246m27 鈹?[0m [38;5;249mi[0m[38;5;249mm[0m[38;5;249mp[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249mt[0m[
+38;5;249m [0m"./media-viewer"[38;5;249m;[0m
+ [38;5;240m   鈹?[0m        鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹攢鈹€鈹€鈹€鈹€鈹€鈹€  
+ [38;5;240m   鈹?[0m                鈺扳攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ stream did not contain valid UTF-8
+[38;5;246m鈹€鈹€鈹€鈹€鈺?[0m
+[39m
+    at aggregateBindingErrorsIntoJsError (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_
+modules/.pnpm/rolldown@1.0.1/node_modules/rolldown/dist/shared/error-CkdMJ9ps.mjs:48:18)
+    at unwrapBindingResult (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pnpm/
+rolldown@1.0.1/node_modules/rolldown/dist/shared/error-CkdMJ9ps.mjs:18:128)
+    at #build (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pnpm/rolldown@1.0.
+1/node_modules/rolldown/dist/shared/rolldown-build-BVD3dIdE.mjs:3275:34)
+    at async buildEnvironment (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pn
+pm/vite@8.0.13_@types+node@22._3a599438a16dcc3beec4b13d52d1c508/node_modules/vite/dist/node/chunks/node.js:33133:64)
+    at async Object.build (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pnpm/v
+ite@8.0.13_@types+node@22._3a599438a16dcc3beec4b13d52d1c508/node_modules/vite/dist/node/chunks/node.js:33555:19)
+    at async buildApp (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pnpm/@vite
+js+plugin-rsc@0.5.26_r_dfb477ef1a8b9f1efbe2b6de129b3acc/node_modules/@vitejs/plugin-rsc/dist/plugin-BhzHKRFo.js:623:3)
+    at async BasicMinimalPluginContext.handler (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source
+/node_modules/.pnpm/@vitejs+plugin-rsc@0.5.26_r_dfb477ef1a8b9f1efbe2b6de129b3acc/node_modules/@vitejs/plugin-rsc/dist/p
+lugin-BhzHKRFo.js:749:43)
+    at async Object.buildApp (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pnp
+m/vite@8.0.13_@types+node@22._3a599438a16dcc3beec4b13d52d1c508/node_modules/vite/dist/node/chunks/node.js:33549:5)
+    at async buildApp (file:///D:/projects/xiaoluo%20ai%20agent%20OS/%E5%90%8E%E5%8F%B0/source/node_modules/.pnpm/vinex
+t@0.0.50_@vitejs+plugi_c8eb1116105dc73367df34d24f037db1/node_modules/vinext/dist/cli.js:225:2) {
+  errors: [Getter/Setter]
+}
+[ELIFECYCLE] Command failed with exit code 1.

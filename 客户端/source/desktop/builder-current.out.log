@@ -1,0 +1,25 @@
+  • electron-builder  version=26.15.3 os=10.0.26200
+  • loaded configuration  file=package.json ("build" field)
+  • packageManager not detected by file, falling back to environment detection  resolvedPackageManager=npm detected=C:\Users\Zh\Documents\Codex\2026-07-22\new-chat
+  • skipped dependencies rebuild  reason=npmRebuild is set to false
+  • packaging       platform=win32 arch=x64 electron=43.3.0 appOutDir=desktop\release-current\win-unpacked
+  • downloaded      label=electron progress=100%
+  • downloaded electron zip extracted successfully  output=C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\desktop\release-current\win-unpacked
+  • searching for node modules  pm=npm searchDir=C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\desktop
+  ⨯ No JSON content found in output  failedTask=build stackTrace=Error: No JSON content found in output
+    at NpmNodeModulesCollector.extractJsonFromPollutedOutput (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\node-module-collector\nodeModulesCollector.ts:178:11)
+    at NpmNodeModulesCollector.parseDependenciesTree (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\node-module-collector\nodeModulesCollector.ts:151:17)
+    at retries (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\node-module-collector\nodeModulesCollector.ts:100:51)
+    at retry (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\builder-util-runtime@9.7.0_supports-color@10.2.2\node_modules\builder-util-runtime\src\retry.ts:9:12)
+    at retry (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\builder-util-runtime@9.7.0_supports-color@10.2.2\node_modules\builder-util-runtime\src\retry.ts:13:14)
+    at NpmNodeModulesCollector.getNodeModules (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\node-module-collector\nodeModulesCollector.ts:54:31)
+    at collectNodeModulesWithLogging (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\util\appFileCopier.ts:225:14)
+    at computeNodeModuleFileSets (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\util\appFileCopier.ts:182:16)
+    at C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\platformPackager.ts:494:34
+    at async Promise.all (index 0)
+    at AsyncTaskManager.awaitTasks (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\builder-util@26.15.3_supports-color@10.2.2\node_modules\builder-util\src\asyncTaskManager.ts:65:25)
+    at WinPackager.doPack (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\platformPackager.ts:309:5)
+    at WinPackager.pack (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\platformPackager.ts:163:5)
+    at Packager.doBuild (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\packager.ts:530:11)
+    at executeFinally (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\builder-util@26.15.3_supports-color@10.2.2\node_modules\builder-util\src\promise.ts:12:14)
+    at Packager.build (C:\Users\Zh\Documents\Codex\2026-07-22\new-chat\node_modules\.pnpm\app-builder-lib@26.15.3_dmg_ed407063d9219dada699e6fa1d0a9e89\node_modules\app-builder-lib\src\packager.ts:450:31)

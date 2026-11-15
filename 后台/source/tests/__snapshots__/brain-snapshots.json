@@ -1,0 +1,170 @@
+{
+  "truncate": {
+    "长日志（有换行，应保尾）": "line 0 ok\nline 1 ok\nline 2 ok\nline 3 ok\nline 4 ok\nline 5 ok\nline 6 ok\nline 7 ok\nline 8 ok\nline 9 ok\nline 10 ok\nline 11 ok\nline 12 ok\nline 13 ok\nline 14 ok\nline 15 ok\nline 16 ok\nline 17 ok\nline 18 ok\nline 19 ok\nline 20 ok\nline 21 ok\nline 22 ok\nline 23 ok\nline 24 ok\nline 25 ok\nline 26 ok\nline 27 ok\nline 28 ok\nline 29 ok\nline 30 ok\nline 31 ok\nline 32 ok\nline 33 ok\n\n……（中间省略 4111 字符，首尾均已保留；需要缺失部分请用 offset/limit 分段读或 grep_files 定点检索）\n\nline 382 ok\nline 383 ok\nline 384 ok\nline 385 ok\nline 386 ok\nline 387 ok\nline 388 ok\nline 389 ok\nline 390 ok\nline 391 ok\nline 392 ok\nline 393 ok\nline 394 ok\nline 395 ok\nline 396 ok\nline 397 ok\nline 398 ok\nline 399 ok\nFAIL src/a.ts:12 expected 1 got 2",
+    "单行超长（无换行，按字符硬切）": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\n……（中间省略 2600 字符，首尾均已保留；需要缺失部分请用 offset/limit 分段读或 grep_files 定点检索）\n\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "刚好未超限（原样返回）": "short result",
+    "极小上限（仍有省略说明）": "line 0 ok\nline 1 ok\nline 2 ok\nline 3 ok\nline 4 ok\nline 5 ok\nline 6 ok\nline 7 ok\n\n……（中间省略 4587 字符，首尾均已保留；需要缺失部分请用 offset/limit 分段读或 grep_files 定点检索）\n\nline 398 ok\nline 399 ok\nFAIL src/a.ts:12 expected 1 got 2"
+  },
+  "patch": {
+    "逐字符命中": {
+      "content": "function add(a, b) {\n  return a + b; // sum\n}\n",
+      "outcomes": [
+        {
+          "ok": true,
+          "level": "exact",
+          "line": 2
+        }
+      ]
+    },
+    "行尾空白差异（trailing）": {
+      "content": "function add(a, b) {\n  return a + b; // trimmed-tail\n}\n",
+      "outcomes": [
+        {
+          "ok": true,
+          "level": "trailing",
+          "line": 2
+        }
+      ]
+    },
+    "行首尾都差（trimmed）": {
+      "content": "function add(a, b) {\n  return a + b; // trimmed\n}\n",
+      "outcomes": [
+        {
+          "ok": true,
+          "level": "trimmed",
+          "line": 2
+        }
+      ]
+    },
+    "未命中（整批不落地）": {
+      "content": null,
+      "outcomes": [
+        {
+          "ok": false,
+          "error": "oldText 三级都没匹配到（逐字符 / 忽略行尾空白 / 忽略行首尾空白）：先 read_file 看实际内容再传，别凭记忆写原文。"
+        }
+      ]
+    }
+  },
+  "journal": {
+    "serialize": [
+      {
+        "seq": 1,
+        "ts": "+0ms",
+        "kind": "turn_start",
+        "note": "老板：帮我看下构建为什么失败"
+      },
+      {
+        "seq": 2,
+        "ts": "+0ms",
+        "kind": "tool_call",
+        "note": "调用 shell",
+        "payload": {
+          "tool": "shell",
+          "argv": [
+            "pnpm",
+            "build"
+          ]
+        }
+      },
+      {
+        "seq": 3,
+        "ts": "+0ms",
+        "kind": "tool_result",
+        "note": "构建失败：TS2345",
+        "payload": {
+          "ok": false
+        }
+      },
+      {
+        "seq": 4,
+        "ts": "+0ms",
+        "kind": "tool_call",
+        "note": "调用 read_file",
+        "payload": {
+          "tool": "read_file",
+          "path": "src/a.ts"
+        }
+      },
+      {
+        "seq": 5,
+        "ts": "+0ms",
+        "kind": "turn_end",
+        "note": "本轮结束：2 步，失败 1 次",
+        "payload": {
+          "steps": 2,
+          "failures": 1
+        }
+      }
+    ],
+    "recent2": [
+      {
+        "seq": 4,
+        "ts": "+0ms",
+        "kind": "tool_call",
+        "note": "调用 read_file",
+        "payload": {
+          "tool": "read_file",
+          "path": "src/a.ts"
+        }
+      },
+      {
+        "seq": 5,
+        "ts": "+0ms",
+        "kind": "turn_end",
+        "note": "本轮结束：2 步，失败 1 次",
+        "payload": {
+          "steps": 2,
+          "failures": 1
+        }
+      }
+    ],
+    "fold": "工具调用：shell×1、read_file×1\n老板：帮我看下构建为什么失败\n本轮结束：2 步，失败 1 次",
+    "fold窄上限": "工具调用：shell×1、read_file×1\n老板：帮我看下构建为什么失败\n…"
+  },
+  "fork": {
+    "snapshot": {
+      "version": 1,
+      "conversationId": "conv-fork",
+      "forkedFrom": "conv-source",
+      "messages": [
+        {
+          "role": "system",
+          "content": "system prompt"
+        },
+        {
+          "role": "user",
+          "content": "继续"
+        },
+        {
+          "role": "assistant",
+          "content": "好的"
+        }
+      ],
+      "usedTokens": 1234,
+      "uiMessages": [
+        {
+          "kind": "user",
+          "text": "继续"
+        },
+        {
+          "kind": "assistant",
+          "text": "好的"
+        },
+        {
+          "id": "cm-fork-1700000000000",
+          "kind": "status",
+          "content": "已分叉出分支对话：历史与产物已整份复制，接下来在分支里怎么写都不动原对话（分支自 conv-source）。",
+          "meta": {
+            "tool": "conversation_fork",
+            "target": "conv-fork",
+            "ok": true
+          },
+          "createdAt": 1700000000000
+        }
+      ],
+      "savedAt": 1700000000000
+    },
+    "id格式": "conv-source-fork-loyw3v28"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "_comment": "门禁第 7 步的覆盖率下限（与 Node 内置 coverage 的 all files 汇总口径一致）。只许往上调：涨了就把这里改成实测值，别改低。",
+  "line": 40,
+  "branch": 60,
+  "funcs": 33
+}

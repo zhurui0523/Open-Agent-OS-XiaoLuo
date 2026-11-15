@@ -1,0 +1,47 @@
+
+  vinext build  (Vite 8.0.13)
+
+[34m[1/5] analyze client references...[39m
+[2K
+transforming...✓ 456 modules transformed.
+rendering chunks...
+[PLUGIN_TIMINGS] Your build spent significant time in plugins. Here is a breakdown:
+  - vite-plugin-commonjs (24%)
+  - rsc:scan-strip (14%)
+  - vinext:jsx-in-js (14%)
+  - vinext:mdx (11%)
+  - vinext:react-canary (11%)
+See https://rolldown.rs/options/checks#plugintimings for more details.
+
+[32m✓ built in 3.10s[39m
+[34m[2/5] analyze server references...[39m
+[2K
+transforming...✓ 274 modules transformed.
+rendering chunks...
+[32m✓ built in 268ms[39m
+[34m[3/5] build rsc environment...[39m
+[2K
+transforming...✓ 598 modules transformed.
+rendering chunks...
+computing gzip size...
+[32m✓ built in 1.41s[39m
+[34m[4/5] build client environment...[39m
+[2K
+transforming...✓ 1691 modules transformed.
+rendering chunks...
+computing gzip size...
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[32m✓ built in 585ms[39m
+[34m[5/5] build ssr environment...[39m
+[2K
+transforming...✓ 280 modules transformed.
+rendering chunks...
+computing gzip size...
+[32m✓ built in 376ms[39m
+  Generated standalone output in dist\standalone/
+  Start it with: node dist/standalone/server.js
+

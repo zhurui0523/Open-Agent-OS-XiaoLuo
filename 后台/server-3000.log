@@ -1,0 +1,2 @@
+[vinext] Production server running at http://0.0.0.0:3000
+[inproc-scheduler] 常驻调度已启动，轮询 http://127.0.0.1:3000

@@ -1,0 +1,14 @@
+name,kind,entrypoint,trigger
+isolated-worker,worker,isolated-worker/server.mjs,独立进程执行
+runtime-worker,scheduler,scripts/runtime-worker.mjs,常驻轮询
+runtime-worker-docker,deployment,isolated-worker/Dockerfile,容器化 worker
+runtime-worker-k8s,deployment,isolated-worker/kubernetes.yaml,K8s 部署
+local-mysql,integration,scripts/local-mysql.mjs,开发态 MySQL 生命周期
+oss-storage,integration,app/lib/server-runtime-config.ts,阿里云 OSS 存储驱动
+plugin-runtime,integration,app/lib/package-contract.ts,插件运行时契约
+app/api/v2/kernel/dispatch/route.ts,scheduled-api,app/api/v2/kernel/dispatch/route.ts,路由内触发调度
+app/api/v2/kernel/runs/route.ts,scheduled-api,app/api/v2/kernel/runs/route.ts,路由内触发调度
+app/api/v2/packages/import/github/route.ts,scheduled-api,app/api/v2/packages/import/github/route.ts,路由内触发调度
+app/api/v2/plugins/test/route.ts,scheduled-api,app/api/v2/plugins/test/route.ts,路由内触发调度
+app/api/v2/runtime/isolated/route.ts,scheduled-api,app/api/v2/runtime/isolated/route.ts,路由内触发调度
+app/api/v2/worker/tick/route.ts,scheduled-api,app/api/v2/worker/tick/route.ts,路由内触发调度
