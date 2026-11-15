@@ -1,0 +1,850 @@
+{
+  "_comment": "只许缩不许涨：修掉一处就删一条；新增静默 catch 必须写明理由",
+  "entries": [
+    {
+      "file": "后台/source/app/api/v2/chat/[conversationId]/route.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/api/v2/files/route.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/api/v2/intent/messages/route.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/api/v2/organizations/members/route.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/api/v2/packages/from-artifact/route.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/agent-config-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/brain-result-dock.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/brain-result-dock.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/canvas-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/canvas-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/canvas-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/capabilities-view.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/intent-console.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/local-ai-settings.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/node-card.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/plugin-capabilities-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/server-url-widget.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/components/xiaoluo-brain-panel.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/hooks/use-intent-os.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/hooks/use-intent-os.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/hooks/use-intent-os.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/hooks/use-intent-os.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/hooks/use-intent-os.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/anthropic-adapter.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-llm-gateway.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-programs.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox-win.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox-win.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-sandbox.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/brain-state-store.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/kernel-executors.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/local-ai.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/package-import.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/package-import.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/plugin-reference-bridge.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/plugin-runtime-shim.ts",
+      "snippet": "catch (error) {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/seed-skills.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/lib/seed-skills.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/components/chat/clipboard.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/components/chat/clipboard.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/components/chat/code-preview.tsx",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/hooks/use-chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/agent-client.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/agent-server.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/agent-wire.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/api.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/approval-grants.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/chat-agent.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/failure-advisor.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/memory-store.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/memory-store.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/tasks.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/tasks.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/app/xiaoluo-brain/lib/brain/types.ts",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/shared/service-provision.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/shared/service-provision.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/scripts/install-git-hooks.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/scripts/start-local-detached.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "后台/source/scripts/start-login-detached.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/app-data.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/app-server-ipc.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/app-server-ipc.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/app-server-ipc.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/app-server.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/downloader.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/downloader.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/downloader.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/downloader.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/ipc.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/ipc.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/mock-diffusion.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/mock-diffusion.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/mock-engine.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-ai/runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/local-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/main.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/main.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-oauth.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/mcp-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/server-url.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/uia-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/uia-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch (e) {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/desktop/webdrive-runtime.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/shared/service-provision.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    },
+    {
+      "file": "客户端/source/shared/service-provision.mjs",
+      "snippet": "catch {",
+      "reason": "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）"
+    }
+  ]
+}

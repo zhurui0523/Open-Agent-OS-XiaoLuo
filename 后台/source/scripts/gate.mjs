@@ -9,6 +9,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// 仓库根（本目录向上两层；仓库没建时留空，CI 预检自动跳过）
+const REPO_ROOT = resolve(ROOT, "..", "..");
 process.chdir(ROOT);
 const FAST = process.argv.includes("--fast");
 const stamp = (() => {
@@ -126,7 +128,11 @@ step("基线清单未漂移（docs/baseline 与代码一致）", () => {
   }
 });
 
-// 6) 快照回归：变更必须显式 approve
+// 7) 静默 catch 护栏：存量已白名单冻结，新增一律拦下（纯文件扫描，毫秒级）
+step("静默 catch 护栏（scripts/silent-catch-allowlist.json）", () =>
+  runNode([join(ROOT, "scripts", "lint-silent-catch.mjs")]));
+
+// 8) 快照回归：变更必须显式 approve
 step("快照回归（XIAOLUO_SNAPSHOT_UPDATE=1 才允许改写）", () => {
   const dir = join(ROOT, "tests");
   const file = join(dir, "brain-snapshot.test.mjs");
@@ -134,7 +140,7 @@ step("快照回归（XIAOLUO_SNAPSHOT_UPDATE=1 才允许改写）", () => {
   return runNode([join(ROOT, "node_modules", "tsx", "dist", "cli.mjs"), "--test", join("tests", "brain-snapshot.test.mjs")]);
 });
 
-// 7) 覆盖率门槛：Node 内置覆盖率，阈值写在 scripts/coverage-thresholds.json
+// 9) 覆盖率门槛：Node 内置覆盖率，阈值写在 scripts/coverage-thresholds.json
 // 只卡"整体不低于基线"——不做花哨的 per-file 门槛，否则每加一个文件都要调阈值
 // --fast（提交前）跳过：覆盖率要跑 60s 上下，别拖住每次提交
 if (!FAST) {
@@ -172,6 +178,15 @@ if (!FAST) {
   });
 } else {
   say("\n⏭ 覆盖率门槛（--fast 跳过）");
+}
+
+// 10) CI 预检：确认"推到 GitHub 后能跑"这一层——工作流在仓库根、依赖文件没被 ignore 挡住
+//     没 git 仓库时跳过（门禁本身不依赖版本管理）
+if (existsSync(join(REPO_ROOT, ".git"))) {
+  step("CI 预检（工作流位置 + 依赖文件是否入库）", () =>
+    runNode([join(ROOT, "scripts", "preflight-ci.mjs")]));
+} else {
+  say("\n⏭ CI 预检（当前目录不在 git 仓库内，跳过）");
 }
 
 say(`\n门禁通过（总耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）${FAST ? "（--fast 未跑构建）" : ""}`);
