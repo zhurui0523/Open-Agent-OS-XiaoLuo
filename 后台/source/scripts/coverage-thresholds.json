@@ -1,6 +1,12 @@
 {
-  "_comment": "门禁第 7 步的覆盖率下限（与 Node 内置 coverage 的 all files 汇总口径一致）。只许往上调：涨了就把这里改成实测值，别改低。",
+  "_comment": "门禁第 9 步的覆盖率下限（与 Node 内置 coverage 的 all files 汇总口径一致）。只许往上调：涨了就把这里改成实测值，别改低。",
+  "_files_comment": "files 是重点文件下限：整体百分比会掩盖大文件，chat-agent.ts 这类几千行的掉下去照样能过整体门槛。实测值见 2026-11-16：chat-agent 36.58/55.49/43.15，brain-state-store 87.86/72.58/68.75，tool-search 100/82.76/100。",
   "line": 40,
   "branch": 60,
-  "funcs": 33
+  "funcs": 33,
+  "files": {
+    "chat-agent.ts": { "line": 35, "branch": 50, "funcs": 40 },
+    "brain-state-store.ts": { "line": 85, "branch": 70, "funcs": 65 },
+    "tool-search.ts": { "line": 95, "branch": 75, "funcs": 95 }
+  }
 }

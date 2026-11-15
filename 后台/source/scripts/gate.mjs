@@ -171,10 +171,35 @@ if (!FAST) {
   ];
   const failed = checks.filter(([name, actual, min]) => Number.isFinite(actual) && actual < Number(min));
   const detail = checks.map(([name, actual, min]) => `${name} ${actual}%（下限 ${min}%）`).join("，");
-  if (failed.length) {
-    return { ok: false, out: `${res.out}\n覆盖率低于门槛：${detail}` };
+
+  // 重点文件单独卡：整体百分比掩盖大文件（chat-agent.ts 这类 3000 行的），单文件掉下去照样算过
+  const perFile = thresholds.files || {};
+  const rows = (res.out || "").split("\n").filter((lineText) => /^\s*#\s+\S+\.(ts|tsx|mjs|js)\s+\|/.test(lineText));
+  const fileFailures = [];
+  for (const [name, floors] of Object.entries(perFile)) {
+    const row = rows.find((lineText) => lineText.includes(name));
+    if (!row) {
+      fileFailures.push(`${name} 没出现在覆盖率报表里（可能没被任何测试加载）`);
+      continue;
+    }
+    // 只取 "|" 之后的三列，别对整行抓数字——文件名里的 ".ts" 会被当成 "." 抓出来，整体错一位
+    const cells = row.split("|").map((cell) => cell.replace("#", "").trim());
+    const [lineV, branchV, funcsV] = cells.slice(1, 4).map(Number);
+    for (const [metric, actual] of [["line", lineV], ["branch", branchV], ["funcs", funcsV]]) {
+      const floor = floors[metric];
+      if (Number.isFinite(Number(floor)) && Number.isFinite(actual) && actual < Number(floor)) {
+        fileFailures.push(`${name} ${metric} ${actual}% < ${floor}%`);
+      }
+    }
   }
-  return { ok: true, out: `覆盖率 ${detail}` };
+
+  const fileDetail = Object.keys(perFile).length
+    ? "；重点文件：" + Object.entries(perFile).map(([name, floors]) => `${name} 下限 ${Object.entries(floors).map(([k, v]) => `${k} ${v}%`).join("/")}`).join("，")
+    : "";
+  if (failed.length || fileFailures.length) {
+    return { ok: false, out: `${res.out}\n覆盖率低于门槛：${detail}${fileDetail}${fileFailures.length ? "\n" + fileFailures.join("\n") : ""}` };
+  }
+  return { ok: true, out: `覆盖率 ${detail}${fileDetail}` };
   });
 } else {
   say("\n⏭ 覆盖率门槛（--fast 跳过）");
