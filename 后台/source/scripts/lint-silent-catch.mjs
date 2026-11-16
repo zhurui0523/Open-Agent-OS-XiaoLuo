@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(ROOT, "..", "..");
 const ALLOW = join(ROOT, "scripts", "silent-catch-allowlist.json");
+const REASONS = join(ROOT, "scripts", "silent-catch-reasons.json");
+const PLACEHOLDER = "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）";
 
 const SCAN_ROOTS = [
   join(ROOT, "app"),
@@ -72,6 +74,22 @@ function loadAllowlist() {
   }
 }
 
+/** 逐条复核结论（按文件）：docs/silent-catch-review.md 的机读版 */
+function loadReasons() {
+  if (!existsSync(REASONS)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(REASONS, "utf8").replace(/^\uFEFF/, ""));
+    const map = {};
+    for (const [file, reason] of Object.entries(parsed)) {
+      if (file.startsWith("_")) continue;
+      map[file] = String(reason);
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 const files = SCAN_ROOTS.flatMap((dir) => walk(dir));
 const found = [];
 for (const file of files) {
@@ -90,6 +108,7 @@ const key = (entry) => entry.file + "||" + entry.snippet;
 
 if (process.argv.includes("--update")) {
   const existing = loadAllowlist().entries;
+  const reasons = loadReasons();
   const seen = new Set(existing.map(key));
   const merged = [...existing];
   for (const item of found) {
@@ -97,10 +116,13 @@ if (process.argv.includes("--update")) {
     merged.push({
       file: item.file,
       snippet: item.snippet,
-      reason: "既有静默兜底：冻结存量，新增一律拦下（要吞就在 reason 里写清为什么安全）",
+      reason: reasons[item.file] ?? PLACEHOLDER,
     });
   }
-  const stillThere = merged.filter((entry) => found.some((item) => key(item) === key(entry)));
+  const stillThere = merged
+    .filter((entry) => found.some((item) => key(item) === key(entry)))
+    // 理由跟着复核结论走：reasons 里有该文件就覆盖，避免占位文案又长回来
+    .map((entry) => ({ ...entry, reason: reasons[entry.file] ?? entry.reason }));
   writeFileSync(
     ALLOW,
     JSON.stringify({ _comment: "只许缩不许涨：修掉一处就删一条；新增静默 catch 必须写明理由", entries: stillThere }, null, 2) + "\n",
@@ -131,6 +153,15 @@ if (added.length) {
 if (stale.length) {
   console.error(`✗ 白名单有 ${stale.length} 条已失效（对应代码已改），请删掉免得白名单变废纸：`);
   for (const entry of stale.slice(0, 20)) console.error(`  ${entry.file}  ${entry.snippet}`);
+  process.exit(1);
+}
+
+// 占位理由等于没写理由：复核过的结论要落在条目上，不能只留在文档里
+const placeholders = allowed.filter((entry) => !entry.reason || entry.reason === PLACEHOLDER);
+if (placeholders.length) {
+  console.error(`✗ 白名单有 ${placeholders.length} 条还是占位理由，请在 scripts/silent-catch-reasons.json 里写清为什么安全：`);
+  for (const entry of placeholders.slice(0, 10)) console.error(`  ${entry.file}`);
+  console.error("（结论来源：docs/silent-catch-review.md 的逐条复核）");
   process.exit(1);
 }
 
