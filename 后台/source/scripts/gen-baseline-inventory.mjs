@@ -60,7 +60,8 @@ const counts = {};
 
 // 1) 页面与入口
 {
-  const pages = walk(join(ROOT, "app"), (f) => /\\(page|layout|template)\.tsx$/.test(f));
+  // 只认「目录分隔符 + page/layout/template.tsx」：Linux 上是 /，Windows 上是 \\，两边都要命中
+  const pages = walk(join(ROOT, "app"), (f) => /[\\/](page|layout|template)\.tsx$/.test(f));
   const rows = [];
   for (const file of pages) {
     const kind = /page\.tsx$/.test(file) ? "page" : /layout\.tsx$/.test(file) ? "layout" : "template";
