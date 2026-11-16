@@ -165,7 +165,12 @@ test("系统级隔离档默认 auto：落点打不了标就如实降级，不假
   // 显式关闭：说清是被关掉，不是能力缺失
   process.env.XIAOLUO_SANDBOX_WIN_MIC = "0";
   assert.equal(winMicSetting(), "off");
-  assert.equal(describeIsolation(repoRoot).note.includes("显式关闭"), true);
+  // 措辞跟着平台走：Windows 才说"显式关闭"，其他平台本来就没接内核级沙箱
+  if (process.platform === "win32") {
+    assert.equal(describeIsolation(repoRoot).note.includes("显式关闭"), true);
+  } else {
+    assert.match(describeIsolation(repoRoot).note, /未接入内核级沙箱/);
+  }
 
   if (prev === undefined) delete process.env.XIAOLUO_SANDBOX_WIN_MIC;
   else process.env.XIAOLUO_SANDBOX_WIN_MIC = prev;
