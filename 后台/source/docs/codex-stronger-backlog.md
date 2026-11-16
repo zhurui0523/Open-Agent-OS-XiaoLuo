@@ -172,12 +172,15 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 7.6 | skills 隐式调用识别 | 新建 `skill-selection.ts`：解析能力清单的技能行，按老板原话打分（显式 `/name`、`@name`、原名出现 → 60–100 分；描述词元重叠按比例 ≤60 分，中文走二元组），过阈值才返回；每轮在 `reply()` 里清旧提示并按命中注入 `[技能提示]`（只引导 load_skill，不硬激活） | `skill-selection.ts`、`chat-agent.ts`、`agent-host.ts`、`agent-ports.ts`；`tests/brain-skill-selection.test.mjs` 5 条（含 1 条真跑断言注入与换话题清理） |
 | 7.7 | 文件索引 / 变更监听 | 新建 `app/lib/file-index.ts`：① 工作区路径索引（跳过 node_modules/.git/dist 等，上限 2 万条，超限标 truncated）；② 模糊打分五档（basename 全等 100 > 前缀 90+ > 子串 80 > 路径子串 70 > 子序列 40），按分数→路径长度→字典序排；③ `fs.watch(recursive)` 变更即标脏（300ms 防抖、`unref` 不拖进程，监听不可用时退回 30s TTL），按工作区根复用；④ 新工具 `fuzzy_find_files`（人话查询，与正则 `find_files` 并存）+ `fs` 口 `fuzzyFind` + `fuzzy` action；桌面端同一套打分与索引缓存（`local-runtime.mjs`） | `file-index.ts`、`brain-sandbox.ts`、`fs/route.ts`、`types.ts`、`server-ports.ts`、`agent-ports.ts`、`chat-tools.ts`、`chat-agent.ts`、`xiaoluo-brain-panel.tsx`、`客户端/.../local-runtime.mjs`；`tests/brain-file-index.test.mjs` 6 条（打分分档 / 遍历跳过 / 缓存与子目录过滤 / watch 标脏 / 双端算法一致 / 工具注册与接线） |
 | 7.9 | guardian 审查 | 新建 `guardian.ts`：① 规则信号（凭据文件 + 外发/编码、远端脚本管道执行、强制推送、反取证 → high 直接拒；越界批量删除、凭据编码 → medium 转复核），`--force-with-lease` 不误伤；② 可选模型第二意见（`hooks.toml [guardian] review = "model"` 才开）：带上本轮目标与本轮风险信号，只回 `allow/review/deny` + 一句理由，8 秒超时/回包坏都按 review，绝不因审查通道故障自动放行；③ `run_command` 执行前拦一道，deny 回流理由、review 挂到结果里 | `guardian.ts`、`chat-agent.ts`（`guardianCheck` + 轮首传目标）、`brain-sandbox.ts`（种子 hooks 注释）；`tests/brain-guardian.test.mjs` 7 条（配置/规则/提示词/回包解析/裁决合成/真跑拦截/接线） |
+| 7.8（A 档） | code-mode 最小档：`run_code` | 新建工具 `run_code`（javascript / python / powershell / bash）：脚本写进工作区 `.xiaoluo-code/` 临时文件 → 交给 `run_command` 同一条链路（permission hooks + guardian + 沙箱 + 超时 + 审批门）→ 成功即删、失败保留路径供 `read_file`；脚本内容本身也先过 guardian（命令串只是 `node x.mjs`，危险动作在 code 里）。B 档长驻会话与 C 档 gRPC 远端按评估结论不做 | `chat-tools.ts`、`agent-ports.ts`、`chat-agent.ts`；`tests/brain-run-code.test.mjs` 5 条（注册 / 成功清理 / 失败保留 / 语言与空脚本 / 内容过 guardian） |
 
 **7.3 已知边界**：① 没有 MITM 与证书体系，HTTPS 走 CONNECT 隧道，代理看不到明文、也不能给 HTTPS 注入凭据头（只对明文 HTTP 生效）；② 没有按进程归属统计、没有 HTTP/2 专用处理、没有 AWS SigV4 签名；③ 仍是"代理约定级"约束，raw socket / `curl --noproxy` 可绕过，进程级禁网要等内核隔离档；④ 默认关闭（不写 `egress = "proxy"` 行为与原来完全一致），因此没有做灰度开关。
 
 **7.4 已知边界**：① 没有实现 GET SSE 长连接，服务器主动推送的请求只有随 POST 响应一起回来时才接得住；② 资源订阅（resources/subscribe）与变更通知未做；③ `resources/templates/list` 只列举不展开，模板资源读取需模型显式给 server + uri；④ elicitation 表单只支持一层扁平字段（string / number / integer / boolean / enum），嵌套对象和数组要等表单引擎；⑤ 未在真实企业 MCP 服务器上跑过（假服务器覆盖协议层）。
 
 **7.5 已知边界**：① 检索是逐文件全文扫描，没有倒排索引（会话多、文件大的机器上会变慢）；② 归档是搬移不是压缩，`.archive/` 会持续增长，没有自动清理策略；③ 没有 Codex `reference_index` 那种"消息 ↔ 文件引用"索引；④ 列表的 eventCount 是尾部窗口计数，不是精确总量（精确值要全量读）。
+
+**7.8（A 档）已知边界**：① 每次 `run_code` 都是一次性进程，变量/句柄不跨调用，多步实验还是要写文件再 `run_command`；② 没有流式输出，长脚本只能等结束或超时；③ 脚本语言靠系统 PATH 里的解释器（`node`/`python`/`powershell`/`bash`），缺哪个就报错；④ `.xiaoluo-code/` 失败脚本不会自动清理，攒多了要手动 `delete_file`；⑤ B/C 档（长驻会话、gRPC 远端）未做，评估结论见下一节。
 
 **7.9 已知边界**：① 规则只覆盖"凭据外发 / 管道执行 / 强推 / 反取证 / 越界批删"几类组合，不等于全量恶意命令识别；② 模型复核是同步串在命令前的，会给每次 `run_command` 加一次模型往返（默认 rules 档不付这个成本）；③ 本轮目标取自 goal 模式，普通对话下目标为空，模型只能按"命令自身风险"判；④ deny 只拦 `run_command`，服务启动 / 交互会话同样走这条前闸，但 `git` 专用口与 MCP 外部工具还没有过 guardian；⑤ 审查模型不可用时退 `review`（不阻断、不自动放行高危），仍依赖宿主审批门兜底。
 
@@ -189,7 +192,6 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 | # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
 |---|---|---|---|---|
-| 7.8 | code-mode（写代码在受控会话里执行） | `code-mode` 33 files / 349KB（`grpc_session.rs`、`remote_session.rs`） | `code.ts` 明确"一期不执行任何代码，代码只是文件集交付物" | 架构级，需单独评估 |
 | 7.10 | 多 Agent 组织（角色/身份/图/消息板） | `agent-roles` / `agent-identity` / `agent-graph-store` / `message-board` / `runtime-agent-instance` | `debate.ts`(4KB) / `collab.ts`(2KB) 只是对话协作 | 架构级 |
 | 7.11 | 凭据钥匙串 | `keyring-store` / `secrets` / `workload-identity` | 凭据走 json 文件（MCP secret 也是 mcp.json 明文） | 安全债 |
 | 7.12 | 可观测性 | `otel` / `otel-trace-websocket` | 无（只有本地 gate 日志） | 运维 |
@@ -208,7 +210,7 @@ Codex 的 `code-mode` 是"把一段代码在一个长驻受控会话里执行，
 | B 会话级 | 长驻 node/python 会话，保持变量与工作目录，支持多次 eval | 1–2 周 | 暂不做：进程生命周期、崩溃恢复、资源回收都要重做一遍；收益主要是省几轮往返，A 档已覆盖大半 |
 | C 完整 | gRPC/远端会话 + 会话内工具代理 + 流式输出 | 1–2 月 | 不做：属于另一个产品形态（Codex 云端沙箱），与小逻"本地优先 + 审批门"的路线冲突 |
 
-结论：7.8 按 A 档排期，等 7.9 guardian（给 `run_code` 加第二道审查）之后再动更稳；本轮不动代码，避免留下一个"能跑任意脚本但没有审查"的洞。
+结论：7.8 按 A 档落地（2026-11-17 已实现 `run_code`），B/C 档不做；先有 7.9 guardian（已落地）再开放代码执行，避免"能跑任意脚本但没有审查"的洞。
 
 ---
 

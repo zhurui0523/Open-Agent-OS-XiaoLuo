@@ -243,6 +243,7 @@ video models do not expose placeholder parameter choices,tests/model-protocol-op
 video models show the supported RunningHub providers,tests/model-protocol-options.test.mjs,已声明用例
 一次多 hunk：全部命中才改，有一处对不上整批不动,tests/brain-patch-and-truncation.test.mjs,已声明用例
 一轮真跑完：事件带 seq 单调递增，宿主拿得到正文与结束回执,tests/brain-app-server.test.mjs,已声明用例
+不支持的语言不执行；空脚本直接退回,tests/brain-run-code.test.mjs,已声明用例
 两端算法一致：桌面版打分与后台版对同一批路径给同样结果,tests/brain-file-index.test.mjs,已声明用例
 中止：turn/interrupt 掐断在途模型调用，线程回到空闲还能再跑,tests/brain-app-server.test.mjs,已声明用例
 主循环软收尾：最后一步有提醒，步数到顶补一次只写总结的回合,tests/edit-residual.test.mjs,已声明用例
@@ -300,6 +301,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 崩溃恢复：末行写了一半也能读出前面的事件，并标记 recovered,tests/thread-event-log.test.mjs,已声明用例
 工作区落点可覆盖：代码仓目录打不了 Low 标签，必须能指到用户自有目录,tests/sandbox-policy.test.mjs,已声明用例
 工具注册与接线：有索引才注册 fuzzy_find_files；四处接线齐全,tests/brain-file-index.test.mjs,已声明用例
+工具注册：同时有写入口与执行口才注册 run_code,tests/brain-run-code.test.mjs,已声明用例
 工具目录覆盖全部注册 schema，且新工具都在里面,tests/tool-surface.test.mjs,已声明用例
 工具面严格跟着端口注册：没接的口就不出现在 schema 里,tests/brain-agent-protocol.test.mjs,已声明用例
 工具面：write_stdin 只在宿主真有会话口时注册,tests/brain-stdin-session.test.mjs,已声明用例
@@ -364,6 +366,8 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 看门狗口径：20s 判超时，最多自动重启一次,tests/plugin-fault-isolation.test.mjs,已声明用例
 真实往返：首屏拿得到 banner，写一行拿回显，退出后带 exitCode,tests/brain-stdin-session.test.mjs,已声明用例
 真策略往返：hooks.toml 一改，闸门的裁决就跟着变,tests/brain-network-policy.test.mjs,已声明用例
+真跑失败：脚本保留，提示可用 read_file 排查,tests/brain-run-code.test.mjs,已声明用例
+真跑成功：脚本落盘 → node 跑一次 → 成功后清理，结果带回输出,tests/brain-run-code.test.mjs,已声明用例
 真跑：apply_patch 带 Move to 改名 + 改内容，旧文件删除、新文件落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
 真跑：session_start / user_prompt_submit 在轮首执行，permission_request 非 0 直接拒命令,tests/brain-hooks-events.test.mjs,已声明用例
 真跑：匹配技能时系统消息注入提示，换话题后旧提示不残留,tests/brain-skill-selection.test.mjs,已声明用例
@@ -395,6 +399,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 能力目录：五类对外能力 + 服务端只执行其中三类,tests/plugin-capability.test.mjs,已声明用例
 能力说明段与注册同源：说有的就是注册的,tests/brain-agent-protocol.test.mjs,已声明用例
 能力面谈判：宿主没声明的代跑口不注册，声明了才搬到线上,tests/brain-app-server.test.mjs,已声明用例
+脚本内容也过 guardian：危险代码在落盘前就被拒,tests/brain-run-code.test.mjs,已声明用例
 行尾空白差一点也能命中（第二级）,tests/brain-patch-and-truncation.test.mjs,已声明用例
 补发不含反向工具请求：机器应答的动作重放一次，就是白跑一遍副作用,tests/brain-app-server.test.mjs,已声明用例
 裁决合成：关闭放行、规则 high 直接拒、medium 转复核、模型 deny 生效、模型失败退回复核,tests/brain-guardian.test.mjs,已声明用例

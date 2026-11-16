@@ -654,6 +654,25 @@ const RUN_COMMAND_SCHEMA = {
   },
 };
 
+const RUN_CODE_SCHEMA = {
+  type: "function",
+  function: {
+    name: "run_code",
+    description:
+      "写一段代码并立即执行（一次成型，省去“写文件→run_command→读文件”三趟）。脚本落在工作区 .xiaoluo-code/ 临时文件里，经同一条命令审批门 + 沙箱跑一次；成功即清理，失败保留脚本路径供排查。适合计算、批量处理、验证小逻辑；要长驻/多轮交互请用 run_command。",
+    parameters: {
+      type: "object",
+      required: ["code"],
+      properties: {
+        code: { type: "string", description: "完整脚本内容（禁止截断）" },
+        language: { type: "string", enum: ["javascript", "python", "powershell", "bash"], description: "脚本语言（可选，默认 javascript）" },
+        cwd: { type: "string", description: "工作目录（可选，相对工作区）" },
+        timeoutMs: { type: "number", description: "超时毫秒（可选，默认 120000）" },
+      },
+    },
+  },
+};
+
 const WRITE_STDIN_SCHEMA = {
   type: "function",
   function: {
@@ -1276,6 +1295,8 @@ export interface ChatToolCapabilities {
   mcpResourcesEnabled?: boolean;
   /** 模糊找文件（fuzzy_find_files；宿主实现了索引才开） */
   fuzzyFindEnabled?: boolean;
+  /** 代码直跑（run_code；需要文件写入口 + 命令口同时可用） */
+  runCodeEnabled?: boolean;
 }
 
 /**
@@ -1458,6 +1479,8 @@ const SAVE_SKILL_SCHEMA = {
   },
 };
   if (caps.commandEnabled) schemas.push(RUN_COMMAND_SCHEMA);
+  // 代码直跑（第 7.8 A 档）：要同时有写入口和执行口，缺一个就跑不起来
+  if (caps.runCodeEnabled) schemas.push(RUN_CODE_SCHEMA);
   // 交互会话：宿主没实现 startSession/writeSession 就完全不注册，免得小逻学着用一个不存在的口
   if (caps.interactiveEnabled) schemas.push(WRITE_STDIN_SCHEMA);
   if (caps.sessionListEnabled) schemas.push(LIST_SESSIONS_SCHEMA);

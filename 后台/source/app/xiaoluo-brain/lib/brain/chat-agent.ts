@@ -1078,6 +1078,8 @@ export class ChatAgent {
         return await this.execDispatchSubagent(call);
       case "run_command":
         return await this.execRunCommand(call);
+      case "run_code":
+        return await this.execRunCode(call);
       case "write_stdin":
         return await this.execWriteStdin(call);
       case "list_sessions":
@@ -2922,6 +2924,64 @@ export class ChatAgent {
   }
 
   /** 受控命令：宿主负责分级闸门（sandbox.ts），这里只透传与回流信号 */
+  /**
+   * 代码直跑（第 7.8 A 档，Codex code-mode 的最小可用形态）：
+   * 写一个临时脚本 → 交给 run_command 同一条链路（approval hooks + guardian + 沙箱 + 超时）
+   * → 成功即清理，失败保留脚本路径供排查。不做长驻会话（B/C 档已评估不做）。
+   */
+  private async execRunCode(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.fs?.writeFile || !ports.command?.run) {
+      return "当前环境未同时接入文件写入与命令执行通道，run_code 不可用；改用 write_file + run_command。";
+    }
+    const args = call.arguments as unknown as { code?: string; language?: string; cwd?: string; timeoutMs?: number };
+    const code = typeof args.code === "string" ? args.code : "";
+    if (!code.trim()) return "run_code 需要 code（完整脚本内容，不要截断）。";
+
+    const lang = String(args.language ?? "javascript").toLowerCase();
+    const specs: Record<string, { ext: string; build: (scriptPath: string) => string }> = {
+      javascript: { ext: "mjs", build: (p) => `node "${p}"` },
+      python: { ext: "py", build: (p) => `python "${p}"` },
+      powershell: { ext: "ps1", build: (p) => `powershell -NoProfile -ExecutionPolicy Bypass -File "${p}"` },
+      bash: { ext: "sh", build: (p) => `bash "${p}"` },
+    };
+    const spec = specs[lang];
+    if (!spec) {
+      return `run_code 不支持语言 "${lang}"；可选 javascript / python / powershell / bash。`;
+    }
+
+    // 脚本内容本身也要过 guardian：命令串只是 `node x.mjs`，真正的危险动作在 code 里
+    const codeGuard = await this.guardianCheck(code, args.cwd);
+    if (codeGuard.decision === "deny") {
+      ports.postUI("status", `guardian 拒绝脚本：${codeGuard.reason}`, { tool: "run_code", ok: false, guardian: codeGuard.reason });
+      return this.trackFailure(
+        "run_code",
+        `脚本被 guardian 审查拒绝（${codeGuard.source}）：${codeGuard.reason}\n不要换写法绕过；确需执行就把目标和影响写清楚。`,
+      );
+    }
+
+    const scriptPath = ".xiaoluo-code/run-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + spec.ext;
+    await ports.fs.writeFile(scriptPath, code);
+    ports.postUI("status", `run_code 执行 ${lang} 脚本`, { tool: "run_code", target: lang, ok: true });
+
+    const inner = await this.execRunCommand({
+      id: call.id,
+      name: "run_code",
+      arguments: { command: spec.build(scriptPath), cwd: args.cwd, timeoutMs: args.timeoutMs },
+    } as ToolCall);
+
+    // 成功即清理；失败保留，方便老板/模型直接 read_file 看脚本本身
+    if (inner.startsWith("命令成功") && ports.fs.deletePath) {
+      try {
+        await ports.fs.deletePath(scriptPath);
+        return `【run_code · ${lang}】临时脚本已清理。\n${inner}`;
+      } catch {
+        return `【run_code · ${lang}】执行成功，但临时脚本 ${scriptPath} 没删掉（可用 delete_file 清理）。\n${inner}`;
+      }
+    }
+    return `【run_code · ${lang}】脚本保留在 ${scriptPath}（失败排查用，read_file 可读）。\n${inner}`;
+  }
+
   private async execRunCommand(call: ToolCall): Promise<string> {
     const { ports } = this.opts;
     if (!ports.command) return "当前环境未接入命令执行通道。";
