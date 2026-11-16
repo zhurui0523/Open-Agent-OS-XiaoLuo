@@ -38,11 +38,13 @@ jobs:
             tail -n 150 "$f" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             # 注解走 API 可匿名读，日志本体不行——把失败行挤进一条 error 注解
-            report=$(grep -aE "✗|失败|Error|error:|not ok|AssertionError|覆盖率低于|不一致|snapshot\.|→" "$f" | tail -n 25 | tr '\n' '~' | cut -c1-60000)
+            # 注意：没有命中时 grep 退出码是 1，这里必须兜住，否则门禁全绿也会把这个步骤判失败
+            report=$(grep -aE "✗|失败|Error|error:|not ok|AssertionError|覆盖率低于|不一致|snapshot\.|→" "$f" | tail -n 25 | tr '\n' '~' | cut -c1-60000 || true)
             if [ -n "$report" ]; then
               echo "::error::门禁失败摘要：$report"
             fi
           done
+          exit 0
       # upload-artifact 的 path 相对的是仓库根，不会被 defaults.run.working-directory 影响
       - if: always()
         uses: actions/upload-artifact@v4
