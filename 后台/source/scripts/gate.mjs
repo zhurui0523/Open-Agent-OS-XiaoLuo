@@ -117,8 +117,20 @@ step("基线清单未漂移（docs/baseline 与代码一致）", () => {
       }
       // 比内容时统一去掉 CR：检出端如果被 autocrlf 转过行尾，不该算成"文档漂移"
       const norm = (text) => text.replace(/\r/g, "");
-      if (norm(readFileSync(join(baseDir, file), "utf8")) !== norm(readFileSync(fresh, "utf8"))) {
-        drift.push(`${file}: 内容与代码不一致`);
+      const a = norm(readFileSync(join(baseDir, file), "utf8"));
+      const b = norm(readFileSync(fresh, "utf8"));
+      if (a !== b) {
+        // 报出前几处真实差异，否则只有一句"不一致"，跨机器排查寸步难行
+        const la = a.split("\n");
+        const lb = b.split("\n");
+        const sample = [];
+        const max = Math.max(la.length, lb.length);
+        for (let i = 0; i < max && sample.length < 4; i++) {
+          if (la[i] !== lb[i]) {
+            sample.push(`  L${i + 1} 入库=${JSON.stringify(la[i] ?? "<无此行>")} 生成=${JSON.stringify(lb[i] ?? "<无此行>")}`);
+          }
+        }
+        drift.push(`${file}: 内容与代码不一致（${la.length} 行 vs ${lb.length} 行）\n${sample.join("\n")}`);
       }
     }
     if (drift.length) {
