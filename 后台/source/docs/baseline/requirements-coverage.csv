@@ -1,6 +1,7 @@
 requirement,test_file,status
 20 条任务描述：检索命中率 ≥ 90%（模型不该靠猜工具名）,tests/tool-surface.test.mjs,已声明用例
 401 的 WWW-Authenticate 能解析出 resource_metadata 与 scope,tests/mcp-oauth.test.mjs,已声明用例
+CONNECT 隧道：白名单内放行且数据能通，名单外 403 并留审计,tests/brain-egress-proxy.test.mjs,已声明用例
 DALL-E 3 probe accepts the full generation endpoint,tests/model-adapters.test.mjs,已声明用例
 DALL-E compatible image model keeps a full chat endpoint and uses chat format,tests/model-adapters.test.mjs,已声明用例
 Gemini requests carry the gateway key without losing the streaming path,tests/model-input-constraints.test.mjs,已声明用例
@@ -80,6 +81,7 @@ edit_file 工具声明：单处与两种入参形态都说清,tests/brain-patch-
 edit_file 接法：翻页读全文 + 三级匹配 + 全成或全不成,tests/brain-patch-and-truncation.test.mjs,已声明用例
 enforces private and shared Skill scopes for administrators and users,tests/extension-lifecycle.test.mjs,已声明用例
 enforces workspace scope on extension model runtime and asset APIs,tests/server-core-contract.test.mjs,已声明用例
+ensureEgressEnv：未启用返回空、启用后复用同一代理,tests/brain-egress-proxy.test.mjs,已声明用例
 ensureToken：没有凭据返回 needs_auth；刷新失败也不抛到底,tests/mcp-oauth.test.mjs,已声明用例
 ensureToken：过期用 refresh_token 续期，端点不回新的 refresh_token 时沿用旧的,tests/mcp-oauth.test.mjs,已声明用例
 env 映射只认显式表，不靠猜变量名,tests/agent-config.test.mjs,已声明用例
@@ -271,6 +273,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 回合占用：同一条线程第二轮要撞车，宿主才知道该插话,tests/brain-app-server.test.mjs,已声明用例
 回环目标始终放行：小逻自查自己的预览服务不能被策略挡死,tests/brain-network-policy.test.mjs,已声明用例
 在分支里写历史不碰主干存档：数组是复制不是引用,tests/brain-conversation-fork.test.mjs,已声明用例
+域名裁决：通配、后缀、黑名单优先、空白名单等于全拒,tests/brain-egress-proxy.test.mjs,已声明用例
 外部主机在紧张策略下要走批准,tests/brain-network-policy.test.mjs,已声明用例
 多处命中判不唯一，整批不落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
 子 Agent 只读：子线程的 fs 写入口直接抛错，且不带命令/子 Agent 口,tests/subagent-sessions.test.mjs,已声明用例
@@ -311,6 +314,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 "接线：run_command(interactive=true, pty=true) 一路传到宿主，降级原因回到模型",tests/brain-pty.test.mjs,已声明用例
 接线：两个新工具都注册进 schema，且 dispatch 有对应分支,tests/tool-surface.test.mjs,已声明用例
 接线：压缩闸门用 compactThresholdTokens，且轮末会主动压一次,tests/state-store.test.mjs,已声明用例
+接线：命令/服务/git/会话四条路径都走 networkEnvForUser，白名单与 egress 共用一份配置,tests/brain-egress-proxy.test.mjs,已声明用例
 接线：四个新事件都在 chat-agent 里落地，旧私有解析器已删除,tests/brain-hooks-events.test.mjs,已声明用例
 接线：存档 PUT 会记账，且记账失败不拖垮存档；状态接口只回派生状态,tests/state-store.test.mjs,已声明用例
 接线：宿主工厂用配置层覆盖默认档位；配置接口给出 values+sources,tests/agent-config.test.mjs,已声明用例
@@ -323,6 +327,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 文件档位跟着宿主报的那份走：auto 档读得到工作区外的文件,tests/brain-app-server.test.mjs,已声明用例
 断线补发：新订阅者能拿到缓冲区里的事件，SSE 帧编解码无损往返,tests/brain-app-server.test.mjs,已声明用例
 新工作区播种：空目录首次读策略就写 hooks.toml（loopback + 白名单）,tests/sandbox-policy.test.mjs,已声明用例
+明文 HTTP 转发：按目标注入凭据头，token 不进审计，未配凭据不注入,tests/brain-egress-proxy.test.mjs,已声明用例
 服务启动与一次性命令共用同一份判定：blocked 批准后照样拒,tests/brain-app-server.test.mjs,已声明用例
 未知能力/脏授权：不因拼写错误放行,tests/plugin-capability.test.mjs,已声明用例
 未知配置项被丢弃并告警，不会悄悄塞进引擎,tests/agent-config.test.mjs,已声明用例
@@ -375,6 +380,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 输出被长度上限掐断时真续跑，且换的是拆分策略不是原样重试,tests/brain-agent-protocol.test.mjs,已声明用例
 逐字显形走线：宿主收到 begin/delta*/end，定稿事件带 fromStream,tests/brain-app-server.test.mjs,已声明用例
 逐字符命中：包括不在行首的片段,tests/brain-patch-and-truncation.test.mjs,已声明用例
+配置解析：egress 开关、凭据块、缺字段丢弃、写错退回关闭,tests/brain-egress-proxy.test.mjs,已声明用例
 配置面板已接到设置页：读 GET / 存 PUT，环境变量覆盖的项不可改,tests/agent-config.test.mjs,已声明用例
 重放缓冲不被碎帧挤掉：delta 只走直播，补发交还边界与卡片,tests/brain-app-server.test.mjs,已声明用例
 重试背压：429 会重试，400 不重试，网络抖动重试一次后成功,tests/mcp-oauth-enterprise.test.mjs,已声明用例

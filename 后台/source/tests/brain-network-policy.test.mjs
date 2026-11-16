@@ -85,13 +85,13 @@ test("接线事实：策略从工作区 hooks.toml 读，mtime 缓存，批准�
   assert.match(sandbox, /\[sandbox\]/);
   assert.match(sandbox, /VALID_NETWORK_MODES\.has\(value\) \? \(value as NetworkMode\) : "open"/);
   assert.match(sandbox, /cached && cached\.mtimeMs === stat\.mtimeMs/);
-  assert.match(sandbox, /minimalEnv\(cwd, isWindows, networkEnvFor\(networkMode\)\)/);
+  assert.match(sandbox, /minimalEnv\(cwd, isWindows, netEnv\)/);
   // 受限档下临时/缓存目录要重定向进工作区，否则低完整性进程写不了 npm 缓存
-  assert.match(sandbox, /restrictedHomeEnv\(minimalEnv\(cwd, isWindows, networkEnvFor\(networkMode\)\), root\)/);
+  assert.match(sandbox, /restrictedHomeEnv\(minimalEnv\(cwd, isWindows, netEnv\), root\)/);
   // 老板批准后本次不注入黑洞，否则批准形同虚设
   assert.match(sandbox, /effective: lift \? "open" : config\.mode/);
   // 服务与 git 同一条策略，别只管 run_command
-  assert.match(sandbox, /networkEnvFor\(await readSandboxNetworkPolicy\(userId\)\)/);
+  assert.match(sandbox, /networkEnvForUser\(userId, await readSandboxNetworkPolicy\(userId\)\)/);
 
   const route = await source("app/api/v2/brain/command/route.ts");
   // 路由只剩接线：判定与执行都搬进闸门模块，语义不再有两份

@@ -68,6 +68,14 @@ const SEED_HOOKS_TOML = [
   'network = "loopback"',
   "# 白名单：命中即放行，支持 *.suffix 通配；云元数据地址永不放行",
   'network_allow = ["registry.npmjs.org", "*.npmjs.org", "github.com", "api.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "*.pypi.org"]',
+  "# 出站代理（可选）：写了 proxy 就按 network_allow 真放行；不写则外联一律黑洞",
+  '# egress = "proxy"',
+  "# 按目标主机注入凭据头（token 从环境变量读，不落盘）：",
+  "# [[egress]]",
+  '# host = "api.github.com"',
+  '# header = "Authorization"',
+  '# env = "GITHUB_TOKEN"',
+  '# prefix = "Bearer"',
   "",
 ].join("\n");
 
@@ -388,6 +396,8 @@ import {
   normalizeCommandForRisk,
   selfTestPolicy,
 } from "../../shared/command-policy.mjs";
+// 出站代理（第 7.3 项）：hooks.toml 写了 [sandbox] egress = "proxy" 才启用，否则行为不变
+import { ensureEgressEnv, parseEgressConfig, type EgressConfig } from "./egress-proxy";
 // 加载期自测：用例失败只告警不阻断（规则本身仍生效）
 const policySelfTestFailures = selfTestPolicy() as string[];
 if (policySelfTestFailures.length > 0) {
@@ -411,7 +421,12 @@ export type NetworkDecision = {
   effective: NetworkMode;
 };
 
-type NetworkPolicyCache = { mtimeMs: number; mode: NetworkMode; allowHosts: string[] };
+type NetworkPolicyCache = {
+  mtimeMs: number;
+  mode: NetworkMode;
+  allowHosts: string[];
+  egress: EgressConfig;
+};
 // 与 serviceRegistry 同一套路：globalThis 锚定，防 dev/构建侧重复实例化把缓存打散
 function networkPolicyRegistry(): Map<string, NetworkPolicyCache> {
   const g = globalThis as unknown as { __xiaoluoBrainNetworkPolicy?: Map<string, NetworkPolicyCache> };
@@ -455,7 +470,7 @@ function parseNetworkAllowHosts(toml: string): string[] {
 /** 该用户工作区的完整网络配置（mode + 白名单） */
 export async function readSandboxNetworkConfig(
   userId: string,
-): Promise<{ mode: NetworkMode; allowHosts: string[] }> {
+): Promise<{ mode: NetworkMode; allowHosts: string[]; egress: EgressConfig }> {
   const root = brainWorkspaceRoot(userId);
   // 闸门路径（gateCommand）不经过 ensureWorkspace，这里也要保证「新工作区先播种」
   await fs.mkdir(root, { recursive: true }).catch(() => {});
@@ -466,23 +481,30 @@ export async function readSandboxNetworkConfig(
     stat = await fs.stat(file);
   } catch {
     // 播种过但文件被删了：尊重老板的删除，回到全局默认档
-    return { mode: defaultNetworkMode(), allowHosts: [] };
+    return { mode: defaultNetworkMode(), allowHosts: [], egress: parseEgressConfig("") };
   }
   const cache = networkPolicyRegistry();
   const cached = cache.get(sanitizeOwner(userId));
-  if (cached && cached.mtimeMs === stat.mtimeMs) return { mode: cached.mode, allowHosts: cached.allowHosts };
+  if (cached && cached.mtimeMs === stat.mtimeMs) {
+    return { mode: cached.mode, allowHosts: cached.allowHosts, egress: cached.egress };
+  }
   let mode: NetworkMode = defaultNetworkMode();
   let allowHosts: string[] = [];
+  let egress: EgressConfig = parseEgressConfig("");
   try {
     const toml = await fs.readFile(file, "utf8");
     mode = parseNetworkMode(toml);
     allowHosts = parseNetworkAllowHosts(toml);
+    egress = parseEgressConfig(toml);
+    // 白名单是网络策略的唯一来源：egress 用同一份 allowHosts，避免两处配置打架
+    egress.allow = allowHosts;
   } catch {
     mode = defaultNetworkMode();
     allowHosts = [];
+    egress = parseEgressConfig("");
   }
-  cache.set(sanitizeOwner(userId), { mtimeMs: stat.mtimeMs, mode, allowHosts });
-  return { mode, allowHosts };
+  cache.set(sanitizeOwner(userId), { mtimeMs: stat.mtimeMs, mode, allowHosts, egress });
+  return { mode, allowHosts, egress };
 }
 
 /** 读该用户工作区 hooks.toml 的网络策略（mtime 缓存；文件不存在=取全局默认档） */
@@ -518,6 +540,21 @@ export async function decideCommandNetwork(
 /** 按生效策略给子进程注入的 env（open 返回空对象，不改现状） */
 export function networkEnvFor(mode: NetworkMode): NodeJS.ProcessEnv {
   return networkPolicyEnv(mode) as NodeJS.ProcessEnv;
+}
+
+/**
+ * 带出站代理的 env（第 7.3 项）：
+ *   - open / block：沿用原策略（open 不注入、block 的黑洞与离线开关照旧）；
+ *   - loopback：启用 egress 时指向本机代理（白名单内可出网、名单外 403），未启用仍是黑洞。
+ */
+async function networkEnvForUser(userId: string, mode: NetworkMode): Promise<NodeJS.ProcessEnv> {
+  const base = networkEnvFor(mode);
+  if (mode !== "loopback") return base;
+  const config = await readSandboxNetworkConfig(userId);
+  if (!config.egress.enabled) return base;
+  const proxyEnv = await ensureEgressEnv("ws:" + sanitizeOwner(userId), config.egress);
+  if (!Object.keys(proxyEnv).length) return base;
+  return { ...base, ...proxyEnv };
 }
 
 /** cwd 相对工作区（run_command/start_service 的目录参数）；越出围栏直接拒绝，不静默回落到根 */
@@ -671,13 +708,17 @@ export function runSandboxedCommand(
     );
     const isWindows = process.platform === "win32";
     const networkMode = opts?.networkMode ?? "open";
+    const egressOn = networkMode === "loopback" && (await readSandboxNetworkConfig(userId)).egress.enabled;
     const networkNote =
       networkMode === "open"
         ? undefined
-        : `【网络策略 ${networkMode}】外联已指向黑洞代理端口（快速失败），本机回环仍可用${networkMode === "block" ? "，npm/pip 离线开关已开" : ""}。` +
-          `诚实说明：这是「代理约定级」约束——遵守 HTTP(S)_PROXY 的工具（npm/pip/git/curl 默认）会被挡住，` +
-          `但直接开 socket 的工具（raw TCP、curl --noproxy、部分 SDK 的内置 DNS+连接）不受它约束；` +
-          `进程级禁网要等内核隔离档到位。确需外联请改工作区 hooks.toml 的 [sandbox] network/network_allow，或请老板批准。`;
+        : egressOn
+          ? `【网络策略 loopback · 出站代理】HTTP(S)_PROXY 指向本机代理：只放行 [sandbox] network_allow 内域名，名单外直接 403，并按目标主机注入凭据头（token 从环境变量读）。` +
+            `边界：HTTPS 走 CONNECT 隧道，代理看不到明文、也不能给 HTTPS 注入凭据头；直接开 socket 的工具（raw TCP、curl --noproxy）仍可绕过。`
+          : `【网络策略 ${networkMode}】外联已指向黑洞代理端口（快速失败），本机回环仍可用${networkMode === "block" ? "，npm/pip 离线开关已开" : ""}。` +
+            `诚实说明：这是「代理约定级」约束——遵守 HTTP(S)_PROXY 的工具（npm/pip/git/curl 默认）会被挡住，` +
+            `但直接开 socket 的工具（raw TCP、curl --noproxy、部分 SDK 的内置 DNS+连接）不受它约束；` +
+            `进程级禁网要等内核隔离档到位。确需外联请改工作区 hooks.toml 的 [sandbox] network/network_allow，或请老板批准。`;
     // Windows 两档启动：低完整性沙箱可用时走降权令牌启动器（写工作区外由操作系统拦截）；
     // 不可用时退回 powershell -EncodedCommand（UTF-16LE base64，彻底绕开 cmd 引号模型）。
     // 两条路径都用 System32 下的绝对解释器路径：靠 PATH 找 powershell 会被 PATH 里的可写目录劫持。
@@ -693,9 +734,10 @@ export function runSandboxedCommand(
     }
     const isolation = describeIsolation(root) as { level: string; note: string };
     // 受限档下把 TEMP/APPDATA 指进工作区，否则低完整性进程连 npm 缓存都写不进去
+    const netEnv = await networkEnvForUser(userId, networkMode);
     const runtimeEnv = micLauncher
-      ? restrictedHomeEnv(minimalEnv(cwd, isWindows, networkEnvFor(networkMode)), root)
-      : minimalEnv(cwd, isWindows, networkEnvFor(networkMode));
+      ? restrictedHomeEnv(minimalEnv(cwd, isWindows, netEnv), root)
+      : minimalEnv(cwd, isWindows, netEnv);
     const child = spawn(shellFile, shellArgs, {
       cwd,
       env: runtimeEnv,
@@ -961,7 +1003,7 @@ export async function startBrainService(
   const child = spawn(shellFile, shellArgs, {
     cwd,
     // 网络策略同样约束服务进程（长驻服务也是这条命令拉起来的）
-    env: minimalEnv(cwd, isWindows, networkEnvFor(await readSandboxNetworkPolicy(userId))),
+    env: minimalEnv(cwd, isWindows, await networkEnvForUser(userId, await readSandboxNetworkPolicy(userId))),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     detached: !isWindows,
@@ -1219,7 +1261,7 @@ export async function startBrainStdinSession(
   const shellArgs = isWindows
     ? ["-NoProfile", "-EncodedCommand", toPsEncoded(sanitizeCommandForPs51(command))]
     : ["-c", command];
-  const env = minimalEnv(cwd, isWindows, networkEnvFor(opts?.networkMode ?? "open"));
+  const env = minimalEnv(cwd, isWindows, await networkEnvForUser(userId, opts?.networkMode ?? "open"));
 
   // 真 PTY 优先：isatty=true 时 REPL / ssh / npm 的交互才和人在终端里一致
   let ptyHandle: PtyHandle | null = null;
@@ -1450,7 +1492,7 @@ export async function runSandboxedGit(
       cwd,
       timeout: 20_000,
       maxBuffer: 2 * 1024 * 1024,
-      env: minimalEnv(cwd, process.platform === "win32", networkEnvFor(await readSandboxNetworkPolicy(userId))),
+      env: minimalEnv(cwd, process.platform === "win32", await networkEnvForUser(userId, await readSandboxNetworkPolicy(userId))),
     });
     return stdout.trim() || "(git 无输出)";
   } catch (error) {
