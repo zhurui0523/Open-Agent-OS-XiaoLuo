@@ -133,6 +133,12 @@ export class Journal {
   /** 串行写队列：保序 + 上一条失败不影响下一条 */
   private writeQueue: Promise<void> = Promise.resolve();
 
+  /**
+   * @param now 时钟源：生产用 Date.now；测试注入固定步进时钟，
+   *            否则快照里会写出 +0ms/+1ms 这种随机器快慢漂移的真实耗时。
+   */
+  constructor(private readonly now: () => number = Date.now) {}
+
   /** 绑定落盘分区（对话 id）；之后的 append 追加写 IndexedDB */
   bindTopic(topic: string): void {
     this.topic = topic.trim() || null;
@@ -157,7 +163,7 @@ export class Journal {
   /** append-only 入账 */
   append(kind: JournalKind, note: string, payload?: Record<string, unknown>): void {
     this.seq += 1;
-    const entry: JournalEntry = { seq: this.seq, ts: Date.now(), kind, note, payload };
+    const entry: JournalEntry = { seq: this.seq, ts: this.now(), kind, note, payload };
     this.entries.push(entry);
     if (this.entries.length > JOURNAL_LIMIT) this.entries.shift();
     if (this.topic) {

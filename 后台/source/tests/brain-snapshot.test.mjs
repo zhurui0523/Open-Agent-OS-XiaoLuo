@@ -44,7 +44,9 @@ function buildSnapshots() {
   };
 
   // 3) journal 事件序列：seq 单调、fold 聚合工具调用、recent 取尾部
-  const journal = new Journal();
+  //    时钟必须固定步进：真实 Date.now() 会让相邻事件跨毫秒边界，快照里写成 +0ms/+1ms 随机漂
+  let clock = 1_700_000_000_000;
+  const journal = new Journal(() => (clock += 10));
   journal.append("turn_start", "老板：帮我看下构建为什么失败");
   journal.append("tool_call", "调用 shell", { tool: "shell", argv: ["pnpm", "build"] });
   journal.append("tool_result", "构建失败：TS2345", { ok: false });
