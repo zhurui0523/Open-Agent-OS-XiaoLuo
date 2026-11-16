@@ -32,6 +32,7 @@ import { applyEditHunks, applyContextHunks, parsePatch, type EditHunk } from "./
 import { parseHooks, hookMatches, fillCommand, type HookRule, type HookEvent } from "./hooks";
 import { parseGuardianConfig, runGuardianReview, type GuardianVerdict } from "./guardian";
 import { startSpan, newTraceId, tracesEnabled } from "./trace";
+import { AgentBoard, resolveAgentRole } from "./agent-organization";
 import { truncateToolResult } from "./truncation";
 import {
   DEFAULT_CHAT_AGENT_CONFIG,
@@ -232,6 +233,8 @@ export class ChatAgent {
   private lastStepNoticeSent = false;
   /** 子 Agent 计数（用于子线程 conversationId 后缀，便于日志区分） */
   private subagentSeq = 0;
+  /** 协作板（第 7.10 项）：本轮谁领了什么、回了什么；只活在当前对话实例内 */
+  private orgBoard = new AgentBoard();
 
   constructor(
     opts: ChatAgentOptions,
@@ -1946,7 +1949,13 @@ export class ChatAgent {
    */
   private async execDispatchSubagent(call: ToolCall): Promise<string> {
     const { ports } = this.opts;
-    const args = call.arguments as unknown as { task?: unknown; tasks?: unknown; maxSteps?: unknown; canWrite?: unknown };
+    const args = call.arguments as unknown as {
+      task?: unknown;
+      tasks?: unknown;
+      maxSteps?: unknown;
+      canWrite?: unknown;
+      role?: unknown;
+    };
     const task = String(args?.task ?? "").trim();
     const rawTasks = Array.isArray(args?.tasks)
       ? args.tasks.map((t) => String(t ?? "").trim()).filter(Boolean)
@@ -1966,13 +1975,19 @@ export class ChatAgent {
 
     const readonly = !wantWrite;
     const parallel = tasks.length > 1 && readonly;
+    // 角色（第 7.10 项）：显式 role 优先，否则按任务措辞猜；只影响提示词与协作板，不放大权限
+    const role = resolveAgentRole(args?.role, tasks.join(" "));
+    const nodes = tasks.map((t) => this.orgBoard.assign(role.id, t));
     const startedAt = Date.now();
     let results: Array<{ text: string; writes: string[]; steps: number }> = [];
     if (parallel) {
-      results = await Promise.all(tasks.map((t) => this.runSubagentTask(t, maxSteps, false)));
+      results = await Promise.all(tasks.map((t) => this.runSubagentTask(t, maxSteps, false, role)));
     } else {
-      for (const t of tasks) results.push(await this.runSubagentTask(t, maxSteps, !readonly));
+      for (const t of tasks) results.push(await this.runSubagentTask(t, maxSteps, !readonly, role));
     }
+    results.forEach((result, i) => {
+      this.orgBoard.complete(nodes[i], result.text.split("\n")[0] ?? "", result.text.startsWith("子 Agent 执行失败"));
+    });
 
     const allWrites = [...new Set(results.flatMap((r) => r.writes))];
     for (const p of allWrites) this.turnChangedFiles.add(p);
@@ -1984,11 +1999,12 @@ export class ChatAgent {
     );
     this.opts.ports.postUI("status", `子 Agent 已回填（${tasks.length} 个任务 / ${steps} 步）`, { tool: "dispatch_subagent", ok: true });
 
-    const blocks = results.map((r, i) => `### 子 Agent ${i + 1}：${tasks[i].slice(0, 60)}\n${r.text}`).join("\n\n");
+    const blocks = results.map((r, i) => `### 子 Agent ${i + 1}（${role.label}）：${tasks[i].slice(0, 60)}\n${r.text}`).join("\n\n");
+    const board = this.orgBoard.view();
     const writeNote = allWrites.length
       ? `\n\n【子 Agent 改过的文件】${allWrites.join("、")}（已计入本轮改动；交付前自己核对这些文件的内容与验证结果）`
       : "";
-    return `【子 Agent 结论${tasks.length > 1 ? `（${tasks.length} 个任务）` : ""}】\n${blocks}${writeNote}`.slice(0, 8000);
+    return `【子 Agent 结论${tasks.length > 1 ? `（${tasks.length} 个任务）` : ""}】\n${blocks}${board ? `\n\n【协作板】\n${board}` : ""}${writeNote}`.slice(0, 8000);
   }
 
   /** 跑一个子 Agent 任务：只读或（宿主允许时）可写；失败/超时都转成可读结论，不抛给主循环 */
@@ -1996,6 +2012,7 @@ export class ChatAgent {
     task: string,
     maxSteps: number,
     canWrite: boolean,
+    role: ReturnType<typeof resolveAgentRole>,
   ): Promise<{ text: string; writes: string[]; steps: number }> {
     const { ports, config } = this.opts;
     const captured: string[] = [];
@@ -2028,9 +2045,12 @@ export class ChatAgent {
       model: this.opts.model,
       conversationId: this.opts.conversationId + ":sub-" + (this.subagentSeq += 1),
       systemPrompt:
+        "你是父线程派出的子 Agent。\n" +
+        role.prompt +
+        "\n" +
         (canWrite
-          ? "你是父线程派出的子 Agent，可以小范围改文件（write_file）。只改任务明确要求的位置，每处改动前必须先 read_file 看清上下文，改完说明改了什么。\n"
-          : "你是父线程派出的只读研究子 Agent。用文件工具把任务查清，然后只输出结论。\n") +
+          ? "你可以小范围改文件（write_file）。只改任务明确要求的位置，每处改动前必须先 read_file 看清上下文，改完说明改了什么。\n"
+          : "你是只读角色：用文件工具把任务查清，然后只输出结论。\n") +
         "要求：1) 结论先写答案；2) 每条事实带 文件路径:行号；3) 没查到的直接说没查到，不要猜；4) 全文不超过 600 字。\n" +
         (canWrite ? "不能跑命令；需要执行的部分留给父线程。" : "你不能写文件、不能跑命令——需要动手的部分留给父线程。"),
       config: {

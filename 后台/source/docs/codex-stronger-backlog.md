@@ -182,6 +182,8 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 **7.5 已知边界**：① 检索是逐文件全文扫描，没有倒排索引（会话多、文件大的机器上会变慢）；② 归档是搬移不是压缩，`.archive/` 会持续增长，没有自动清理策略；③ 没有 Codex `reference_index` 那种"消息 ↔ 文件引用"索引；④ 列表的 eventCount 是尾部窗口计数，不是精确总量（精确值要全量读）。
 
+**7.10 已知边界（A 档）**：① 只有角色与协作板，没有 Codex 那样的 agent-graph 持久化、跨进程 agent 身份、消息板订阅/寻址；② 角色只改提示词与默认写权限，不是硬权限边界（真正的权限仍由宿主 `subagent.write` 与 guardian/审批把关）；③ 子 Agent 深度仍为 1（子 Agent 不再带 `dispatch_subagent`）；④ 协作板只活在当前对话实例内，进程重启即丢；⑤ 没有角色间投票/辩论（小逻原有 debate 是独立能力，两者未打通）。
+
 **7.12 已知边界**：① 不是 OTel 协议，没有 OTLP 导出、没有 trace 后端/UI，只能读本地 JSONL；② 默认关闭，开了才有开销（每 span 一次 append）；③ 只覆盖模型调用与工具调用，子 Agent 内部（走同一端口所以也会记）与 HTTP 请求层没有 span；④ 没有采样策略，长跑会持续写盘（按天分文件、超 8MB 轮转一份 `.1`，不自动清理旧文件）；⑤ trace 文件里虽然没有正文，但工具名与参数体积仍能推断部分行为，分享前要脱敏。
 
 **7.11 已知边界**：① 这是"文件级加密"不是操作系统钥匙串（Windows DPAPI / macOS Keychain / Linux Secret Service 未接），同机同用户拿得到 key 文件就能解；② MCP 服务器的 secrets 仍写在 `mcp.json` 明文里（客户端还没迁到钥匙串）；③ 面板没有凭据管理 UI，只能用接口 / 脚本写入；④ 主密钥换了或换机器后旧密文解不开，需要重录；⑤ 没有审计日志（谁在何时读过哪条凭据没有记录）。
@@ -199,6 +201,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
 |---|---|---|---|---|
 | 7.10 | 多 Agent 组织（角色/身份/图/消息板） | `agent-roles` / `agent-identity` / `agent-graph-store` / `message-board` / `runtime-agent-instance` | `debate.ts`(4KB) / `collab.ts`(2KB) 只是对话协作 | 架构级 |
+| 7.10 | 多 Agent 组织（A 档） | 新建 `agent-organization.ts`：四个角色（协调者/研究员/实现者/审查者，各带系统提示词与默认写权限）、按任务措辞推断角色、`dispatch_subagent` 新增 `role` 参数、协作板记录"谁领了什么/回了什么"并随工具结果回流；**不做**角色投票、跨进程身份、持久化图数据库 | `agent-organization.ts`、`chat-agent.ts`（角色 + 协作板）、`chat-tools.ts`（role 枚举）；`tests/brain-agent-org.test.mjs` 4 条（角色解析/协作板边界/真跑带角色/接线） |
 | 7.13 | 语音 / 实时会话 | `voice-host` / `realtime-webrtc` | 无 | 产品形态 |
 | 7.14 | 云端任务 | `cloud-tasks` / `cloud-client` / `aws-auth` | 无（远程只有 SSH 工作区） | 形态差异，可判不追 |
 
