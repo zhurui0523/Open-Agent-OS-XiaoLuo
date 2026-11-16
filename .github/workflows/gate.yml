@@ -38,7 +38,7 @@ jobs:
             tail -n 150 "$f" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             # 注解走 API 可匿名读，日志本体不行——把失败行挤进一条 error 注解
-            report=$(grep -aE "✗|失败|Error|error:|not ok|AssertionError|覆盖率低于|不一致" "$f" | tail -n 25 | tr '\n' '~' | cut -c1-60000)
+            report=$(grep -aE "✗|失败|Error|error:|not ok|AssertionError|覆盖率低于|不一致|snapshot\.|→" "$f" | tail -n 25 | tr '\n' '~' | cut -c1-60000)
             if [ -n "$report" ]; then
               echo "::error::门禁失败摘要：$report"
             fi

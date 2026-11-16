@@ -115,7 +115,9 @@ step("基线清单未漂移（docs/baseline 与代码一致）", () => {
         drift.push(`${file}: 生成器不再产出该文件`);
         continue;
       }
-      if (readFileSync(join(baseDir, file), "utf8") !== readFileSync(fresh, "utf8")) {
+      // 比内容时统一去掉 CR：检出端如果被 autocrlf 转过行尾，不该算成"文档漂移"
+      const norm = (text) => text.replace(/\r/g, "");
+      if (norm(readFileSync(join(baseDir, file), "utf8")) !== norm(readFileSync(fresh, "utf8"))) {
         drift.push(`${file}: 内容与代码不一致`);
       }
     }
