@@ -5,6 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as OAUTH from "./mcp-oauth.mjs";
+import { listSecrets, setSecret, deleteSecret, migrateMcpConfig, resolveServerSecrets } from "./secret-vault.mjs";
 
 let workspaceRoot = "";
 export function initMcpRuntime(root) { workspaceRoot = root; }
@@ -544,6 +545,25 @@ function renderResourceContents(result) {
 export async function handleMcpPayload(payload) {
   try {
     const action = String((payload && payload.action) || "");
+    if (action === "secrets/list") {
+      return { secrets: await listSecrets() };
+    }
+    if (action === "secrets/set") {
+      const saved = await setSecret(payload.name, payload.value, payload.note);
+      return { ok: true, secret: saved };
+    }
+    if (action === "secrets/delete") {
+      return { ok: true, ...(await deleteSecret(payload.name)) };
+    }
+    if (action === "secrets/migrate") {
+      const result = await migrateMcpConfig(join(workspaceRoot, "mcp.json"));
+      if (result.ok) {
+        // 配置变了：旧连接带着明文，全部重建
+        for (const conn of conns.values()) conn.stop();
+        conns.clear();
+      }
+      return result;
+    }
     if (action === "servers") {
       const cfg = loadConfig();
       const want = new Set(Object.keys(cfg));
@@ -552,12 +572,25 @@ export async function handleMcpPayload(payload) {
       }
       const out = [];
       for (const [name, serverCfg] of Object.entries(cfg)) {
+        const resolved = await resolveServerSecrets(serverCfg);
+        if (resolved.missing.length) {
+          const stale = conns.get(name);
+          if (stale) { stale.stop(); conns.delete(name); }
+          out.push({
+            name,
+            ok: false,
+            error: "缺少凭据：" + resolved.missing.join("、") + "（在设置面板「MCP 凭据」里补，或执行迁移）",
+            tools: [],
+            resources: [],
+          });
+          continue;
+        }
         let conn = conns.get(name);
-        const http = isHttpServer(serverCfg);
+        const http = isHttpServer(resolved.serverCfg);
         const kindOk = conn && (http ? conn instanceof HttpMcpConn : conn instanceof McpConn);
         if (!conn || !kindOk || !conn.alive()) {
           if (conn) conn.stop();
-          conn = http ? new HttpMcpConn(name, serverCfg) : new McpConn(name, serverCfg);
+          conn = http ? new HttpMcpConn(name, resolved.serverCfg) : new McpConn(name, resolved.serverCfg);
           conns.set(name, conn);
           await conn.start();
         }
@@ -605,9 +638,12 @@ export async function handleMcpPayload(payload) {
     if (action === "oauth/login") {
       const cfg = loadConfig();
       const server = String(payload.server ?? "");
-      const serverCfg = cfg[server];
-      if (!serverCfg) return { error: "没有这个 MCP 服务器：" + server };
-      if (!isHttpServer(serverCfg)) return { error: "只有 HTTP 类型的 MCP 服务器需要授权：" + server };
+      const rawCfg = cfg[server];
+      if (!rawCfg) return { error: "没有这个 MCP 服务器：" + server };
+      if (!isHttpServer(rawCfg)) return { error: "只有 HTTP 类型的 MCP 服务器需要授权：" + server };
+      const resolved = await resolveServerSecrets(rawCfg);
+      if (resolved.missing.length) return { error: "OAuth 凭据缺失：" + resolved.missing.join("、") + "（先在「MCP 凭据」里补）" };
+      const serverCfg = resolved.serverCfg;
       // 机器类 grant（client_credentials / token_exchange）没有浏览器授权这一步：直接取一次 token
       const grant = String((serverCfg.oauth && (serverCfg.oauth.grant || serverCfg.oauth.grantType || serverCfg.oauth.grant_type)) || "authorization_code").toLowerCase();
       if (grant === "client_credentials" || grant === "token_exchange") {

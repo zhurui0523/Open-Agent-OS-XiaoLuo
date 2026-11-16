@@ -52,8 +52,126 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
-export function AgentConfigPanel() {
-  const [payload, setPayload] = useState<ConfigPayload | null>(null);
+/** 本机 MCP 凭据（第 7.11 收尾）：读写桌面钥匙串，明文不进 mcp.json */
+function McpSecretsPanel() {
+  const bridge = (): { mcpAction?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>> } | null => {
+    if (typeof window === "undefined") return null;
+    const desktop = (window as unknown as { xiaoluoDesktop?: { mcpAction?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>> } }).xiaoluoDesktop;
+    return desktop ?? null;
+  };
+  const [items, setItems] = useState<Array<{ name: string; updatedAt: number; note?: string }>>([]);
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [note, setNote] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function reload() {
+    const api = bridge();
+    if (!api?.mcpAction) { setMsg("桌面通道未接入，凭据面板只在桌面版可用。"); return; }
+    const res = await api.mcpAction({ action: "secrets/list" });
+    setItems(Array.isArray(res.secrets) ? (res.secrets as Array<{ name: string; updatedAt: number; note?: string }>) : []);
+  }
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function saveSecret() {
+    const api = bridge();
+    if (!api?.mcpAction) { setMsg("桌面通道未接入。"); return; }
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await api.mcpAction({ action: "secrets/set", name, value, note });
+      if (res.ok) {
+        setName("");
+        setValue("");
+        setNote("");
+        setMsg("已加密保存。mcp.json 里写 vault://" + (res.secret as { name?: string } | undefined)?.name + " 即可引用。");
+        await reload();
+      } else setMsg(String(res.error ?? "保存失败"));
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSecret(target: string) {
+    const api = bridge();
+    if (!api?.mcpAction) return;
+    setBusy(true);
+    try {
+      await api.mcpAction({ action: "secrets/delete", name: target });
+      await reload();
+      setMsg("已删除 " + target);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function migrate() {
+    const api = bridge();
+    if (!api?.mcpAction) return;
+    setBusy(true);
+    try {
+      const res = await api.mcpAction({ action: "secrets/migrate" });
+      if (res.ok) {
+        const moved = Array.isArray(res.moved) ? res.moved : [];
+        setMsg(moved.length ? "已迁移 " + moved.length + " 条明文凭据：" + moved.join("、") : "mcp.json 里没有需要迁移的明文凭据。");
+        await reload();
+      } else setMsg(String(res.error ?? "迁移失败"));
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section style={{ border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+      <header style={{ background: "#f9fafb", padding: "10px 14px", borderBottom: "1px solid #e5e7eb" }}>
+        <div style={{ fontWeight: 600, color: "#111827" }}>MCP 凭据</div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          本机 AES-256-GCM 加密保存；mcp.json 里写 <code>vault://名字</code> 引用，明文不再落配置
+        </div>
+      </header>
+      <div style={{ padding: "12px 14px", display: "grid", gap: 8 }}>
+        {items.length === 0 && <div style={{ fontSize: 12, color: "#6b7280" }}>还没有保存任何凭据。</div>}
+        {items.map((item) => (
+          <div key={item.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
+            <span>
+              <code>{item.name}</code>
+              {item.note ? <span style={{ marginLeft: 8, color: "#6b7280", fontSize: 12 }}>{item.note}</span> : null}
+              <span style={{ marginLeft: 8, color: "#9ca3af", fontSize: 12 }}>
+                {item.updatedAt ? new Date(item.updatedAt).toLocaleString() : ""}
+              </span>
+            </span>
+            <button type="button" disabled={busy} onClick={() => void removeSecret(item.name)} style={{ border: "none", background: "none", color: "#b91c1c", cursor: "pointer", fontSize: 12 }}>
+              删除
+            </button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="名字，如 github.TOKEN" style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: 8, fontSize: 13, minWidth: 200 }} />
+          <input value={value} onChange={(event) => setValue(event.target.value)} placeholder="凭据值（不会回显）" type="password" style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: 8, fontSize: 13, minWidth: 220 }} />
+          <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="备注（可选）" style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: 8, fontSize: 13, minWidth: 140 }} />
+          <button type="button" disabled={busy || !name.trim() || !value} onClick={() => void saveSecret()} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#111827", color: "#fff", cursor: "pointer", fontSize: 13 }}>
+            加密保存
+          </button>
+          <button type="button" disabled={busy} onClick={() => void migrate()} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 13 }}>
+            迁移 mcp.json 明文
+          </button>
+        </div>
+        {msg && <div style={{ fontSize: 12, color: "#374151" }}>{msg}</div>}
+      </div>
+    </section>
+  );
+}
+
+export function AgentConfigPanel() {  const [payload, setPayload] = useState<ConfigPayload | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -264,6 +382,8 @@ export function AgentConfigPanel() {
           ))}
         </section>
       )}
+
+      <McpSecretsPanel />
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <button

@@ -310,6 +310,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 工具面严格跟着端口注册：没接的口就不出现在 schema 里,tests/brain-agent-protocol.test.mjs,已声明用例
 工具面：write_stdin 只在宿主真有会话口时注册,tests/brain-stdin-session.test.mjs,已声明用例
 并行：tasks 一次派两个只读任务，两个子 Agent 真的同时在跑,tests/brain-subagent-parallel.test.mjs,已声明用例
+引用缺失：servers 同步直接报「缺少凭据」，不拿空值去连,tests/brain-mcp-secrets-vault.test.mjs,已声明用例
 归档裁剪：保留最近 2 条，其余进 .archive，seq 不重编、后续追加仍单调,tests/brain-thread-store.test.mjs,已声明用例
 快照 diff：纯追加只写增量，压缩/改写写整份替换，元数据单独记,tests/thread-event-log.test.mjs,已声明用例
 快照事实抽取：按 tool 轮与 assistant.toolCalls 记工具账本，不吃正文长度溢出,tests/state-store.test.mjs,已声明用例
@@ -422,6 +423,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 路径围栏：相对 ../../ 落点同样算越界，cwd 监狱兜不住它,tests/brain-stdin-session.test.mjs,已声明用例
 路由接线：先追加事件再写快照；半份快照读路径改走事件流重建,tests/thread-event-log.test.mjs,已声明用例
 输出被长度上限掐断时真续跑，且换的是拆分策略不是原样重试,tests/brain-agent-protocol.test.mjs,已声明用例
+迁移：mcp.json 里像凭据的明文挪进钥匙串并换成 vault://，非密钥字段不动,tests/brain-mcp-secrets-vault.test.mjs,已声明用例
 选技能：显式点名最高分，描述重叠次之，不相关为零,tests/brain-skill-selection.test.mjs,已声明用例
 逐字显形走线：宿主收到 begin/delta*/end，定稿事件带 fromStream,tests/brain-app-server.test.mjs,已声明用例
 逐字符命中：包括不在行首的片段,tests/brain-patch-and-truncation.test.mjs,已声明用例
@@ -431,11 +433,13 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 配置面板已接到设置页：读 GET / 存 PUT，环境变量覆盖的项不可改,tests/agent-config.test.mjs,已声明用例
 重放缓冲不被碎帧挤掉：delta 只走直播，补发交还边界与卡片,tests/brain-app-server.test.mjs,已声明用例
 重试背压：429 会重试，400 不重试，网络抖动重试一次后成功,tests/mcp-oauth-enterprise.test.mjs,已声明用例
+钥匙串：存取删 + 列表不回明文 + 换名贴密文解不开,tests/brain-mcp-secrets-vault.test.mjs,已声明用例
 长结果保首尾、中间挖除，尾部报错不再被切掉,tests/brain-patch-and-truncation.test.mjs,已声明用例
 闸门关着就不报那三口：只读的控件枚举照报，问不到读数不收能力,tests/brain-host-bridge.test.mjs,已声明用例
 闸门关着的声明：整桌截屏从面上下来，只读枚举留着，能力段把两者分开说,tests/brain-app-server.test.mjs,已声明用例
 闸门：开席与续写共用同一道门，越界输入照样拦,tests/brain-stdin-session.test.mjs,已声明用例
 非法值不静默改行为：退回上一层有效值并留告警,tests/agent-config.test.mjs,已声明用例
+面板接线：设置面板有「MCP 凭据」读写/迁移入口,tests/brain-mcp-secrets-vault.test.mjs,已声明用例
 预算极小也不炸，仍然两头都留,tests/brain-patch-and-truncation.test.mjs,已声明用例
 默认 open 不改任何既有行为,tests/brain-network-policy.test.mjs,已声明用例
 默认全关：未授权一律拒绝，并给出「去哪开」的指引,tests/plugin-capability.test.mjs,已声明用例
