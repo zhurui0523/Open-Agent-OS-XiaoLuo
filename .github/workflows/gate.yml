@@ -21,9 +21,24 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: 后台/source/pnpm-lock.yaml
+      # pnpm 11 默认不跑依赖构建脚本；allowBuilds 在 pnpm-workspace.yaml 里逐项放行。
       - run: pnpm install --frozen-lockfile
-      # 一条命令覆盖七步：策略自测 / tsc --noEmit / vinext build / 全量测试 / 基线清单漂移 / 快照回归 / 覆盖率门槛
+      # 一条命令覆盖九步：策略自测 / tsc / 构建 / 全量测试 / 基线漂移 / 快照回归 / 静默 catch / CI 预检 / 覆盖率
       - run: node scripts/gate.mjs
+      # 失败时把门禁日志尾部贴到 job summary：Actions 原始日志要登录才能看，summary 公开可读
+      - if: always()
+        name: 把门禁日志尾部写进 job summary
+        shell: bash
+        working-directory: 后台/source
+        run: |
+          shopt -s nullglob
+          for f in gate-*.log; do
+            echo "### $f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 150 "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+      # upload-artifact 的 path 相对的是仓库根，不会被 defaults.run.working-directory 影响
       - if: always()
         uses: actions/upload-artifact@v4
         with:
