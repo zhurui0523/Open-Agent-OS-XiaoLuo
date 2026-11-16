@@ -420,6 +420,8 @@ import {
 import { ensureEgressEnv, parseEgressConfig, type EgressConfig } from "./egress-proxy";
 // 文件索引（第 7.7 项）：模糊检索 + 变更失效
 import { workspaceFileIndexFor } from "./file-index";
+// 凭据钥匙串（第 7.11 项）：出站代理注入 token 时优先取加密库，其次才退回环境变量
+import { getSecret } from "./credential-vault";
 // 加载期自测：用例失败只告警不阻断（规则本身仍生效）
 const policySelfTestFailures = selfTestPolicy() as string[];
 if (policySelfTestFailures.length > 0) {
@@ -574,9 +576,21 @@ async function networkEnvForUser(userId: string, mode: NetworkMode): Promise<Nod
   if (mode !== "loopback") return base;
   const config = await readSandboxNetworkConfig(userId);
   if (!config.egress.enabled) return base;
-  const proxyEnv = await ensureEgressEnv("ws:" + sanitizeOwner(userId), config.egress);
+  const proxyEnv = await ensureEgressEnv("ws:" + sanitizeOwner(userId), config.egress, undefined, async (name) => {
+    try {
+      return await getSecret(brainVaultDir(userId), name);
+    } catch {
+      // 钥匙串解不开（换机器/主密钥变了）：退回环境变量，不让代理整体失效
+      return null;
+    }
+  });
   if (!Object.keys(proxyEnv).length) return base;
   return { ...base, ...proxyEnv };
+}
+
+/** 每个用户自己的凭据库目录（在工作区内侧、但不在工作区里，agent 读不到） */
+export function brainVaultDir(userId: string): string {
+  return path.join(path.dirname(brainWorkspaceRoot(userId)), ".vault");
 }
 
 /** cwd 相对工作区（run_command/start_service 的目录参数）；越出围栏直接拒绝，不静默回落到根 */

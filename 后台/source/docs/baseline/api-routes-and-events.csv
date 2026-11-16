@@ -32,6 +32,7 @@ path,methods,auth,source
 /api/v2/brain/services,POST,user,app/api/v2/brain/services/route.ts
 /api/v2/brain/skill-market,GET|POST,user,app/api/v2/brain/skill-market/route.ts
 /api/v2/brain/threads,GET|POST,user,app/api/v2/brain/threads/route.ts
+/api/v2/brain/vault,GET|POST,user,app/api/v2/brain/vault/route.ts
 /api/v2/canvases,GET|POST|PUT|PATCH|DELETE,user,app/api/v2/canvases/route.ts
 /api/v2/canvases/share,GET|POST|DELETE,user,app/api/v2/canvases/share/route.ts
 /api/v2/canvases/snapshots,GET|POST|PATCH,user,app/api/v2/canvases/snapshots/route.ts

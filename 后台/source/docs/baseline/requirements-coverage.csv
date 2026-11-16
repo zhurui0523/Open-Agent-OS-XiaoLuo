@@ -260,6 +260,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 写权限：宿主没开 write 时 canWrite=true 直接拒绝，不偷偷降级成写,tests/brain-subagent-parallel.test.mjs,已声明用例
 写盘是原子的：成功后不留 .tmp 残片，内容完整,tests/edit-residual.test.mjs,已声明用例
 凭据落盘：写读清一致，刷新提前量 30 秒,tests/mcp-oauth.test.mjs,已声明用例
+出站代理优先用钥匙串：无环境变量也能注入凭据头，审计不含 token,tests/brain-credential-vault.test.mjs,已声明用例
 分叉：服务端生成分支 id，还给宿主快照，主干不受影响,tests/brain-app-server.test.mjs,已声明用例
 分层优先级：Project > Workspace > User > Default，且每项能说出自己来自哪层,tests/agent-config.test.mjs,已声明用例
 分支 id 只用文件名安全字符，且不同时刻分叉不会撞同一个快照,tests/brain-conversation-fork.test.mjs,已声明用例
@@ -272,6 +273,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 匹配：事件 + 工具 + 正则三重门，正则写坏不命中也不炸,tests/brain-hooks-events.test.mjs,已声明用例
 压缩用 messages_replace 覆盖：重建后是压缩后的列表，旧消息不再残留,tests/thread-event-log.test.mjs,已声明用例
 "压缩触发线改成百分比：默认 80%，配置可调且被夹在 [40,100]",tests/state-store.test.mjs,已声明用例
+参数校验：名字非法/空值/超长都拒绝；缺省取回 null,tests/brain-credential-vault.test.mjs,已声明用例
 反向工具走线：event/tool-request 交端口与方法，tool/decide 的返回值就是模型看到的工具结果,tests/brain-app-server.test.mjs,已声明用例
 反向通道全表打通：八个口逐个调，宿主回执原样回到内核手里,tests/brain-host-bridge.test.mjs,已声明用例
 只填 url 也能授权：自动发现授权服务器 + 动态注册客户端 + 回调换 token,tests/mcp-oauth.test.mjs,已声明用例
@@ -289,6 +291,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 外部主机在紧张策略下要走批准,tests/brain-network-policy.test.mjs,已声明用例
 多处命中判不唯一，整批不落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
 子 Agent 只读：子线程的 fs 写入口直接抛错，且不带命令/子 Agent 口,tests/subagent-sessions.test.mjs,已声明用例
+存取删：值不落明文、列表只回名字、删后取不到,tests/brain-credential-vault.test.mjs,已声明用例
 完整授权一次：授权地址带 PKCE+state，回调换 token 落盘，state 不符则拒,tests/mcp-oauth.test.mjs,已声明用例
 审批档位从环境切：never 下需请示的命令直接拒，不被静默执行,tests/sandbox-policy.test.mjs,已声明用例
 审批档位只有四档，取值写错退回默认 on-request,tests/sandbox-policy.test.mjs,已声明用例
@@ -313,6 +316,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 截断预算按工具类型给：命令/交付类的尾部留得住,tests/brain-patch-and-truncation.test.mjs,已声明用例
 打分分档：全等 > 前缀 > 子串 > 路径子串 > 子序列，空串为 0,tests/brain-file-index.test.mjs,已声明用例
 执行桥：fs 越界被拒（工作区围栏），不是「文件不存在」,tests/plugin-capability.test.mjs,已声明用例
+换名贴密文 / 篡改数据都会解密失败（AAD 绑定 + GCM 校验）,tests/brain-credential-vault.test.mjs,已声明用例
 换宿主就收回能力面：回合跑一半不抽正在等的口，收尾后才落地,tests/brain-app-server.test.mjs,已声明用例
 授权后：三类服务端能力放行，客户端能力仍拒并说明由谁做,tests/plugin-capability.test.mjs,已声明用例
 探测：没装 node-pty 时如实报不可用（不假装有终端）,tests/brain-pty.test.mjs,已声明用例
@@ -328,6 +332,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 接线事实：路由把三道门交给闸门模块，自己不再判一遍,tests/brain-stdin-session.test.mjs,已声明用例
 接线事实：闸门读数一路走到 thread 声明里，能力面才敢说真话,tests/brain-host-bridge.test.mjs,已声明用例
 接线事实：面板的权限档位一路交到内核的 thread 参数里,tests/brain-host-bridge.test.mjs,已声明用例
+接线：brain-sandbox 走 brainVaultDir 解析、vault 路由存在、代理签名支持异步解析,tests/brain-credential-vault.test.mjs,已声明用例
 接线：move_file / delete_file 注册受宿主能力管，删除有双重锁,tests/edit-residual.test.mjs,已声明用例
 "接线：run_command(interactive=true, pty=true) 一路传到宿主，降级原因回到模型",tests/brain-pty.test.mjs,已声明用例
 接线：两个新工具都注册进 schema，且 dispatch 有对应分支,tests/tool-surface.test.mjs,已声明用例
@@ -362,6 +367,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 注册面：list_sessions 只在宿主实现 listSessions 时出现,tests/subagent-sessions.test.mjs,已声明用例
 注册面：宿主给了子 Agent 口才注册 dispatch_subagent；不给就不注册,tests/subagent-sessions.test.mjs,已声明用例
 状态库可写可查：同一会话覆盖写不重复记账，查询拿得到消息数与 token,tests/state-store.test.mjs,已声明用例
+环境主密钥：XIAOLUO_VAULT_KEY 优先，清缓存后仍能解；文件权限 0600（POSIX）,tests/brain-credential-vault.test.mjs,已声明用例
 省略 input 就是轮询：没有新输出时返回空串而不是报错,tests/brain-stdin-session.test.mjs,已声明用例
 看门狗口径：20s 判超时，最多自动重启一次,tests/plugin-fault-isolation.test.mjs,已声明用例
 真实往返：首屏拿得到 banner，写一行拿回显，退出后带 exitCode,tests/brain-stdin-session.test.mjs,已声明用例

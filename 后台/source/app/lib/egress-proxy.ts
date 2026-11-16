@@ -132,6 +132,8 @@ export async function startEgressProxy(options: {
   credentials?: EgressCredential[];
   onAudit?: (entry: EgressAuditEntry) => void;
   maxAudit?: number;
+  /** 凭据解析（第 7.11 项）：先问钥匙串，没有再退回环境变量；返回值只用于注入请求头，绝不进审计 */
+  resolveSecret?: (name: string) => string | null | undefined | Promise<string | null | undefined>;
 }): Promise<EgressProxy> {
   const audit: EgressAuditEntry[] = [];
   const limit = Math.max(1, options.maxAudit ?? MAX_AUDIT);
@@ -142,6 +144,18 @@ export async function startEgressProxy(options: {
   };
   const config = { allow: options.allow ?? [], deny: options.deny ?? [] };
   const credentials = options.credentials ?? [];
+  // 钥匙串是异步读的，请求处理是同步的：启动时先把每条凭据预取到内存（只存值，不进审计）
+  const preloadedSecrets = new Map<string, string>();
+  if (options.resolveSecret) {
+    for (const cred of credentials) {
+      try {
+        const value = await options.resolveSecret(cred.env);
+        if (value) preloadedSecrets.set(cred.env, value);
+      } catch {
+        preloadedSecrets.delete(cred.env); // 解不开就按没有处理，退回环境变量
+      }
+    }
+  }
 
   const server: Server = createServer((req, res) => {
     let target: URL;
@@ -168,7 +182,7 @@ export async function startEgressProxy(options: {
     }
     const cred = findCredential(host, credentials);
     if (cred) {
-      const token = process.env[cred.env];
+      const token = preloadedSecrets.get(cred.env) ?? process.env[cred.env];
       if (token) {
         const key = cred.header.toLowerCase();
         headers[key] = cred.prefix ? cred.prefix + " " + token : token;
@@ -265,12 +279,13 @@ export async function ensureEgressEnv(
   key: string,
   config: EgressConfig,
   onAudit?: (entry: EgressAuditEntry) => void,
+  resolveSecret?: (name: string) => string | null | undefined | Promise<string | null | undefined>,
 ): Promise<Record<string, string>> {
   if (!config.enabled) return {};
   const registry = egressRegistry();
   const cached = registry.get(key);
   if (cached) return egressEnv(cached.proxy.url);
-  const proxy = await startEgressProxy({ allow: config.allow, deny: config.deny, credentials: config.credentials, onAudit });
+  const proxy = await startEgressProxy({ allow: config.allow, deny: config.deny, credentials: config.credentials, onAudit, resolveSecret });
   registry.set(key, { proxy });
   return egressEnv(proxy.url);
 }
