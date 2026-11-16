@@ -174,12 +174,15 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 7.9 | guardian 审查 | 新建 `guardian.ts`：① 规则信号（凭据文件 + 外发/编码、远端脚本管道执行、强制推送、反取证 → high 直接拒；越界批量删除、凭据编码 → medium 转复核），`--force-with-lease` 不误伤；② 可选模型第二意见（`hooks.toml [guardian] review = "model"` 才开）：带上本轮目标与本轮风险信号，只回 `allow/review/deny` + 一句理由，8 秒超时/回包坏都按 review，绝不因审查通道故障自动放行；③ `run_command` 执行前拦一道，deny 回流理由、review 挂到结果里 | `guardian.ts`、`chat-agent.ts`（`guardianCheck` + 轮首传目标）、`brain-sandbox.ts`（种子 hooks 注释）；`tests/brain-guardian.test.mjs` 7 条（配置/规则/提示词/回包解析/裁决合成/真跑拦截/接线） |
 | 7.8（A 档） | code-mode 最小档：`run_code` | 新建工具 `run_code`（javascript / python / powershell / bash）：脚本写进工作区 `.xiaoluo-code/` 临时文件 → 交给 `run_command` 同一条链路（permission hooks + guardian + 沙箱 + 超时 + 审批门）→ 成功即删、失败保留路径供 `read_file`；脚本内容本身也先过 guardian（命令串只是 `node x.mjs`，危险动作在 code 里）。B 档长驻会话与 C 档 gRPC 远端按评估结论不做 | `chat-tools.ts`、`agent-ports.ts`、`chat-agent.ts`；`tests/brain-run-code.test.mjs` 5 条（注册 / 成功清理 / 失败保留 / 语言与空脚本 / 内容过 guardian） |
 | 7.11 | 凭据钥匙串 | 新建 `app/lib/credential-vault.ts`：值用 AES-256-GCM 加密（随机 IV、AAD=凭据名，防"换名贴密文"）、主密钥取 `XIAOLUO_VAULT_KEY` 否则生成本地 `vault.key`（0600）、临时文件 + rename 原子写（0600）、列表只回名字/时间/备注（preview 恒为 `••••`）、解密失败抛错不当空值；接口 `GET/POST /api/v2/brain/vault`（按用户分库）；出站代理注入 token 时**先取钥匙串、再退环境变量**（启动时预取，审计不含明文） | `credential-vault.ts`、`vault/route.ts`、`brain-sandbox.ts`（`brainVaultDir` + 解析器）、`egress-proxy.ts`（`resolveSecret` 与预取）；`tests/brain-credential-vault.test.mjs` 6 条（存取删/校验/篡改与 AAD/环境主密钥/代理真跑注入/接线） |
+| 7.12 | 可观测性（本地 trace） | 新建 `trace.ts`：每轮一个 traceId，`llm.call` 与 `tool.<name>` 各一 span；只记元信息（模型、消息条数、工具数、token、参数体积、耗时、状态），**绝不记消息正文/命令/输出**；默认关闭，设 `XIAOLUO_TRACE_DIR` 才落 `trace-YYYY-MM-DD.jsonl`（>8MB 轮转），写失败只计数不拖垮对话 | `trace.ts`、`chat-agent.ts`（`traceId` + 工具 span）、`agent-host.ts`（包 `llm.call`）；`tests/brain-trace.test.mjs` 4 条（默认关/落盘与截断/真跑同 traceId/接线） |
 
 **7.3 已知边界**：① 没有 MITM 与证书体系，HTTPS 走 CONNECT 隧道，代理看不到明文、也不能给 HTTPS 注入凭据头（只对明文 HTTP 生效）；② 没有按进程归属统计、没有 HTTP/2 专用处理、没有 AWS SigV4 签名；③ 仍是"代理约定级"约束，raw socket / `curl --noproxy` 可绕过，进程级禁网要等内核隔离档；④ 默认关闭（不写 `egress = "proxy"` 行为与原来完全一致），因此没有做灰度开关。
 
 **7.4 已知边界**：① 没有实现 GET SSE 长连接，服务器主动推送的请求只有随 POST 响应一起回来时才接得住；② 资源订阅（resources/subscribe）与变更通知未做；③ `resources/templates/list` 只列举不展开，模板资源读取需模型显式给 server + uri；④ elicitation 表单只支持一层扁平字段（string / number / integer / boolean / enum），嵌套对象和数组要等表单引擎；⑤ 未在真实企业 MCP 服务器上跑过（假服务器覆盖协议层）。
 
 **7.5 已知边界**：① 检索是逐文件全文扫描，没有倒排索引（会话多、文件大的机器上会变慢）；② 归档是搬移不是压缩，`.archive/` 会持续增长，没有自动清理策略；③ 没有 Codex `reference_index` 那种"消息 ↔ 文件引用"索引；④ 列表的 eventCount 是尾部窗口计数，不是精确总量（精确值要全量读）。
+
+**7.12 已知边界**：① 不是 OTel 协议，没有 OTLP 导出、没有 trace 后端/UI，只能读本地 JSONL；② 默认关闭，开了才有开销（每 span 一次 append）；③ 只覆盖模型调用与工具调用，子 Agent 内部（走同一端口所以也会记）与 HTTP 请求层没有 span；④ 没有采样策略，长跑会持续写盘（按天分文件、超 8MB 轮转一份 `.1`，不自动清理旧文件）；⑤ trace 文件里虽然没有正文，但工具名与参数体积仍能推断部分行为，分享前要脱敏。
 
 **7.11 已知边界**：① 这是"文件级加密"不是操作系统钥匙串（Windows DPAPI / macOS Keychain / Linux Secret Service 未接），同机同用户拿得到 key 文件就能解；② MCP 服务器的 secrets 仍写在 `mcp.json` 明文里（客户端还没迁到钥匙串）；③ 面板没有凭据管理 UI，只能用接口 / 脚本写入；④ 主密钥换了或换机器后旧密文解不开，需要重录；⑤ 没有审计日志（谁在何时读过哪条凭据没有记录）。
 
@@ -196,7 +199,6 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
 |---|---|---|---|---|
 | 7.10 | 多 Agent 组织（角色/身份/图/消息板） | `agent-roles` / `agent-identity` / `agent-graph-store` / `message-board` / `runtime-agent-instance` | `debate.ts`(4KB) / `collab.ts`(2KB) 只是对话协作 | 架构级 |
-| 7.12 | 可观测性 | `otel` / `otel-trace-websocket` | 无（只有本地 gate 日志） | 运维 |
 | 7.13 | 语音 / 实时会话 | `voice-host` / `realtime-webrtc` | 无 | 产品形态 |
 | 7.14 | 云端任务 | `cloud-tasks` / `cloud-client` / `aws-auth` | 无（远程只有 SSH 工作区） | 形态差异，可判不追 |
 

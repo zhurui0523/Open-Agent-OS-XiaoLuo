@@ -11,6 +11,7 @@
 
 import { ChatAgent } from "./chat-agent";
 import { DEFAULT_CHAT_AGENT_CONFIG, type ChatAgentConfig, type ChatAgentPorts } from "./agent-ports";
+import { startSpan, tracesEnabled } from "./trace";
 import { envLayer, resolveConfig } from "../../../../shared/agent-config.mjs";
 import { buildXiaoluoChatPrompt } from "./prompts";
 import type { ChatMessage, CodeArtifact } from "./types";
@@ -56,10 +57,37 @@ export function createChatAgent(
   restoreMessages?: ChatMessage[],
   restoreLastCode?: CodeArtifact,
 ): ChatAgent {
-  return new ChatAgent(
+  let built: ChatAgent | null = null;
+  // 模型调用 span（第 7.12 项）：开了 trace 才包一层，未开时原样用宿主端口（零开销）
+  const ports: ChatAgentPorts = tracesEnabled()
+    ? {
+        ...opts.ports,
+        callLLM: async (req) => {
+          const span = startSpan("llm.call", {
+            ...(built?.traceId() ? { traceId: built.traceId() as string } : {}),
+            attributes: { model: req.model, messages: req.messages.length, tools: req.tools.length },
+          });
+          try {
+            const res = await opts.ports.callLLM(req);
+            span.end("ok", {
+              promptTokens: res.usage?.promptTokens ?? 0,
+              completionTokens: res.usage?.completionTokens ?? 0,
+              finishReason: res.finishReason ?? "unknown",
+              toolCalls: res.toolCalls?.length ?? 0,
+            });
+            return res;
+          } catch (error) {
+            span.end("error", { error: error instanceof Error ? error.message : String(error) });
+            throw error;
+          }
+        },
+      }
+    : opts.ports;
+
+  built = new ChatAgent(
     {
       config: opts.config ?? { ...DEFAULT_CHAT_AGENT_CONFIG, ...configFromConfigLayer() },
-      ports: opts.ports,
+      ports,
       model: opts.model,
       conversationId: opts.conversationId,
       capabilityCatalog: opts.capabilityCatalog,
@@ -70,4 +98,5 @@ export function createChatAgent(
     restoreMessages,
     restoreLastCode,
   );
+  return built;
 }

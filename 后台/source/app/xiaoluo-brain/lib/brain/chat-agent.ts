@@ -31,6 +31,7 @@ import { searchTools } from "./tool-search";
 import { applyEditHunks, applyContextHunks, parsePatch, type EditHunk } from "./patch";
 import { parseHooks, hookMatches, fillCommand, type HookRule, type HookEvent } from "./hooks";
 import { parseGuardianConfig, runGuardianReview, type GuardianVerdict } from "./guardian";
+import { startSpan, newTraceId, tracesEnabled } from "./trace";
 import { truncateToolResult } from "./truncation";
 import {
   DEFAULT_CHAT_AGENT_CONFIG,
@@ -168,6 +169,8 @@ export class ChatAgent {
   private hooksCache: HookRule[] | null = null;
   /** hooks.toml 原文（[guardian] 段要独立读，规则解析器不认识它） */
   private hooksRaw: string | null = null;
+  /** 本轮 traceId（第 7.12 项）：未开 `XIAOLUO_TRACE_DIR` 时为 null，不产生任何记录 */
+  private currentTraceId: string | null = null;
   /** PostToolUse 钩子本轮执行次数：设上限防每次写文件都拖一轮验证命令烧额度 */
   private postHookRunsThisTurn = 0;
   /** 仓库地图缓存索引（超大仓库导航不输终端对手）：root → 树行+根签名，5 分钟 TTL + mtime 失效 */
@@ -360,6 +363,11 @@ export class ChatAgent {
     }
   }
 
+  /** 当前轮 traceId（宿主包模型调用时用作父 span；未开 trace 返回 null） */
+  traceId(): string | null {
+    return this.currentTraceId;
+  }
+
   // ---------- 一轮对话 ----------
 
   async reply(
@@ -368,6 +376,8 @@ export class ChatAgent {
     images?: Array<{ mimeType: string; dataUrl: string }>,
   ): Promise<ChatTurnOutcome> {
     const { config, ports } = this.opts;
+    // trace（第 7.12 项）：只有显式配了落盘目录才生成 id，避免无端开销
+    this.currentTraceId = tracesEnabled() ? newTraceId() : null;
 
     // 首轮：装系统提示词 + consult 历史注入
     if (this.messages.length === 0) {
@@ -994,9 +1004,17 @@ export class ChatAgent {
    */
   private async execTool(call: ToolCall): Promise<string> {
     if (this.aborted) return "[已中止]";
+    const span = this.currentTraceId
+      ? startSpan("tool." + call.name, {
+          traceId: this.currentTraceId,
+          attributes: { argsChars: JSON.stringify(call.arguments ?? {}).length },
+        })
+      : null;
+    let spanStatus: "ok" | "error" = "ok";
     try {
       return await this.dispatchTool(call);
     } catch (err) {
+      spanStatus = "error";
       if (classifyError(err) === "transient") {
         if (this.aborted) return "[已中止]";
         await sleep(800);
@@ -1008,7 +1026,9 @@ export class ChatAgent {
         );
         try {
           if (this.aborted) return "[已中止]";
-          return await this.dispatchTool(call);
+          const retried = await this.dispatchTool(call);
+          spanStatus = "ok"; // 重试成功：按恢复成功记
+          return retried;
         } catch (err2) {
           const msg = `工具 ${call.name} 重试后仍失败：${err2 instanceof Error ? err2.message : String(err2)}`;
           return this.trackFailure(call.name, msg);
@@ -1016,6 +1036,8 @@ export class ChatAgent {
       }
       const msg = `工具 ${call.name} 执行异常：${err instanceof Error ? err.message : String(err)}`;
       return this.trackFailure(call.name, msg);
+    } finally {
+      span?.end(spanStatus);
     }
   }
 
