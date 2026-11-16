@@ -210,10 +210,12 @@ class HttpMcpConn {
     };
     const result = retried ? await OAUTH.refreshRejected(this.name, cfg) : await OAUTH.ensureToken(this.name, cfg);
     if (!result.ok) {
-      this.error =
-        "MCP 服务器需要 OAuth 授权（" +
-        (result.error ? result.error : "没有可用凭据") +
-        "）：调用 oauth/login 完成一次授权即可";
+      // 机器类 grant 没有浏览器可走：缺 subject token 就让用户去配环境变量，别指路去点 oauth/login
+      const nextStep =
+        result.reason === "needs_subject_token"
+          ? "在 mcp.json 的 oauth.subjectToken 里填 upstream token，或设环境变量 XIAOLUO_MCP_SUBJECT_TOKEN 后重启"
+          : "调用 oauth/login 完成一次授权即可";
+      this.error = "MCP 服务器需要 OAuth 凭据（" + (result.error ? result.error : "没有可用凭据") + "）：" + nextStep;
       return { ok: false };
     }
     this.token = result.token || "";
@@ -380,6 +382,14 @@ export async function handleMcpPayload(payload) {
       const serverCfg = cfg[server];
       if (!serverCfg) return { error: "没有这个 MCP 服务器：" + server };
       if (!isHttpServer(serverCfg)) return { error: "只有 HTTP 类型的 MCP 服务器需要授权：" + server };
+      // 机器类 grant（client_credentials / token_exchange）没有浏览器授权这一步：直接取一次 token
+      const grant = String((serverCfg.oauth && (serverCfg.oauth.grant || serverCfg.oauth.grantType || serverCfg.oauth.grant_type)) || "authorization_code").toLowerCase();
+      if (grant === "client_credentials" || grant === "token_exchange") {
+        const out = await OAUTH.ensureToken(server, serverCfg);
+        return out.ok
+          ? { ok: true, grant, token: out.token ? "已获取（不显示明文）" : "已获取" }
+          : { ok: false, grant, error: out.error || "取 token 失败" };
+      }
       const session = await OAUTH.beginLogin(server, serverCfg);
       // 交给宿主打开浏览器；授权完成后连接会在下次 servers 同步时带着新 token 重建
       try { if (payload.openUrl !== false && typeof payload.opener === "function") await payload.opener(session.url); } catch { /* 打不开也不影响回调监听 */ }

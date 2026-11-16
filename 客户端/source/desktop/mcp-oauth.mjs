@@ -83,22 +83,82 @@ export function needsRefresh(tokens, now = Date.now()) {
   return tokens.expires_at - now <= REFRESH_SKEW_SECONDS * 1000;
 }
 
-async function postForm(url, params, fetchImpl) {
-  const body = new URLSearchParams(params).toString();
-  const res = await fetchImpl(url, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body,
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error("OAuth 端点返回 " + res.status + "：" + text.slice(0, 200));
-  let json;
-  try { json = JSON.parse(text); } catch { throw new Error("OAuth 端点返回的不是 JSON：" + text.slice(0, 120)); }
-  return json;
+/**
+ * token 端点的重试背压：只重试"可能自己会好"的状态（429/5xx/网络抖动），
+ * 4xx（除 408/425/429）= 配置或凭据问题，重试只是把错误拖长。
+ * 退避 = 300ms 起指数翻倍 + 抖动，封顶 5 秒；服务器给了 Retry-After 就按它等。
+ */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_TOKEN_ATTEMPTS = 3;
+const BASE_BACKOFF_MS = 300;
+const MAX_BACKOFF_MS = 5000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function backoffMs(attempt, retryAfterHeader) {
+  const retryAfter = Number(retryAfterHeader);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(MAX_BACKOFF_MS, retryAfter * 1000);
+  const base = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (attempt - 1));
+  return Math.min(MAX_BACKOFF_MS, base + Math.floor(Math.random() * Math.min(200, base / 2)));
+}
+
+/**
+ * 机密客户端认证：client_secret_basic / client_secret_post。
+ * 公共客户端（或没配 secret）两者都不发；secret 只在内存里拼进请求，不落盘。
+ */
+function authFor(auth) {
+  if (!auth || !auth.clientSecret) return { headers: {}, params: {} };
+  const method = auth.method === "post" ? "post" : "basic";
+  if (method === "post") return { headers: {}, params: { client_id: auth.clientId, client_secret: auth.clientSecret } };
+  const basic = Buffer.from(auth.clientId + ":" + auth.clientSecret, "utf8").toString("base64");
+  return { headers: { authorization: "Basic " + basic }, params: {} };
+}
+
+async function tokenRequest(url, params, fetchImpl, auth, opts = {}) {
+  const attempts = Math.max(1, opts.maxAttempts ?? MAX_TOKEN_ATTEMPTS);
+  const a = authFor(auth);
+  const body = { ...params, ...a.params };
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let res;
+    try {
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json", ...a.headers },
+        body: new URLSearchParams(body).toString(),
+      });
+    } catch (error) {
+      lastError = new Error("OAuth 端点网络失败：" + (error instanceof Error ? error.message : String(error)));
+      if (attempt === attempts) break;
+      await sleep(backoffMs(attempt));
+      continue;
+    }
+    const text = await res.text();
+    if (res.ok) {
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error("OAuth 端点返回的不是 JSON：" + text.slice(0, 120));
+      }
+      return json;
+    }
+    lastError = new Error("OAuth 端点返回 " + res.status + "：" + text.slice(0, 200));
+    if (!RETRYABLE_STATUS.has(res.status) || attempt === attempts) break;
+    const retryAfter = res.headers && typeof res.headers.get === "function" ? res.headers.get("retry-after") : null;
+    await sleep(backoffMs(attempt, retryAfter));
+  }
+  throw lastError;
+}
+
+async function postForm(url, params, fetchImpl, auth) {
+  return tokenRequest(url, params, fetchImpl, auth);
 }
 
 /** 授权码换 token */
-export async function exchangeCode({ tokenEndpoint, code, verifier, redirectUri, clientId, resource }, fetchImpl = fetch) {
+export async function exchangeCode({ tokenEndpoint, code, verifier, redirectUri, clientId, resource, clientSecret, authMethod }, fetchImpl = fetch) {
   const params = {
     grant_type: "authorization_code",
     code,
@@ -107,18 +167,64 @@ export async function exchangeCode({ tokenEndpoint, code, verifier, redirectUri,
     code_verifier: verifier,
   };
   if (resource) params.resource = resource;
-  return await postForm(tokenEndpoint, params, fetchImpl);
+  return await postForm(tokenEndpoint, params, fetchImpl, { method: authMethod, clientId, clientSecret });
 }
 
 /** 刷新 token */
-export async function refreshToken({ tokenEndpoint, refreshTokenValue, clientId, resource }, fetchImpl = fetch) {
+export async function refreshToken({ tokenEndpoint, refreshTokenValue, clientId, resource, clientSecret, authMethod }, fetchImpl = fetch) {
   const params = {
     grant_type: "refresh_token",
     refresh_token: refreshTokenValue,
     client_id: clientId,
   };
   if (resource) params.resource = resource;
-  return await postForm(tokenEndpoint, params, fetchImpl);
+  return await postForm(tokenEndpoint, params, fetchImpl, { method: authMethod, clientId, clientSecret });
+}
+
+/** RFC 8693 token-exchange：拿一个 upstream subject token 换资源绑定的 MCP token（Codex 的 EMA 那条） */
+export const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/** 机器对机器：client_credentials（无人值守，没有 refresh_token，只能重取） */
+export async function clientCredentialsToken({ tokenEndpoint, clientId, clientSecret, scope, resource, authMethod }, fetchImpl = fetch) {
+  if (!clientId) throw new Error("client_credentials 需要 client_id");
+  if (!clientSecret) throw new Error("client_credentials 需要 client_secret（机密客户端）");
+  const params = { grant_type: "client_credentials", client_id: clientId };
+  if (scope) params.scope = scope;
+  if (resource) params.resource = resource;
+  return await postForm(tokenEndpoint, params, fetchImpl, { method: authMethod, clientId, clientSecret });
+}
+
+export async function exchangeToken(
+  {
+    tokenEndpoint,
+    subjectToken,
+    subjectTokenType = "urn:ietf:params:oauth:token-type:access_token",
+    requestedTokenType = "urn:ietf:params:oauth:token-type:access_token",
+    audience,
+    resource,
+    scope,
+    clientId,
+    clientSecret,
+    authMethod,
+    extraParams,
+  },
+  fetchImpl = fetch,
+) {
+  if (!subjectToken) throw new Error("token_exchange 需要 subject_token");
+  const params = {
+    grant_type: TOKEN_EXCHANGE_GRANT,
+    subject_token: subjectToken,
+    subject_token_type: subjectTokenType,
+    requested_token_type: requestedTokenType,
+  };
+  if (clientId) params.client_id = clientId;
+  if (audience) params.audience = audience;
+  if (resource) params.resource = resource;
+  if (scope) params.scope = scope;
+  for (const [k, v] of Object.entries(extraParams && typeof extraParams === "object" ? extraParams : {})) {
+    if (v !== undefined && v !== null) params[k] = String(v);
+  }
+  return await postForm(tokenEndpoint, params, fetchImpl, { method: authMethod, clientId, clientSecret });
 }
 
 function oauthConfig(cfg) {
@@ -126,18 +232,41 @@ function oauthConfig(cfg) {
   const tokenEndpoint = String(oauth.tokenEndpoint || oauth.token_endpoint || "");
   const authorizationEndpoint = String(oauth.authorizationEndpoint || oauth.authorization_endpoint || "");
   const clientId = String(oauth.clientId || oauth.client_id || "");
-  if (!tokenEndpoint || !authorizationEndpoint || !clientId) {
+  const clientSecret = String(oauth.clientSecret || oauth.client_secret || "");
+  // 机密客户端才需要 key：只配了 secret 没配 id 是配置错，和 Codex 一样直接报错而不是猜
+  if (clientSecret && !clientId) throw new Error("MCP OAuth 配了 client_secret 却没有 client_id：请补上 client_id");
+  if (clientSecret && !clientSecret.trim()) throw new Error("MCP OAuth 的 client_secret 不能是空字符串");
+  const grantRaw = String(oauth.grant || oauth.grantType || oauth.grant_type || "authorization_code").toLowerCase();
+  const grant = grantRaw === "client_credentials" ? "client_credentials" : grantRaw === "token_exchange" ? "token_exchange" : "authorization_code";
+  // 机器类 grant 不需要 browser 授权端点
+  if (grant === "authorization_code" && (!tokenEndpoint || !authorizationEndpoint || !clientId)) {
     throw new Error("MCP OAuth 配置不全：需要 authorizationEndpoint / tokenEndpoint / clientId");
   }
+  if (grant !== "authorization_code" && !tokenEndpoint) {
+    throw new Error("MCP OAuth 配置不全：grant=" + grant + " 至少需要 tokenEndpoint");
+  }
+  const authMethodRaw = String(oauth.authMethod || oauth.tokenEndpointAuthMethod || oauth.token_endpoint_auth_method || "").toLowerCase();
+  const authMethod = authMethodRaw === "post" || authMethodRaw === "client_secret_post" ? "post" : authMethodRaw === "none" ? "none" : clientSecret ? "basic" : "none";
   return {
     tokenEndpoint,
     authorizationEndpoint,
     clientId,
+    clientSecret,
+    authMethod,
+    grant,
     scope: String(oauth.scope || ""),
     resource: String(oauth.resource || ""),
     redirectPort: Number(oauth.redirectPort || oauth.redirect_port || 0),
     extraParams: oauth.extraParams && typeof oauth.extraParams === "object" ? oauth.extraParams : {},
+    subjectToken: String(oauth.subjectToken || oauth.subject_token || ""),
+    subjectTokenType: String(oauth.subjectTokenType || oauth.subject_token_type || "urn:ietf:params:oauth:token-type:access_token"),
+    audience: String(oauth.audience || ""),
   };
+}
+
+/** token_exchange 的 subject token：显式配置优先，其次环境变量（CI / 无人值守用） */
+function resolveSubjectToken(oauth) {
+  return oauth.subjectToken || process.env.XIAOLUO_MCP_SUBJECT_TOKEN || "";
 }
 
 /** 解析 401 的 WWW-Authenticate（Bearer resource_metadata="...", scope="...", error="..."） */
@@ -248,7 +377,8 @@ export async function resolveOAuthConfig(server, cfg, { fetchImpl = fetch, redir
   const explicit = cfg && cfg.oauth;
   if (explicit && (explicit.tokenEndpoint || explicit.token_endpoint)) {
     const base = oauthConfig(cfg);
-    if (base.clientId) return base;
+    // 机器类 grant 不需要浏览器授权，也就不需要动态注册 client
+    if (base.clientId || base.grant !== "authorization_code") return base;
     // 显式端点了但没有 client_id：有 registrationEndpoint 就注册，否则报错
     const reg = String(explicit.registrationEndpoint || explicit.registration_endpoint || "");
     const redirect = redirectUri || "http://127.0.0.1:" + (base.redirectPort || 33333) + "/auth/callback";
@@ -287,6 +417,54 @@ export async function resolveOAuthConfig(server, cfg, { fetchImpl = fetch, redir
   };
 }
 
+/** 机器类 grant（client_credentials / token_exchange）：没有 refresh_token，过期就重新取一次 */
+async function fetchMachineToken(server, oauth, fetchImpl) {
+  try {
+    let fresh;
+    if (oauth.grant === "client_credentials") {
+      fresh = await clientCredentialsToken(
+        {
+          tokenEndpoint: oauth.tokenEndpoint,
+          clientId: oauth.clientId,
+          clientSecret: oauth.clientSecret,
+          scope: oauth.scope,
+          resource: oauth.resource,
+          authMethod: oauth.authMethod,
+        },
+        fetchImpl,
+      );
+    } else {
+      const subjectToken = resolveSubjectToken(oauth);
+      if (!subjectToken) {
+        return {
+          ok: false,
+          reason: "needs_subject_token",
+          grant: oauth.grant,
+          error: "token_exchange 需要一个 subject token：在 mcp.json 的 oauth.subjectToken 里写，或设环境变量 XIAOLUO_MCP_SUBJECT_TOKEN",
+        };
+      }
+      fresh = await exchangeToken(
+        {
+          tokenEndpoint: oauth.tokenEndpoint,
+          subjectToken,
+          subjectTokenType: oauth.subjectTokenType,
+          audience: oauth.audience || undefined,
+          resource: oauth.resource || undefined,
+          scope: oauth.scope || undefined,
+          clientId: oauth.clientId || undefined,
+          clientSecret: oauth.clientSecret || undefined,
+          authMethod: oauth.authMethod,
+        },
+        fetchImpl,
+      );
+    }
+    const saved = await saveTokens(server, { ...fresh, token_endpoint: oauth.tokenEndpoint, grant: oauth.grant });
+    return { ok: true, token: saved.access_token, refreshed: true, grant: oauth.grant };
+  } catch (error) {
+    return { ok: false, reason: "needs_auth", grant: oauth.grant, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** 取可用 token：过期就刷新；没有凭据就返回 needsAuth（带授权地址，由调用方提示用户打开） */
 export async function ensureToken(server, cfg, fetchImpl = fetch) {
   const oauth = oauthConfig(cfg);
@@ -294,6 +472,8 @@ export async function ensureToken(server, cfg, fetchImpl = fetch) {
   if (existing && !needsRefresh(existing)) {
     return { ok: true, token: existing.access_token, refreshed: false };
   }
+  // 机器类 grant 不走 refresh_token：重取一次就好
+  if (oauth.grant !== "authorization_code") return await fetchMachineToken(server, oauth, fetchImpl);
   if (existing && existing.refresh_token) {
     try {
       const fresh = await refreshToken(
@@ -303,6 +483,8 @@ export async function ensureToken(server, cfg, fetchImpl = fetch) {
           refreshTokenValue: existing.refresh_token,
           clientId: oauth.clientId,
           resource: oauth.resource,
+          clientSecret: oauth.clientSecret,
+          authMethod: oauth.authMethod,
         },
         fetchImpl,
       );
@@ -324,6 +506,7 @@ export async function ensureToken(server, cfg, fetchImpl = fetch) {
 /** token 被拒（401）后强制换新一次，照 Codex 的 refresh_on_rejected_token */
 export async function refreshRejected(server, cfg, fetchImpl = fetch) {
   const oauth = oauthConfig(cfg);
+  if (oauth.grant !== "authorization_code") return await fetchMachineToken(server, oauth, fetchImpl);
   const existing = await readTokens(server);
   if (!existing || !existing.refresh_token) return { ok: false, reason: "needs_auth" };
   try {
@@ -333,6 +516,8 @@ export async function refreshRejected(server, cfg, fetchImpl = fetch) {
         refreshTokenValue: existing.refresh_token,
         clientId: oauth.clientId,
         resource: oauth.resource,
+        clientSecret: oauth.clientSecret,
+        authMethod: oauth.authMethod,
       },
       fetchImpl,
     );
@@ -421,6 +606,8 @@ export async function beginLogin(server, cfg, { timeoutMs = 300_000, fetchImpl =
           redirectUri,
           clientId: oauth.clientId,
           resource: oauth.resource,
+          clientSecret: oauth.clientSecret,
+          authMethod: oauth.authMethod,
         },
         fetchImpl,
       );

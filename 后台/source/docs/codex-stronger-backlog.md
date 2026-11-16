@@ -13,7 +13,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 2 | 生命周期 hooks 事件面 | 独立 `hooks` crate：`engine/{discovery,dispatcher,command_runner}`、`events/permission_request`、`config_rules` | 原有 PreToolUse + Post 验收 + 技能 `verify`；**已补** `session_start` / `session_end` / `user_prompt_submit` / `permission_request` 四个事件 + 外部命令 runner + 解析/匹配抽成 `hooks.ts` | ✅ 已攻克（2026-11-16） | 低 | 已交付，见下 |
 | 3 | 终端 PTY 完整交互 | 独立 crate `utils/pty`（跨平台 portable-pty） | 原为管道会话（isatty=false）；**已补** `pty-adapter`：node-pty 惰性加载 + ConPTY/openpty + 装不上时如实降级并回流原因 | ✅ 已攻克（真机端到端待验） | 中 | 见下方边界 |
 | 4 | 子 Agent 可写 / 并行 | `spawn_agent` 27 处引用，可写、可并行 | 原只读、单任务；**已补** `tasks` 并行只读（最多 3）+ `canWrite`（宿主显式开写权限，写任务串行），改动登记回主线程 | ✅ 已攻克（并行仅只读） | 中 | 见下方边界 |
-| 5 | MCP 企业级认证 | `rmcp-client` 里 `client_credentials` 4 处、`token_exchange` 12 处、重试退避 | 公开客户端 + PKCE + 30s 提前刷新 + 401 换 token | 深度 | 中（要先有能验的 IdP） | 等你手里有企业 IdP 再动，否则只能写空壳 |
+| 5 | MCP 企业级认证 | `rmcp-client` 里 `client_credentials` 4 处、`token_exchange` 12 处、重试退避 | 原有公开客户端 + PKCE + 刷新 + 401 重试一次；**已补**机密客户端（basic/post）+ `client_credentials` + RFC 8693 `token_exchange` + token 端点重试背压，secret 不落盘 | ✅ 代码已补齐（真实 IdP 未验） | 中 | 见下方边界 |
 | 6 | POSIX 内核级沙箱 | `landlock` 191 处、seatbelt | 只有 Windows MIC-low；POSIX / AppContainer 未开工 | 真差距，最贵 | 大（要 Linux/macOS 真机 + CI 矩阵） | 放最后；没有跨平台真机验等于没做 |
 
 ---
@@ -117,13 +117,29 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 3. 子 Agent 不能跑命令（`command` 口仍不传），需要执行的环节留主线程；
 4. 并行批次没有总预算闸：3 个子 Agent 各自 12 步 / 6 分钟，token 全计回父线程，极端情况一轮能烧掉父线程大半预算（只在 config 里做了单子 Agent 的 budget 上限，没有做批次求和上限）。
 
-### 5. MCP 企业级认证
+### 5. MCP 企业级认证 — ✅ 代码已补齐（2026-11-16，真实 IdP 未验）
 
-**Codex**：`rmcp-client` 支持 `client_credentials`、`token_exchange`（EMA 企业认证）、失败重试退避。
+**Codex**：`rmcp-client` 支持机密客户端（client_id + client_secret，basic/post 两种端点认证）、`token_exchange`（RFC 8693 / EMA）、失败重试退避。
 
-**小逻现状**：公开客户端 + PKCE + 刷新 + 401 重试一次。真机（Linear）已验到"发现 / 动态注册 / 授权地址"，换 token 后半段仍卡在人工登录。
+**小逻原来**：公开客户端 + PKCE + 30 秒提前刷新 + 401 换 token 重试一次；没有 client_secret、没有机器类 grant、token 端点失败就失败。
 
-**改法**：补 `client_credentials` 与 `token_exchange` 两条 grant，加重试退避（指数 + 上限）。需要真实 IdP 才能验收，否则只算"代码具备、未验证"。
+**落地结果（2026-11-16）**：
+
+- `mcp-oauth.mjs` 新增机密客户端：`oauth.clientSecret` + `authMethod`（`client_secret_basic` / `client_secret_post`）；basic 走 `Authorization: Basic`，post 走表单；**secret 只在内存里拼进请求，不落盘**；只配 secret 不配 client_id / secret 为空直接报错（与 Codex 的校验一致）；
+- 新增 `client_credentialsToken()`：无人值守 M2M，没有 refresh_token，过期就重取；
+- 新增 `exchangeToken()` + `TOKEN_EXCHANGE_GRANT`：按 RFC 8693 发 `subject_token / subject_token_type / requested_token_type / audience / resource / scope`；subject token 来源是 `oauth.subjectToken` 或环境变量 `XIAOLUO_MCP_SUBJECT_TOKEN`，缺失时回 `needs_subject_token` 并告诉你去哪配；
+- `oauthConfig` 支持 `oauth.grant`（`authorization_code` / `client_credentials` / `token_exchange`）；`ensureToken` 与 `refreshRejected` 按 grant 分叉：机器类直接重取，不再假装能 refresh；
+- token 端点重试背压：只重试 408/425/429/5xx 与网络失败，最多 3 次，指数退避 300ms→封顶 5s + 抖动，服务器给了 `Retry-After` 就按它等；4xx 配置/凭据错误立即失败；
+- `mcp-runtime.mjs`：机器类 grant 的 `oauth/login` 不走浏览器，直接取一次 token；缺 subject token 的提示改成"去配环境变量/写 mcp.json"，不再指路点授权；
+- 测试 5 条（真跑假授权服务器）：basic 不进表单且 token 可复用 / post 表单 + 成对校验 / token_exchange 参数齐全与缺 token 提示 / 429 重试而 400 不重试且网络抖动会重试 / 机器类 401 后重取，`tests/mcp-oauth-enterprise.test.mjs` 全绿。
+
+**已知边界（没做 / 没验）**：
+
+1. **没有真实企业 IdP 端到端**：Linear 只验到"发现 / 动态注册 / 授权地址"，换 token 后半段仍卡在人工登录；Okta、Azure AD、Auth0 的 client_credentials / token_exchange 一次都没跑过，所以只能说"代码具备，未验证"；
+2. 没做 `jwt-bearer` grant（Codex 有 `JWT_BEARER_GRANT_TYPE`）与 mTLS / DPoP；
+3. 没做 `WWW-Authenticate` 的 `error="insufficient_scope"` 自动升 scope 重授权（现在只是把 scope hint 拼进授权地址）；
+4. 重试退避只做 token 端点，MCP 工具调用本身的 5xx 重试仍由调用方决定；
+5. 机密客户端的 secret 目前从 mcp.json 明文读（Codex 也一样），没有接系统钥匙串。
 
 ### 6. POSIX 内核沙箱
 

@@ -59,6 +59,8 @@ canvas nodes use the professional typography scale,tests/node-default-size.test.
 canvas plugins keep independent inline and expanded runtime instances,tests/plugin-inline-canvas.test.mjs,已声明用例
 chat-style image responses expose nested image URLs to the canvas,tests/model-adapters.test.mjs,已声明用例
 cleanup runs from both file access and the background worker,tests/asset-trash-retention.test.mjs,已声明用例
+client_credentials：走 basic 认证，secret 不进请求体，token 可复用,tests/mcp-oauth-enterprise.test.mjs,已声明用例
+client_secret_post：secret 进表单，同时校验 client_id/client_secret 必须成对,tests/mcp-oauth-enterprise.test.mjs,已声明用例
 compiles and executes workflows through the AI microkernel contract,tests/rendered-html.test.mjs,已声明用例
 completed generation results are persisted without browser autosave,tests/run-result-persistence.test.mjs,已声明用例
 connected input assets render as thumbnail-only tiles,tests/model-input-constraints.test.mjs,已声明用例
@@ -159,6 +161,7 @@ protects browser mutations and emits application security headers,tests/security
 rate limits login by private IP and account identifier buckets,tests/security-hardening.test.mjs,已声明用例
 recommendedModelId picks by tier and modality,tests/local-ai-manifest.test.mjs,已声明用例
 recycle-bin assets expire after 72 hours,tests/asset-trash-retention.test.mjs,已声明用例
+refreshRejected：机器类 grant 用重取代替 refresh（没有 refresh_token 也不会卡住）,tests/mcp-oauth-enterprise.test.mjs,已声明用例
 rejects ZIP path traversal before extraction,tests/package-import.test.mjs,已声明用例
 rejects secrets embedded in an imported package,tests/package-import.test.mjs,已声明用例
 remote model inputs never submit authenticated in-app asset URLs,tests/model-input-constraints.test.mjs,已声明用例
@@ -216,6 +219,7 @@ the plugins hub opens from the float bar and takes the screen from the dock,test
 the recycle-bin UI explains retention and shows a countdown,tests/asset-trash-retention.test.mjs,已声明用例
 the task checklist is kept on the agent so the gate can see unfinished steps,tests/brain-progress-gates.test.mjs,已声明用例
 tierAllows orders lite < balanced < high,tests/local-ai-manifest.test.mjs,已声明用例
+token_exchange：RFC 8693 参数齐全；缺 subject token 时明确 saying 缺什么,tests/mcp-oauth-enterprise.test.mjs,已声明用例
 tool results still ride on the user turn when a nudge follows,tests/anthropic-adapter-tail.test.mjs,已声明用例
 unless-trusted 把本该 safe 的命令也升级为请示，显式信任后才放行,tests/sandbox-policy.test.mjs,已声明用例
 uses Skill snapshot ports instead of hardcoded modality ports,tests/dynamic-capability-sync.test.mjs,已声明用例
@@ -369,6 +373,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 逐字符命中：包括不在行首的片段,tests/brain-patch-and-truncation.test.mjs,已声明用例
 配置面板已接到设置页：读 GET / 存 PUT，环境变量覆盖的项不可改,tests/agent-config.test.mjs,已声明用例
 重放缓冲不被碎帧挤掉：delta 只走直播，补发交还边界与卡片,tests/brain-app-server.test.mjs,已声明用例
+重试背压：429 会重试，400 不重试，网络抖动重试一次后成功,tests/mcp-oauth-enterprise.test.mjs,已声明用例
 长结果保首尾、中间挖除，尾部报错不再被切掉,tests/brain-patch-and-truncation.test.mjs,已声明用例
 闸门关着就不报那三口：只读的控件枚举照报，问不到读数不收能力,tests/brain-host-bridge.test.mjs,已声明用例
 闸门关着的声明：整桌截屏从面上下来，只读枚举留着，能力段把两者分开说,tests/brain-app-server.test.mjs,已声明用例
