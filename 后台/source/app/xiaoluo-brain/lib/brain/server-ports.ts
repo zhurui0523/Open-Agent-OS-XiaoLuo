@@ -27,6 +27,7 @@ import {
   cancelSandboxedCommands,
   deleteSandboxPath,
   findSandboxFiles,
+  fuzzyFindSandboxFiles,
   grepSandboxFiles,
   listBrainServices,
   listBrainStdinSessions,
@@ -354,6 +355,9 @@ export function createServerPorts(opts: ServerPortsOptions): ChatAgentPorts {
       },
       async find(name, o) {
         return findSandboxFiles(opts.userId, name, { path: o?.path, maxResults: o?.maxResults }, mode);
+      },
+      async fuzzyFind(query, o) {
+        return fuzzyFindSandboxFiles(opts.userId, query, { path: o?.path, maxResults: o?.maxResults });
       },
       async movePath(from, to) {
         await moveSandboxPath(opts.userId, from, to, mode);

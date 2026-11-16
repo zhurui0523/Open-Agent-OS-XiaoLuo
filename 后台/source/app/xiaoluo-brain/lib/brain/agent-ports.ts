@@ -334,6 +334,7 @@ export function chatToolCapabilities(ports: ChatAgentPorts): ChatToolCapabilitie
     deployEnabled: Boolean(ports.deployProgram),
     mcpTools: ports.mcp?.tools ?? [],
     mcpResourcesEnabled: Boolean(ports.mcp?.listResources && ports.mcp?.readResource),
+    fuzzyFindEnabled: Boolean(ports.fs?.fuzzyFind),
   };
 }
 

@@ -243,6 +243,7 @@ video models do not expose placeholder parameter choices,tests/model-protocol-op
 video models show the supported RunningHub providers,tests/model-protocol-options.test.mjs,已声明用例
 一次多 hunk：全部命中才改，有一处对不上整批不动,tests/brain-patch-and-truncation.test.mjs,已声明用例
 一轮真跑完：事件带 seq 单调递增，宿主拿得到正文与结束回执,tests/brain-app-server.test.mjs,已声明用例
+两端算法一致：桌面版打分与后台版对同一批路径给同样结果,tests/brain-file-index.test.mjs,已声明用例
 中止：turn/interrupt 掐断在途模型调用，线程回到空闲还能再跑,tests/brain-app-server.test.mjs,已声明用例
 主循环软收尾：最后一步有提醒，步数到顶补一次只写总结的回合,tests/edit-residual.test.mjs,已声明用例
 主机白名单：hooks.toml 里 network_allow 命中的放行，未命中的仍要走批准,tests/sandbox-policy.test.mjs,已声明用例
@@ -266,6 +267,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 分支带上历史与断点账：接着这条线换个走法，不用重新摸底,tests/brain-conversation-fork.test.mjs,已声明用例
 分词：英文按词，中文按二元组，去重,tests/brain-skill-selection.test.mjs,已声明用例
 列表：只扫文件尾也能拿到最后 seq 与更新时间，按新到旧排序,tests/brain-thread-store.test.mjs,已声明用例
+刷新与 watch：新增文件能被检索到；watch 能标脏（不支持递归 watch 时退回刷新）,tests/brain-file-index.test.mjs,已声明用例
 匹配：事件 + 工具 + 正则三重门，正则写坏不命中也不炸,tests/brain-hooks-events.test.mjs,已声明用例
 压缩用 messages_replace 覆盖：重建后是压缩后的列表，旧消息不再残留,tests/thread-event-log.test.mjs,已声明用例
 "压缩触发线改成百分比：默认 80%，配置可调且被夹在 [40,100]",tests/state-store.test.mjs,已声明用例
@@ -297,6 +299,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 尾读：readTailEvents 只回最后 N 条且顺序正确,tests/brain-thread-store.test.mjs,已声明用例
 崩溃恢复：末行写了一半也能读出前面的事件，并标记 recovered,tests/thread-event-log.test.mjs,已声明用例
 工作区落点可覆盖：代码仓目录打不了 Low 标签，必须能指到用户自有目录,tests/sandbox-policy.test.mjs,已声明用例
+工具注册与接线：有索引才注册 fuzzy_find_files；四处接线齐全,tests/brain-file-index.test.mjs,已声明用例
 工具目录覆盖全部注册 schema，且新工具都在里面,tests/tool-surface.test.mjs,已声明用例
 工具面严格跟着端口注册：没接的口就不出现在 schema 里,tests/brain-agent-protocol.test.mjs,已声明用例
 工具面：write_stdin 只在宿主真有会话口时注册,tests/brain-stdin-session.test.mjs,已声明用例
@@ -306,6 +309,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 快照事实抽取：按 tool 轮与 assistant.toolCalls 记工具账本，不吃正文长度溢出,tests/state-store.test.mjs,已声明用例
 截断保尾：2000 行以上输出仍能看到最后的报错行,tests/tool-surface.test.mjs,已声明用例
 截断预算按工具类型给：命令/交付类的尾部留得住,tests/brain-patch-and-truncation.test.mjs,已声明用例
+打分分档：全等 > 前缀 > 子串 > 路径子串 > 子序列，空串为 0,tests/brain-file-index.test.mjs,已声明用例
 执行桥：fs 越界被拒（工作区围栏），不是「文件不存在」,tests/plugin-capability.test.mjs,已声明用例
 换宿主就收回能力面：回合跑一半不抽正在等的口，收尾后才落地,tests/brain-app-server.test.mjs,已声明用例
 授权后：三类服务端能力放行，客户端能力仍拒并说明由谁做,tests/plugin-capability.test.mjs,已声明用例
@@ -375,6 +379,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 策略写错取值退回 open，不静默全拦,tests/brain-network-policy.test.mjs,已声明用例
 策略用例全绿（风险 + 网络 + 禁区 + 审批四组）,tests/sandbox-policy.test.mjs,已声明用例
 系统级隔离档默认 auto：落点打不了标就如实降级，不假装有防护,tests/sandbox-policy.test.mjs,已声明用例
+索引检索：排序 + 子目录过滤 + 缓存命中,tests/brain-file-index.test.mjs,已声明用例
 线格式解析：流式拼出来的形状与非流式整包逐字一致（两种方言）,tests/brain-app-server.test.mjs,已声明用例
 线程生命周期：start/read/capabilities 都是真往返，工具面只有已接闸门的那些,tests/brain-app-server.test.mjs,已声明用例
 结果去向：覆盖原图复用已有结果卡片，另存新图保持新建占位,tests/result-slot-flow.test.mjs,已声明用例
@@ -396,6 +401,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 选技能：显式点名最高分，描述重叠次之，不相关为零,tests/brain-skill-selection.test.mjs,已声明用例
 逐字显形走线：宿主收到 begin/delta*/end，定稿事件带 fromStream,tests/brain-app-server.test.mjs,已声明用例
 逐字符命中：包括不在行首的片段,tests/brain-patch-and-truncation.test.mjs,已声明用例
+遍历：跳过产物目录与点目录，保留 .env.example，超上限截断,tests/brain-file-index.test.mjs,已声明用例
 配置解析：egress 开关、凭据块、缺字段丢弃、写错退回关闭,tests/brain-egress-proxy.test.mjs,已声明用例
 配置面板已接到设置页：读 GET / 存 PUT，环境变量覆盖的项不可改,tests/agent-config.test.mjs,已声明用例
 重放缓冲不被碎帧挤掉：delta 只走直播，补发交还边界与卡片,tests/brain-app-server.test.mjs,已声明用例

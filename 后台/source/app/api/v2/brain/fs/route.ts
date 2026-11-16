@@ -9,6 +9,7 @@ import { enforceRateLimit } from "../../../../lib/rate-limit";
 import {
   deleteSandboxPath,
   findSandboxFiles,
+  fuzzyFindSandboxFiles,
   grepSandboxFiles,
   listSandboxDir,
   readSandboxFile,
@@ -21,13 +22,14 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       action?: string;
       path?: string;
+      query?: string;
       content?: string;
       opts?: { offset?: number; limit?: number; maxResults?: number; encoding?: "base64" };
       mode?: string;
     };
     const action = body.action;
-    if (action !== "list" && action !== "read" && action !== "write" && action !== "grep" && action !== "find" && action !== "delete") {
-      return Response.json({ error: "action 必须是 list / read / write / grep / find / delete" }, { status: 400 });
+    if (action !== "list" && action !== "read" && action !== "write" && action !== "grep" && action !== "find" && action !== "fuzzy" && action !== "delete") {
+      return Response.json({ error: "action 必须是 list / read / write / grep / find / fuzzy / delete" }, { status: 400 });
     }
     const relPath = typeof body.path === "string" && body.path.trim() ? body.path.trim() : ".";
     if (relPath.length > 1_000) {
@@ -49,6 +51,15 @@ export async function POST(request: Request) {
     }
     if (action === "find") {
       const paths = await findSandboxFiles(user.id, relPath, body.opts, mode);
+      return Response.json({ paths });
+    }
+    if (action === "fuzzy") {
+      const query = typeof body.query === "string" ? body.query.trim() : "";
+      if (!query) return Response.json({ error: "fuzzy 需要 query" }, { status: 400 });
+      const paths = await fuzzyFindSandboxFiles(user.id, query, {
+        path: relPath === "." ? undefined : relPath,
+        maxResults: body.opts?.maxResults,
+      });
       return Response.json({ paths });
     }
     if (action === "delete") {

@@ -170,6 +170,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 7.4 | MCP elicitation / resources / 连接池 | ① 客户端在 initialize 里声明 `elicitation` + `roots` 能力，并能应答服务器反向请求（stdio 与 streamable HTTP 两条传输都接）：`elicitation/create`（url 模式确认 / 表单模式弹窗 / 无通道默认 decline / 5 分钟超时 cancel，内容按 JSON Schema 校验必填与类型，不合格退回 decline）、`roots/list`、`ping`、未知方法 -32601；② `resources/list` + `resources/templates/list`（模板失败不影响主列表）+ `resources/read`，内核新增内置工具 `list_mcp_resources` / `read_mcp_resource`（对齐 Codex 的 `list_mcp_resources` 形状）；③ 连接池空闲 10 分钟回收（`unref` 定时器，不拖住进程） | `客户端/source/desktop/mcp-runtime.mjs`、`main.mjs`（表单窗口 + 系统对话框）、`后台/.../chat-tools.ts`、`chat-agent.ts`、`agent-ports.ts`、`types.ts`、`xiaoluo-brain-panel.tsx`；`tests/mcp-elicitation-resources.test.mjs` 6 条（假服务器真跑协议） |
 | 7.5 | 线程库（列表 / 检索 / 归档） | 新建 `thread-store.ts`（事件流之上不重复存储）：① `listThreads` 只读文件尾（256KB 窗口按需放大）拿 lastSeq / 体积 / 更新时间；② `searchThreads` 跨会话扫 payload，摘要 60 字，支持按会话过滤与上限；③ `compactThreadEvents` 保留最近 N 条、前缀进 `.archive/`、临时文件 + rename 原子重写、seq 不重编；④ 接口 `GET/POST /api/v2/brain/threads`（只返回本人线程） | `thread-store.ts`、`threads/route.ts`、`event-log.ts`（导出事件根路径）；`tests/brain-thread-store.test.mjs` 5 条 |
 | 7.6 | skills 隐式调用识别 | 新建 `skill-selection.ts`：解析能力清单的技能行，按老板原话打分（显式 `/name`、`@name`、原名出现 → 60–100 分；描述词元重叠按比例 ≤60 分，中文走二元组），过阈值才返回；每轮在 `reply()` 里清旧提示并按命中注入 `[技能提示]`（只引导 load_skill，不硬激活） | `skill-selection.ts`、`chat-agent.ts`、`agent-host.ts`、`agent-ports.ts`；`tests/brain-skill-selection.test.mjs` 5 条（含 1 条真跑断言注入与换话题清理） |
+| 7.7 | 文件索引 / 变更监听 | 新建 `app/lib/file-index.ts`：① 工作区路径索引（跳过 node_modules/.git/dist 等，上限 2 万条，超限标 truncated）；② 模糊打分五档（basename 全等 100 > 前缀 90+ > 子串 80 > 路径子串 70 > 子序列 40），按分数→路径长度→字典序排；③ `fs.watch(recursive)` 变更即标脏（300ms 防抖、`unref` 不拖进程，监听不可用时退回 30s TTL），按工作区根复用；④ 新工具 `fuzzy_find_files`（人话查询，与正则 `find_files` 并存）+ `fs` 口 `fuzzyFind` + `fuzzy` action；桌面端同一套打分与索引缓存（`local-runtime.mjs`） | `file-index.ts`、`brain-sandbox.ts`、`fs/route.ts`、`types.ts`、`server-ports.ts`、`agent-ports.ts`、`chat-tools.ts`、`chat-agent.ts`、`xiaoluo-brain-panel.tsx`、`客户端/.../local-runtime.mjs`；`tests/brain-file-index.test.mjs` 6 条（打分分档 / 遍历跳过 / 缓存与子目录过滤 / watch 标脏 / 双端算法一致 / 工具注册与接线） |
 
 **7.3 已知边界**：① 没有 MITM 与证书体系，HTTPS 走 CONNECT 隧道，代理看不到明文、也不能给 HTTPS 注入凭据头（只对明文 HTTP 生效）；② 没有按进程归属统计、没有 HTTP/2 专用处理、没有 AWS SigV4 签名；③ 仍是"代理约定级"约束，raw socket / `curl --noproxy` 可绕过，进程级禁网要等内核隔离档；④ 默认关闭（不写 `egress = "proxy"` 行为与原来完全一致），因此没有做灰度开关。
 
@@ -177,13 +178,14 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 **7.5 已知边界**：① 检索是逐文件全文扫描，没有倒排索引（会话多、文件大的机器上会变慢）；② 归档是搬移不是压缩，`.archive/` 会持续增长，没有自动清理策略；③ 没有 Codex `reference_index` 那种"消息 ↔ 文件引用"索引；④ 列表的 eventCount 是尾部窗口计数，不是精确总量（精确值要全量读）。
 
+**7.7 已知边界**：① 索引是一次性目录遍历，没有倒排/向量索引，超大仓库（>2 万文件）会截断且只覆盖前 2 万条（不保证命中后写入的文件）；② 模糊只按路径字面打分，不理解语义（"上周那个补丁文件"这类要靠模型换关键词）；③ 不做文件内容预索引，内容检索仍走 `grep_files`；④ 桌面端索引仅覆盖工作区内相对路径，工作区外目录请用 `find_files` 正则。
+
 **7.6 已知边界**：① 只做"提示级"识别，不做自动激活/自动 load（避免误触发把无关技能塞进上下文）；② 中文按二元组匹配，同义词（周报/报告）不互相扩展；③ 技能描述特别长时只截前 12 个词元参与打分；④ 未支持 Codex 的 frontmatter `invocation` 显式声明字段。
 
 ### 未补（按价值排序，仍待做）
 
 | # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
 |---|---|---|---|---|
-| 7.7 | 文件索引 / 变更监听 | `app-server/src/fuzzy_file_search.rs`；`file-watcher` 56KB | `repo.ts` 只有仓库元信息 | 大仓库体验 |
 | 7.8 | code-mode（写代码在受控会话里执行） | `code-mode` 33 files / 349KB（`grpc_session.rs`、`remote_session.rs`） | `code.ts` 明确"一期不执行任何代码，代码只是文件集交付物" | 架构级，需单独评估 |
 | 7.9 | guardian 审查 / 异步打分 | `guardian-context` 48 files / 519KB | 无；只有命令审批 + 风险信号扫描 | 安全与合规 |
 | 7.10 | 多 Agent 组织（角色/身份/图/消息板） | `agent-roles` / `agent-identity` / `agent-graph-store` / `message-board` / `runtime-agent-instance` | `debate.ts`(4KB) / `collab.ts`(2KB) 只是对话协作 | 架构级 |

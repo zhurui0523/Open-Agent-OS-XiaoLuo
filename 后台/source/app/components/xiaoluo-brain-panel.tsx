@@ -173,7 +173,7 @@ async function ensureDesktopGate(): Promise<void> {
 }
 
 interface XiaoLuoDesktopBridge {
-  fsAction: (payload: { action: string; path: string; content?: string; opts?: { offset?: number; limit?: number; maxResults?: number; encoding?: "base64" }; mode?: string }) => Promise<XiaoLuoDesktopFsResult>;
+  fsAction: (payload: { action: string; path: string; query?: string; content?: string; opts?: { offset?: number; limit?: number; maxResults?: number; encoding?: "base64" }; mode?: string }) => Promise<XiaoLuoDesktopFsResult>;
   runCommand: (payload: { command: string; cwd?: string; timeoutMs?: number; approved?: boolean }) => Promise<XiaoLuoDesktopCommandResult>;
   cancelCommands?: () => Promise<{ ok?: boolean }>;
   manageService: (payload: { action: "start" | "stop" | "status" | "setup" | "setups"; command?: string; ttlMs?: number; cwd?: string; id?: string; approved?: boolean; kind?: string; name?: string; port?: number; path?: string; database?: string }) => Promise<XiaoLuoDesktopServiceResult>;
@@ -886,21 +886,22 @@ export function XiaoluoBrainPanel({
   /** 文件系统口的统一入口：桌面模式走主进程本地工作区（与 deploy/command 同一工作区）；
    *  否则走服务端 /api/v2/brain/fs（每用户隔离工作区，路径防穿越） */
   async function brainFs(
-    action: "list" | "read" | "write" | "grep" | "find",
+    action: "list" | "read" | "write" | "grep" | "find" | "fuzzy",
     relPath: string,
     content?: string,
     opts?: { offset?: number; limit?: number; maxResults?: number; encoding?: "base64" },
+    query?: string,
   ): Promise<XiaoLuoDesktopFsResult> {
     const desktop = desktopRuntime();
     if (desktop) {
-      const res = await desktop.fsAction({ action, path: relPath, content, opts, mode: permissionMode });
+      const res = await desktop.fsAction({ action, path: relPath, query, content, opts, mode: permissionMode });
       if (res.error) throw new Error(res.error);
       return res;
     }
     const resp = await fetch("/api/v2/brain/fs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, path: relPath, content, opts, mode: permissionMode }),
+      body: JSON.stringify({ action, path: relPath, query, content, opts, mode: permissionMode }),
     });
     const data = (await resp.json().catch(() => ({}))) as XiaoLuoDesktopFsResult;
     if (!resp.ok) {
@@ -1205,6 +1206,8 @@ export function XiaoluoBrainPanel({
           (await brainFs("grep", pattern, undefined, opts)).hits ?? [],
         find: async (name: string, opts?: { path?: string; maxResults?: number }) =>
           (await brainFs("find", name, undefined, opts)).paths ?? [],
+        fuzzyFind: async (query: string, opts?: { path?: string; maxResults?: number }) =>
+          (await brainFs("fuzzy", opts?.path ?? ".", undefined, { maxResults: opts?.maxResults }, query)).paths ?? [],
       },
       /** 终端：走服务端 /api/v2/brain/command（沙箱受控执行 + 风险分级审批门） */
       command: {

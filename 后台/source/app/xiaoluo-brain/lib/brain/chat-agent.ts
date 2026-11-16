@@ -1062,6 +1062,8 @@ export class ChatAgent {
         return await this.execGrepFiles(call);
       case "find_files":
         return await this.execFindFiles(call);
+      case "fuzzy_find_files":
+        return await this.execFuzzyFindFiles(call);
       case "write_file":
         return await this.execWriteFile(call);
       case "move_file":
@@ -1657,6 +1659,22 @@ export class ChatAgent {
       return `工作区内未找到文件名匹配 "${args.name}" 的文件。${artifactHint}`;
     }
     return `找到 ${paths.length} 个文件：\n${paths.join("\n")}`;
+  }
+
+  /** 模糊找文件（第 7.7 项）：索引 + 打分，适合"记得有这么个文件"；找不到再退回正则 find_files */
+  private async execFuzzyFindFiles(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.fs) return "当前环境未接入文件系统。";
+    if (!ports.fs.fuzzyFind) return "当前环境的文件通道未提供模糊检索能力，请改用 find_files（文件名正则）。";
+    const args = call.arguments as { query?: string; path?: string; maxResults?: number };
+    const query = String(args.query ?? "").trim();
+    if (!query) return "fuzzy_find_files 需要 query（文件名或路径片段）。";
+    const paths = await ports.fs.fuzzyFind(query, { path: args.path, maxResults: args.maxResults });
+    ports.postUI("status", `模糊命中 ${paths.length} 个文件：${query}`, { tool: "fuzzy_find_files", target: query, ok: true });
+    if (paths.length === 0) {
+      return `工作区索引里没有和 "${query}" 相近的文件。可缩短关键词（取名字里最独特的两三个字），或用 find_files 按正则精确匹配。`;
+    }
+    return `模糊命中 ${paths.length} 个文件（按相关度排序）：\n${paths.join("\n")}`;
   }
 
   /** 写文件：老板环境内的真实落盘（区别于 write_code 的对话内交付） */

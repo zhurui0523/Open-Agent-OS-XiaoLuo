@@ -598,6 +598,24 @@ const FIND_FILES_SCHEMA = {
   },
 };
 
+const FUZZY_FIND_FILES_SCHEMA = {
+  type: "function",
+  function: {
+    name: "fuzzy_find_files",
+    description:
+      "模糊找文件：按文件名/路径片段排序（全等 > 前缀 > 子串 > 路径子串 > 子序列），适合“我记得有这么个文件但不确定全名”。结果带分数；比 find_files 的正则更适合人话查询。",
+    parameters: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string", description: "文件名或路径片段（人话即可，如 weekly report、沙箱、patch）" },
+        path: { type: "string", description: "限定搜索的子目录（可选）" },
+        maxResults: { type: "number", description: "结果上限（默认 20，最多 200）" },
+      },
+    },
+  },
+};
+
 const WRITE_FILE_SCHEMA = {
   type: "function",
   function: {
@@ -1256,6 +1274,8 @@ export interface ChatToolCapabilities {
   mcpTools?: McpToolInfo[];
   /** MCP 资源（list_mcp_resources / read_mcp_resource；宿主实现了 resources 才开） */
   mcpResourcesEnabled?: boolean;
+  /** 模糊找文件（fuzzy_find_files；宿主实现了索引才开） */
+  fuzzyFindEnabled?: boolean;
 }
 
 /**
@@ -1379,6 +1399,8 @@ export function buildChatToolSchemas(caps: ChatToolCapabilities): unknown[] {
   if (caps.deployEnabled) schemas.push(DEPLOY_PROGRAM_SCHEMA);
   if (caps.webSearchEnabled) schemas.push(WEB_SEARCH_SCHEMA);
   if (caps.fsEnabled) schemas.push(READ_FILE_SCHEMA, LIST_DIR_SCHEMA, WRITE_FILE_SCHEMA, GREP_FILES_SCHEMA, FIND_FILES_SCHEMA, PACKAGE_PROGRAM_SCHEMA, EDIT_FILE_SCHEMA, APPLY_PATCH_SCHEMA);
+  // 模糊找文件（第 7.7 项）：宿主实现了索引才注册，别给模型一个空能力
+  if (caps.fuzzyFindEnabled) schemas.push(FUZZY_FIND_FILES_SCHEMA);
   if (caps.fsOpsEnabled) schemas.push(MOVE_FILE_SCHEMA, DELETE_FILE_SCHEMA);
   if (caps.subagentEnabled) schemas.push(SUBAGENT_SCHEMA);
   schemas.push(QUERY_LEDGER_SCHEMA, TODO_WRITE_SCHEMA, LOCATE_LOCAL_SERVICE_SCHEMA, TOOL_SEARCH_SCHEMA, CONTEXT_METER_SCHEMA);

@@ -372,7 +372,21 @@ export async function findSandboxFiles(
   return out;
 }
 
-// ---------- run_command 风险分级（单份策略：shared/command-policy.mjs，与桌面端共享） ----------
+/**
+ * 模糊找文件（第 7.7 项）：工作区索引 + 打分排序，比"正则精确匹配"更适合"我记得有这么个文件"。
+ * 索引按工作区根复用，变更由 fs.watch 标脏，下一次检索自动重建。
+ */
+export async function fuzzyFindSandboxFiles(
+  userId: string,
+  query: string,
+  opts?: { path?: string; maxResults?: number },
+): Promise<string[]> {
+  const root = await ensureWorkspace(userId);
+  const idx = await workspaceFileIndexFor(root);
+  const limit = Math.min(200, Math.max(1, Math.trunc(opts?.maxResults ?? 20)));
+  const res = await idx.search(query, { limit, path: opts?.path });
+  return res.hits.map((hit) => hit.path);
+}
 
 import {
   cleanupPayload,
@@ -398,6 +412,8 @@ import {
 } from "../../shared/command-policy.mjs";
 // 出站代理（第 7.3 项）：hooks.toml 写了 [sandbox] egress = "proxy" 才启用，否则行为不变
 import { ensureEgressEnv, parseEgressConfig, type EgressConfig } from "./egress-proxy";
+// 文件索引（第 7.7 项）：模糊检索 + 变更失效
+import { workspaceFileIndexFor } from "./file-index";
 // 加载期自测：用例失败只告警不阻断（规则本身仍生效）
 const policySelfTestFailures = selfTestPolicy() as string[];
 if (policySelfTestFailures.length > 0) {

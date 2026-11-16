@@ -5,7 +5,7 @@
  * 纯 Node 模块，不依赖 electron（userData 目录由 main.mjs 注入，便于单测）。
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs"; // P22-SW0
+import { mkdirSync, unlinkSync, watch, writeFileSync } from "node:fs"; // P22-SW0 + 第 7.7 项变更监听
 import { createConnection } from "node:net";
 import { access, mkdir, readdir, readFile as readFileAsync, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
@@ -323,6 +323,118 @@ async function fsAbs(action, target, nameOrPattern, opts) {
   return { error: "未知 action：" + action };
 }
 
+// ---------- 文件索引 / 变更监听（第 7.7 项，对齐 Codex fuzzy_file_search + file-watcher） ----------
+const FS_INDEX_TTL_MS = 30_000;
+const FS_INDEX_MAX_FILES = 20_000;
+const FS_INDEX_SKIP = new Set([
+  "node_modules", ".git", ".next", "dist", "dist2", "build", "out", "coverage",
+  ".venv", "venv", "__pycache__", ".cache", ".idea", ".vscode", "target", "vendor",
+]);
+let fsIndexCache = null; // { root, paths, scanned, truncated, builtAt, dirty }
+let fsIndexWatcher = null;
+let fsIndexDebounce = null;
+
+/** 建索引：一次遍历工作区，跳过产物目录与点目录，超过上限截断 */
+async function buildFsIndex(root) {
+  const paths = [];
+  let scanned = 0;
+  let truncated = false;
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
+      const full = join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (FS_INDEX_SKIP.has(entry.name)) continue;
+        stack.push(full);
+        continue;
+      }
+      scanned += 1;
+      if (paths.length >= FS_INDEX_MAX_FILES) { truncated = true; break; }
+      paths.push(full.slice(root.length + 1).replace(/\\/g, "/"));
+    }
+    if (truncated) break;
+  }
+  return { root, paths, scanned, truncated, builtAt: Date.now(), dirty: false };
+}
+
+/** 变更监听：事件只标脏（防抖 300ms），下次检索自然重建；监听器 unref 不拖住进程 */
+function ensureFsIndexWatcher(root) {
+  if (fsIndexWatcher) return;
+  try {
+    fsIndexWatcher = watch(root, { recursive: true }, () => {
+      if (fsIndexCache) fsIndexCache.dirty = true;
+      if (fsIndexDebounce) clearTimeout(fsIndexDebounce);
+      fsIndexDebounce = setTimeout(() => { fsIndexDebounce = null; }, 300);
+      if (fsIndexDebounce && typeof fsIndexDebounce.unref === "function") fsIndexDebounce.unref();
+    });
+    fsIndexWatcher.on("error", () => { fsIndexWatcher = null; if (fsIndexCache) fsIndexCache.dirty = true; });
+    if (typeof fsIndexWatcher.unref === "function") fsIndexWatcher.unref();
+  } catch {
+    fsIndexWatcher = null; // 平台不支持递归 watch：退回 TTL 过期重建，功能不受影响
+  }
+}
+
+async function getFsIndex() {
+  const root = workspaceRoot;
+  if (!fsIndexCache || fsIndexCache.root !== root || fsIndexCache.dirty || Date.now() - fsIndexCache.builtAt > FS_INDEX_TTL_MS) {
+    fsIndexCache = await buildFsIndex(root);
+    ensureFsIndexWatcher(root);
+  }
+  return fsIndexCache;
+}
+
+/** 打分：basename 全等 100 / 前缀 90+ / 子串 80 / 路径子串 70 / 子序列 40 */
+function scoreFuzzyPath(query, relPath) {
+  const q = String(query ?? "").trim().toLowerCase();
+  if (!q) return 0;
+  const rel = relPath.toLowerCase();
+  const base = rel.slice(rel.lastIndexOf("/") + 1);
+  if (base === q) return 100;
+  if (base.startsWith(q)) return 90 + Math.max(0, 5 - (base.length - q.length) / 20);
+  if (base.includes(q)) return 80;
+  if (rel.includes(q)) return 70;
+  if (q.length >= 3) {
+    let i = 0;
+    for (let j = 0; j < rel.length && i < q.length; j += 1) if (rel[j] === q[i]) i += 1;
+    if (i === q.length) return 40;
+  }
+  return 0;
+}
+
+async function fsFuzzy(rel, query, opts) {
+  const q = String(query ?? "").trim();
+  if (!q) return [];
+  const max = Math.min(200, Math.max(1, Math.trunc(opts?.maxResults ?? 20)));
+  const idx = await getFsIndex();
+  const prefix = String(rel ?? ".").replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
+  const scope = prefix && prefix !== "." ? prefix : "";
+  const hits = [];
+  for (const relPath of idx.paths) {
+    if (scope && !relPath.startsWith(scope + "/") && relPath !== scope) continue;
+    const score = scoreFuzzyPath(q, relPath);
+    if (score > 0) hits.push({ path: relPath, score });
+  }
+  hits.sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path));
+  return hits.slice(0, max).map((h) => h.path);
+}
+
+/** 测试/诊断用：重置索引缓存并关监听 */
+export function resetFsIndexForTests() {
+  if (fsIndexWatcher) { try { fsIndexWatcher.close(); } catch { /* 已关 */ } }
+  fsIndexWatcher = null;
+  if (fsIndexDebounce) clearTimeout(fsIndexDebounce);
+  fsIndexDebounce = null;
+  fsIndexCache = null;
+}
+
+/** 测试用：直接拿打分函数对齐两端算法 */
+export { scoreFuzzyPath };
+
 /** 窗口化读文件：offset/limit 按行（1 起）；返回截断标记与总行数 */
 async function fsRead(rel, opts) {
   const file = resolveSubDir(rel);
@@ -625,6 +737,8 @@ export async function handleFsPayload(payload) {
       await fsMove(from, to);
       return { ok: true };
     }
+    // 模糊找文件：走工作区索引（第 7.7 项）；工作区外目录请用 find_files 正则
+    if (action === "fuzzy") return { paths: await fsFuzzy(rel, String(payload?.query ?? ""), payload?.opts) };
     if (isAbsLike(scanRoot)) {
       const readLike = action !== "write";
       if (fsMode === "full" || (fsMode === "auto" && readLike)) {

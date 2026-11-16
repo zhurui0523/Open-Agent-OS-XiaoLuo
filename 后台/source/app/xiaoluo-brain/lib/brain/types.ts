@@ -227,6 +227,8 @@ export interface FileSystemPort {
   grep?(pattern: string, opts?: { path?: string; maxResults?: number }): Promise<FsGrepHit[]>;
   /** 文件名搜索（正则）；未实现则 find_files 回流提示 */
   find?(name: string, opts?: { path?: string; maxResults?: number }): Promise<string[]>;
+  /** 模糊找文件（工作区索引 + 打分）；未实现则不注册 fuzzy_find_files */
+  fuzzyFind?(query: string, opts?: { path?: string; maxResults?: number }): Promise<string[]>;
   /** 移动/改名（move_file）；两个方法都实现才注册 move_file / delete_file */
   movePath?(from: string, to: string): Promise<void>;
   /** 删除（delete_file）；递归删目录 */
