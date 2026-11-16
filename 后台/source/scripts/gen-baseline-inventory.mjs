@@ -40,8 +40,18 @@ function csv(file, header, rows) {
     const text = String(value ?? "");
     return /[",\n\r]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
   };
-  const body = [header, ...rows].map((row) => row.map(esc).join(",")).join("\r\n");
-  writeFileSync(join(OUT, file), body + "\r\n", "utf8");
+  // 行顺序不能依赖 readdir：NTFS 和 ext4 给出的目录顺序不同，同一个仓库在两台机器上就会"漂移"。
+  // 这里按单元格内容做码点比较（不用 localeCompare），保证 Linux/Windows 结果逐字节一致。
+  const sorted = [...rows].sort((a, b) => {
+    const ka = a.map((cell) => String(cell ?? "")).join("\u0000");
+    const kb = b.map((cell) => String(cell ?? "")).join("\u0000");
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+  });
+  // 一律 LF：仓库里存的是 LF，写 CRLF 会让 Linux 上的门禁把每一行都算成漂移
+  const body = [header, ...sorted].map((row) => row.map(esc).join(",")).join("\n");
+  writeFileSync(join(OUT, file), body + "\n", "utf8");
   return rows.length;
 }
 

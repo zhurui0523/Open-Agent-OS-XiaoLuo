@@ -1,0 +1,6 @@
+# 基线清单固定 LF：生成器写 LF，若检出时又被 autocrlf 转成 CRLF，
+# Windows 上能过、Linux CI 上就会逐行漂移。这里把检出规则钉死，两个平台都拿 LF。
+# 注意：本文件在仓库根，路径要写成仓库根相对路径（后台/source/...）。
+后台/source/docs/baseline/*.csv text eol=lf
+后台/source/scripts/coverage-thresholds.json text eol=lf
+后台/source/scripts/silent-catch-allowlist.json text eol=lf

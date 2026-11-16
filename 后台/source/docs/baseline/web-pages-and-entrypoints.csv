@@ -2,9 +2,9 @@ path,kind,source,notes
 /,layout,app/layout.tsx,Next.js App Router
 /,page,app/page.tsx,Next.js App Router
 /share/[token],page,app/share/[token]/page.tsx,Next.js App Router
-start-local.cmd,launcher,start-local.cmd,Windows 一键启动，转调 scripts/start-local.ps1
-scripts/start-local.ps1,launcher,scripts/start-local.ps1,解析 node 路径并以 --env-file=.env.local-dev 启动
-scripts/start-local-detached.mjs,launcher,scripts/start-local-detached.mjs,后台常驻：MySQL + next dev + runtime worker + isolated worker
-scripts/start-local-next.mjs,launcher,scripts/start-local-next.mjs,前台调试：MySQL + next dev
 isolated-worker/server.mjs,worker,isolated-worker/server.mjs,独立进程 worker HTTP 入口
 scripts/runtime-worker.mjs,worker,scripts/runtime-worker.mjs,常驻调度 worker
+scripts/start-local-detached.mjs,launcher,scripts/start-local-detached.mjs,后台常驻：MySQL + next dev + runtime worker + isolated worker
+scripts/start-local-next.mjs,launcher,scripts/start-local-next.mjs,前台调试：MySQL + next dev
+scripts/start-local.ps1,launcher,scripts/start-local.ps1,解析 node 路径并以 --env-file=.env.local-dev 启动
+start-local.cmd,launcher,start-local.cmd,Windows 一键启动，转调 scripts/start-local.ps1

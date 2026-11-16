@@ -15,6 +15,22 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(ROOT, "..", "..");
 const WORKFLOW = join(REPO, ".github", "workflows", "gate.yml");
 
+// git 不一定在 PATH 里（Windows 装了 Git 但没写进 PATH 很常见），先按候选路径找一遍
+const GIT_CANDIDATES = [
+  "git",
+  "C:/Program Files/Git/cmd/git.exe",
+  "C:/Program Files/Git/bin/git.exe",
+  "/usr/bin/git",
+  "/usr/local/bin/git",
+];
+function gitCmd(args) {
+  for (const candidate of GIT_CANDIDATES) {
+    const res = spawnSync(candidate, args, { cwd: REPO, encoding: "utf8" });
+    if (!res.error) return res;
+  }
+  return null;
+}
+
 const problems = [];
 const notes = [];
 const ok = (msg) => notes.push("✓ " + msg);
@@ -52,12 +68,14 @@ const required = [
   "scripts/coverage-thresholds.json",
   "scripts/silent-catch-allowlist.json",
 ];
-const git = spawnSync("git", ["-c", "core.quotepath=false", "ls-files"], { cwd: REPO, encoding: "utf8" });
-if (git.status !== 0) {
-  bad("读不到 git 索引（可能不是 git 仓库或 git 不可用）");
+const git = gitCmd(["-c", "core.quotepath=false", "ls-files"]);
+if (!git) {
+  notes.push("！找不到 git 可执行文件（PATH 与常见安装路径都没有），跳过入库检查");
+} else if (git.status !== 0) {
+  bad("读不到 git 索引（可能不是 git 仓库）");
 } else {
   const tracked = git.stdout.split("\n").filter(Boolean);
-  const isIgnored = (abs) => spawnSync("git", ["check-ignore", "-q", abs], { cwd: REPO }).status === 0;
+  const isIgnored = (abs) => (gitCmd(["check-ignore", "-q", abs])?.status ?? 1) === 0;
   for (const rel of required) {
     const abs = join(ROOT, ...rel.split("/"));
     const hit = tracked.some((path) => path === `后台/source/${rel}` || path.startsWith(`后台/source/${rel}/`));
@@ -77,8 +95,8 @@ if (git.status !== 0) {
 }
 
 // 4) 检出是否干净（脏工作区说明本地与"CI 看到的那一份"不一致）
-const status = spawnSync("git", ["status", "--porcelain"], { cwd: REPO, encoding: "utf8" });
-if (status.status === 0) {
+const status = gitCmd(["status", "--porcelain"]);
+if (status?.status === 0) {
   const dirty = status.stdout.split("\n").filter(Boolean);
   if (dirty.length) {
     notes.push(`！工作区有 ${dirty.length} 项未提交：本地能过不代表 CI 那边的提交能过`);
@@ -88,8 +106,8 @@ if (status.status === 0) {
 }
 
 // 5) 远端是否已配置（只提示，不算失败）
-const remotes = spawnSync("git", ["remote", "-v"], { cwd: REPO, encoding: "utf8" });
-if (remotes.status === 0 && !remotes.stdout.trim()) {
+const remotes = gitCmd(["remote", "-v"]);
+if (remotes?.status === 0 && !remotes.stdout.trim()) {
   notes.push("！尚未配置 git remote：工作流已就绪，但还没在 GitHub Actions 上真跑过");
 }
 
