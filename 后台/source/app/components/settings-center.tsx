@@ -73,13 +73,14 @@ import { IconButton } from "./icon-button";
 import { LocalAiSettings } from "./local-ai-settings";
 import { PersonalSettings } from "./personal-settings";
 import { RuntimeModeSettings } from "./runtime-mode-settings";
-import { AgentConfigPanel } from "./agent-config-panel";
+import { AgentConfigPanel, McpSecretsPanel } from "./agent-config-panel";
 
 type SettingsTab =
   | "account"
   | "api"
   | "gesture"
   | "agent"
+  | "secrets"
   | "local-ai"
   | "runtime"
   | "shortcuts";
@@ -688,6 +689,15 @@ export function SettingsCenter({
             </button>
             <button
               type="button"
+              className={tab === "secrets" ? "active" : ""}
+              onClick={() => selectTab("secrets")}
+            >
+              <KeyRound size={17} />
+              <span>凭据</span>
+              <ChevronRight size={14} />
+            </button>
+            <button
+              type="button"
               className={tab === "runtime" ? "active" : ""}
               onClick={() => selectTab("runtime")}
             >
@@ -766,6 +776,7 @@ export function SettingsCenter({
             )}
             {tab === "runtime" && <RuntimeModeSettings />}
             {tab === "agent" && <AgentConfigPanel />}
+            {tab === "secrets" && <McpSecretsPanel />}
             {tab === "api" && !editorOpen && (
               <>
                 <div className="settings-section-heading">

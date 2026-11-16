@@ -53,7 +53,7 @@ function formatValue(value: unknown): string {
 }
 
 /** 本机 MCP 凭据（第 7.11 收尾）：读写桌面钥匙串，明文不进 mcp.json */
-function McpSecretsPanel() {
+export function McpSecretsPanel() {
   const bridge = (): { mcpAction?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>> } | null => {
     if (typeof window === "undefined") return null;
     const desktop = (window as unknown as { xiaoluoDesktop?: { mcpAction?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>> } }).xiaoluoDesktop;

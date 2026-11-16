@@ -228,6 +228,7 @@ app/components/schema-option-builder.tsx,参数名称,aria,aria-label
 app/components/schema-option-builder.tsx,默认值,aria,aria-label
 app/components/schema-output.tsx,暂无结果,label,可见文案
 app/components/settings-center.tsx,个人中心,label,可见文案
+app/components/settings-center.tsx,凭据,label,可见文案
 app/components/settings-center.tsx,同时校验素材总数与各类型上限；填写 0 表示不支持该类型。,label,可见文案
 app/components/settings-center.tsx,后台管理,label,可见文案
 app/components/settings-center.tsx,启用,label,可见文案

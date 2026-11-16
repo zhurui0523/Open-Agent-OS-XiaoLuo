@@ -140,7 +140,7 @@ test("配置面板已接到设置页：读 GET / 存 PUT，环境变量覆盖的
   assert.match(panel, /flagSources/, "开关也要标来源");
 
   const center = readFileSync(new URL("../app/components/settings-center.tsx", import.meta.url), "utf8");
-  assert.match(center, /import \{ AgentConfigPanel \}/);
+  assert.match(center, /import \{ AgentConfigPanel/);
   assert.match(center, /\{tab === "agent" && <AgentConfigPanel \/>\}/);
   assert.match(center, /selectTab\("agent"\)/);
 });

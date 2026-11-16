@@ -97,6 +97,9 @@ test("面板接线：设置面板有「MCP 凭据」读写/迁移入口", async 
   assert.match(panel, /secrets\/list/);
   assert.match(panel, /secrets\/set/);
   assert.match(panel, /secrets\/migrate/);
+  const settings = await fs.readFile(new URL("../app/components/settings-center.tsx", import.meta.url), "utf8");
+  assert.match(settings, /tab === "secrets" && <McpSecretsPanel/);
+  assert.match(settings, /<span>凭据<\/span>/);
   const runtime = await fs.readFile(new URL("../../../客户端/source/desktop/mcp-runtime.mjs", import.meta.url), "utf8");
   assert.match(runtime, /secrets\/list/);
   assert.match(runtime, /secrets\/set/);
