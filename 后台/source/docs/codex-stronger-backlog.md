@@ -169,6 +169,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 7.3 | 出站网络代理（最小版） | 新建 `app/lib/egress-proxy.ts`：本机 HTTP 代理（只监听 127.0.0.1）、域名白名单/黑名单（黑名单优先、`*.corp.com` 后缀通配、空白名单=全拒）、CONNECT 隧道放行/拒绝、明文 HTTP 转发时按目标主机注入凭据头（token 从环境变量读，不进审计）、裁决审计（有上限）。`hooks.toml` 写 `[sandbox] egress = "proxy"` 才启用；四个命令入口（run_command / 常驻服务 / git / 交互会话）统一走 `networkEnvForUser`，`egress.allow` 与 `network_allow` 共用一份，避免两处配置打架 | `egress-proxy.ts` / `brain-sandbox.ts`；`tests/brain-egress-proxy.test.mjs` 6 条（含真跑 CONNECT 隧道 + 凭据注入） |
 | 7.4 | MCP elicitation / resources / 连接池 | ① 客户端在 initialize 里声明 `elicitation` + `roots` 能力，并能应答服务器反向请求（stdio 与 streamable HTTP 两条传输都接）：`elicitation/create`（url 模式确认 / 表单模式弹窗 / 无通道默认 decline / 5 分钟超时 cancel，内容按 JSON Schema 校验必填与类型，不合格退回 decline）、`roots/list`、`ping`、未知方法 -32601；② `resources/list` + `resources/templates/list`（模板失败不影响主列表）+ `resources/read`，内核新增内置工具 `list_mcp_resources` / `read_mcp_resource`（对齐 Codex 的 `list_mcp_resources` 形状）；③ 连接池空闲 10 分钟回收（`unref` 定时器，不拖住进程） | `客户端/source/desktop/mcp-runtime.mjs`、`main.mjs`（表单窗口 + 系统对话框）、`后台/.../chat-tools.ts`、`chat-agent.ts`、`agent-ports.ts`、`types.ts`、`xiaoluo-brain-panel.tsx`；`tests/mcp-elicitation-resources.test.mjs` 6 条（假服务器真跑协议） |
 | 7.5 | 线程库（列表 / 检索 / 归档） | 新建 `thread-store.ts`（事件流之上不重复存储）：① `listThreads` 只读文件尾（256KB 窗口按需放大）拿 lastSeq / 体积 / 更新时间；② `searchThreads` 跨会话扫 payload，摘要 60 字，支持按会话过滤与上限；③ `compactThreadEvents` 保留最近 N 条、前缀进 `.archive/`、临时文件 + rename 原子重写、seq 不重编；④ 接口 `GET/POST /api/v2/brain/threads`（只返回本人线程） | `thread-store.ts`、`threads/route.ts`、`event-log.ts`（导出事件根路径）；`tests/brain-thread-store.test.mjs` 5 条 |
+| 7.6 | skills 隐式调用识别 | 新建 `skill-selection.ts`：解析能力清单的技能行，按老板原话打分（显式 `/name`、`@name`、原名出现 → 60–100 分；描述词元重叠按比例 ≤60 分，中文走二元组），过阈值才返回；每轮在 `reply()` 里清旧提示并按命中注入 `[技能提示]`（只引导 load_skill，不硬激活） | `skill-selection.ts`、`chat-agent.ts`、`agent-host.ts`、`agent-ports.ts`；`tests/brain-skill-selection.test.mjs` 5 条（含 1 条真跑断言注入与换话题清理） |
 
 **7.3 已知边界**：① 没有 MITM 与证书体系，HTTPS 走 CONNECT 隧道，代理看不到明文、也不能给 HTTPS 注入凭据头（只对明文 HTTP 生效）；② 没有按进程归属统计、没有 HTTP/2 专用处理、没有 AWS SigV4 签名；③ 仍是"代理约定级"约束，raw socket / `curl --noproxy` 可绕过，进程级禁网要等内核隔离档；④ 默认关闭（不写 `egress = "proxy"` 行为与原来完全一致），因此没有做灰度开关。
 
@@ -176,11 +177,12 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 **7.5 已知边界**：① 检索是逐文件全文扫描，没有倒排索引（会话多、文件大的机器上会变慢）；② 归档是搬移不是压缩，`.archive/` 会持续增长，没有自动清理策略；③ 没有 Codex `reference_index` 那种"消息 ↔ 文件引用"索引；④ 列表的 eventCount 是尾部窗口计数，不是精确总量（精确值要全量读）。
 
+**7.6 已知边界**：① 只做"提示级"识别，不做自动激活/自动 load（避免误触发把无关技能塞进上下文）；② 中文按二元组匹配，同义词（周报/报告）不互相扩展；③ 技能描述特别长时只截前 12 个词元参与打分；④ 未支持 Codex 的 frontmatter `invocation` 显式声明字段。
+
 ### 未补（按价值排序，仍待做）
 
 | # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
 |---|---|---|---|---|
-| 7.6 | skills 隐式调用识别 | `skills`：17 files / 89KB（`invocation.rs`、`mentions.rs`、`interface.rs`、`selection.rs`） | 有 skills 加载，但靠显式调用 | 体验 |
 | 7.7 | 文件索引 / 变更监听 | `app-server/src/fuzzy_file_search.rs`；`file-watcher` 56KB | `repo.ts` 只有仓库元信息 | 大仓库体验 |
 | 7.8 | code-mode（写代码在受控会话里执行） | `code-mode` 33 files / 349KB（`grpc_session.rs`、`remote_session.rs`） | `code.ts` 明确"一期不执行任何代码，代码只是文件集交付物" | 架构级，需单独评估 |
 | 7.9 | guardian 审查 / 异步打分 | `guardian-context` 48 files / 519KB | 无；只有命令审批 + 风险信号扫描 | 安全与合规 |

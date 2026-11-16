@@ -367,4 +367,6 @@ export interface ChatAgentOptions {
   conversationId: string;
   /** 对话型小逻系统提示词（含能力清单） */
   systemPrompt: string;
+  /** 能力清单原文（技能隐式匹配用；不给则跳过技能提示注入） */
+  capabilityCatalog?: string;
 }

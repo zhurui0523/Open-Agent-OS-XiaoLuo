@@ -89,6 +89,7 @@ import type {
 import { buildPreviewDocument, isPreviewable, smokeCheckPreview } from "./preview";
 import { buildMemorySection, isDuplicateMemory, sanitizeMemoryText } from "./memory-store";
 import { buildRuntimeCapsSection } from "./prompts";
+import { buildSkillHint, selectSkills } from "./skill-selection";
 import type { PreviewDocument } from "./preview";
 import { checkArtifactRefs, scanCodeRisk, summarizeCodeArtifact, validateCodeResult } from "./code";
 import { closingCheck, looksLikeBuildRequest } from "./validate";
@@ -397,6 +398,13 @@ export class ChatAgent {
         role: "system",
         content: buildRuntimeCapsSection(runtimeToolCaps(ports)),
       });
+    }
+
+    // 技能隐式识别（第 7.6 项）：每轮按老板原话重算，只提示不硬激活；旧提示轮首清掉，别积累
+    this.messages = this.messages.filter((m) => !(m.role === "system" && m.content.startsWith("[技能提示]")));
+    {
+      const hint = buildSkillHint(selectSkills(this.opts.capabilityCatalog ?? "", text));
+      if (hint) this.messages.push({ role: "system", content: hint });
     }
 
     this.compactCountThisTurn = 0;

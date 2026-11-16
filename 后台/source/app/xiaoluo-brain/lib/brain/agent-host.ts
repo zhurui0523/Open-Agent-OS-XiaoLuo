@@ -62,6 +62,7 @@ export function createChatAgent(
       ports: opts.ports,
       model: opts.model,
       conversationId: opts.conversationId,
+      capabilityCatalog: opts.capabilityCatalog,
       systemPrompt:
         opts.systemPrompt ??
         buildXiaoluoChatPrompt(opts.capabilityCatalog ?? "", { localExecution: opts.localExecution ?? false }),
