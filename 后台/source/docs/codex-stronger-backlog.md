@@ -11,7 +11,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 |---|---|---|---|---|---|---|
 | 1 | 结构化补丁语义 | `apply_patch` 223 处引用；`@@` 上下文 hunk 格式 | `edit_file` 多 hunk + 三级容错；**已补 `apply_patch`**：`@@` 上下文锚点 + 一次 update/add/delete 多文件 | ✅ 已攻克（2026-11-16） | 低–中 | 已交付，见下 |
 | 2 | 生命周期 hooks 事件面 | 独立 `hooks` crate：`engine/{discovery,dispatcher,command_runner}`、`events/permission_request`、`config_rules` | 原有 PreToolUse + Post 验收 + 技能 `verify`；**已补** `session_start` / `session_end` / `user_prompt_submit` / `permission_request` 四个事件 + 外部命令 runner + 解析/匹配抽成 `hooks.ts` | ✅ 已攻克（2026-11-16） | 低 | 已交付，见下 |
-| 3 | 终端 PTY 完整交互 | 独立 crate `utils/pty`（跨平台 portable-pty） | 只有 `list_sessions` + 保尾输出 + TTL，**逐行回显未对齐** | 真差距 | 中（跨平台依赖 + 流式回显） | 交互式命令（npm 提问、ssh、REPL）必需 |
+| 3 | 终端 PTY 完整交互 | 独立 crate `utils/pty`（跨平台 portable-pty） | 原为管道会话（isatty=false）；**已补** `pty-adapter`：node-pty 惰性加载 + ConPTY/openpty + 装不上时如实降级并回流原因 | ✅ 已攻克（真机端到端待验） | 中 | 见下方边界 |
 | 4 | 子 Agent 可写 / 并行 | `spawn_agent` 27 处引用，可写、可并行 | `dispatch_subagent` 只读、单层、12 步 / 6 分钟 / 结论回填 | 真差距 | 大（要接沙箱 + 审批 + 并发治理） | 价值高但风险最高，必须排在有沙箱兜底之后 |
 | 5 | MCP 企业级认证 | `rmcp-client` 里 `client_credentials` 4 处、`token_exchange` 12 处、重试退避 | 公开客户端 + PKCE + 30s 提前刷新 + 401 换 token | 深度 | 中（要先有能验的 IdP） | 等你手里有企业 IdP 再动，否则只能写空壳 |
 | 6 | POSIX 内核级沙箱 | `landlock` 191 处、seatbelt | 只有 Windows MIC-low；POSIX / AppContainer 未开工 | 真差距，最贵 | 大（要 Linux/macOS 真机 + CI 矩阵） | 放最后；没有跨平台真机验等于没做 |
@@ -72,15 +72,27 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 3. 事件型钩子只记录不回溯：`session_end` 跑完不改已交付的答复，仅留痕；
 4. `permission_request` 只挂 `run_command` 一个入口（`write_file` / `apply_patch` 的写入仍由既有只读目录锁和删除双锁管），没有做成所有工具的通用审批前置。
 
-### 3. 终端 PTY
+### 3. 终端 PTY — ✅ 已攻克（2026-11-16，含降级边界）
 
 **Codex**：`utils/pty` crate，跨平台伪终端，逐行回显 + 交互输入。
 
-**小逻现状**：`list_sessions` 只能看退出码/TTL/保尾输出，不能中途输入。
+**小逻原来**：`list_sessions` 只能看退出码/TTL/保尾输出，交互会话是 `spawn` + 三根管道（isatty=false），REPL / ssh / npm 这类看 isatty 的程序行为不对。
 
-**改法**：宿主侧（桌面/服务端）引入 PTY 通道，工具面加 `terminal_input` / `terminal_read`，输出走现有 SSE；Windows 用 ConPTY，POSIX 用 `openpty`。
+**落地结果（2026-11-16）**：
 
-**验收**：真机跑 `npm init` 交互问答、`ssh` 登录、`python` REPL 三个场景。
+- 新建 `app/lib/pty-adapter.ts`：`probePty()`（探测可用性与后端 conpty/openpty）+ `openPty()`（惰性加载 node-pty，`spawn` 后接 write/onData/onExit/kill/end）；`loadNodePty()` 用字符串形式的动态 import，避免打包器把它当硬依赖、也避免 CI 因为没有原生编译工具链而挂；
+- `types.ts`：`CommandPort.startSession` 增加 `pty?: boolean`；`StdinSessionResult` 增加 `pty?` / `ptyNotice?`；
+- `brain-sandbox.ts`：`startBrainStdinSession` 在 `opts.pty` 时先试真 PTY（成功则记录 `ptyMode: true`，输出走 `onData`）；失败/模块缺失则退回原管道实现，并把 `probePty().reason` 作为 `ptyNotice` 回流；写输入、close、TTL 回收、进程退出清场四条路径都按 `ptyMode` 分叉（PTY 写原始行、收尾先发 EOF 字节再 kill）；
+- `brain-command-gate.ts` / `server-ports.ts`：`pty` 一路透传，审批仍在 `withApproval` 闸门里；
+- 工具面：`run_command` 增 `pty` 参数（仅 `interactive=true` 有效），`chat-agent` 把结果写成 `【真终端】isatty=true` 或 `【真终端不可用，已降级】<原因>` 让模型知道自己在哪种会话里；
+- 测试 4 条：本机无 node-pty 时 probe 如实报不可用 / 模块缺失返回 null / 假模块下 spawn 参数与读写退出回调全接通（含 EOF 字节与 kill）/ 接线断言（类型、schema、agent 透传、sandbox 降级、闸门透传），`tests/brain-pty.test.mjs` 全绿。
+
+**已知边界（没做 / 没验）**：
+
+1. **真 ConPTY / openpty 没有真机端到端验证**：本机与 CI 都没装 `node-pty`（原生模块不进依赖），所以真 PTY 分支只有"假模块"单测覆盖；真正跑 `npm init`、`ssh`、`node` REPL 三个场景需要先在宿主 `npm i node-pty` 再人工验；
+2. 没有自动安装 node-pty：是否把它做成可选安装包（如 `npm i node-pty` 写进 README / 安装脚本）需要老板定，因为会引入原生编译依赖；
+3. 没有做终端尺寸协商（cols/rows 固定 120x30）与 ANSI 颜色归一：输出按 utf8 原样回流，带颜色的 CLI 会给模型一串转义码；
+4. 未接真 PTY 的窗口 resize（`terminal_resize`），交互里按列宽换行的 TUI 仍可能错行。
 
 ### 4. 子 Agent 可写 / 并行
 

@@ -2744,9 +2744,15 @@ export class ChatAgent {
       if (!ports.command.startSession) {
         return "当前环境未接入交互会话口。请改用普通 run_command（能一次性给完输入时用管道 echo … | 传），或 background=true 转后台任务。";
       }
-      const sess = await ports.command.startSession(args.command, { cwd: args.cwd });
+      const sess = await ports.command.startSession(args.command, { cwd: args.cwd, pty: args.pty });
       const out = sess.output || "（启动后暂无输出）";
       const dropNote = sess.droppedChars ? `\n【另有 ${sess.droppedChars} 字符输出被环形缓冲挤掉】` : "";
+      // 要了真终端却降级：必须说清楚，别让模型以为 isatty 为真
+      const ptyNote = args.pty
+        ? sess.pty
+          ? "\n【真终端】isatty=true，程序看到的是 PTY。"
+          : `\n【真终端不可用，已降级】${sess.ptyNotice ?? "宿主没有 PTY 支持，当前是管道会话（isatty=false）。"}`
+        : "";
       this.journal.append("tool_result", `交互会话已开：${args.command}（id=${sess.sessionId}）`, { tool: "run_command" });
       if (sess.status === "exited") {
         ports.postUI("status", `交互会话启动后即退出（exit ${sess.exitCode ?? "?"}）`, {
@@ -2760,7 +2766,7 @@ export class ChatAgent {
       ports.postUI("status", `开了交互会话 ${args.command}`, {
         tool: "run_command", target: args.command, ok: true, output: out.slice(0, 400),
       });
-      return `交互会话已开（id=${sess.sessionId}${sess.pid ? "，pid " + sess.pid : ""}）：\n${out}${dropNote}\n用 write_stdin（session="${sess.sessionId}"）一行一行输入并取回新增输出；用完 close=true 收尾。`;
+      return `交互会话已开（id=${sess.sessionId}${sess.pid ? "，pid " + sess.pid : ""}）：\n${out}${dropNote}${ptyNote}\n用 write_stdin（session="${sess.sessionId}"）一行一行输入并取回新增输出；用完 close=true 收尾。`;
     }
     const result = await ports.command.run(args.command, {
       cwd: args.cwd,

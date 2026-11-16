@@ -137,6 +137,8 @@ offers an isolated local MySQL and file-storage development profile,tests/render
 one button collapses and restores the code pane,tests/dock-panel-tabs.test.mjs,已声明用例
 only system administrators can delete shared Workflow canvases,tests/workflow-marketplace-flow.test.mjs,已声明用例
 only system admins can increase eligible user storage,tests/admin-storage-quota.test.mjs,已声明用例
+openPty：模块缺失返回 null，调用方按降级处理,tests/brain-pty.test.mjs,已声明用例
+openPty：真模块在时把 spawn 参数与读写/退出/关闭全部接对,tests/brain-pty.test.mjs,已声明用例
 oversized local assets are refused before the request leaves the server,tests/model-input-constraints.test.mjs,已声明用例
 package trust center verifies signatures and can quarantine or revoke packages,tests/collaboration-trust-worker.test.mjs,已声明用例
 panel entry is only appended when it stays inside the plugin static directory,tests/dock-panel-tabs.test.mjs,已声明用例
@@ -283,6 +285,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 执行桥：fs 越界被拒（工作区围栏），不是「文件不存在」,tests/plugin-capability.test.mjs,已声明用例
 换宿主就收回能力面：回合跑一半不抽正在等的口，收尾后才落地,tests/brain-app-server.test.mjs,已声明用例
 授权后：三类服务端能力放行，客户端能力仍拒并说明由谁做,tests/plugin-capability.test.mjs,已声明用例
+探测：没装 node-pty 时如实报不可用（不假装有终端）,tests/brain-pty.test.mjs,已声明用例
 接线事实：SSE 解析只有一份，两种宿主共用,tests/brain-app-server.test.mjs,已声明用例
 接线事实：iframe 真调能力桥、插件台能开关授权、拒绝时带 hint,tests/plugin-capability.test.mjs,已声明用例
 接线事实：审批记忆与风险摘要只有一份，面板和宿主桥共用,tests/brain-host-bridge.test.mjs,已声明用例
@@ -295,6 +298,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 接线事实：闸门读数一路走到 thread 声明里，能力面才敢说真话,tests/brain-host-bridge.test.mjs,已声明用例
 接线事实：面板的权限档位一路交到内核的 thread 参数里,tests/brain-host-bridge.test.mjs,已声明用例
 接线：move_file / delete_file 注册受宿主能力管，删除有双重锁,tests/edit-residual.test.mjs,已声明用例
+"接线：run_command(interactive=true, pty=true) 一路传到宿主，降级原因回到模型",tests/brain-pty.test.mjs,已声明用例
 接线：两个新工具都注册进 schema，且 dispatch 有对应分支,tests/tool-surface.test.mjs,已声明用例
 接线：压缩闸门用 compactThresholdTokens，且轮末会主动压一次,tests/state-store.test.mjs,已声明用例
 接线：四个新事件都在 chat-agent 里落地，旧私有解析器已删除,tests/brain-hooks-events.test.mjs,已声明用例

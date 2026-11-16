@@ -188,9 +188,9 @@ export async function runGatedCommand(req: GatedCommandRequest): Promise<GatedCo
 
 export type GatedSessionResult = { ok: true; data: StdinSessionInfo } | { ok: false; denial: CommandGateDenial };
 
-/** 开一个常驻 stdin 会话：与一次性命令同一道门，网络策略在开席那刻定下 */
+/** 开一个常驻 stdin 会话：与一次性命令同一道门，网络策略在开席那刻定下；pty=true 优先真终端 */
 export async function openGatedSession(
-  req: GatedCommandRequest & { ttlMs?: number },
+  req: GatedCommandRequest & { ttlMs?: number; pty?: boolean },
 ): Promise<GatedSessionResult> {
   const gated = await gateCommand({ userId: req.userId, text: req.command, approved: req.approved, withNetwork: true });
   if (!gated.ok) return { ok: false, denial: gated.denial };
@@ -200,6 +200,7 @@ export async function openGatedSession(
     cwd: req.cwd,
     ttlMs: req.ttlMs,
     networkMode: gated.network!.effective,
+    pty: req.pty,
   });
   return { ok: true, data };
 }

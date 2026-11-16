@@ -262,6 +262,8 @@ export interface RunCommandArgs {
   background?: boolean;
   /** 交互会话：开一个 stdin 常驻进程，返回 sessionId，后续用 write_stdin 续写 */
   interactive?: boolean;
+  /** 真终端（第 3 项 PTY）：interactive=true 时优先开 ConPTY / openpty，让程序看到 isatty=true；宿主没装 node-pty 会如实降级并回流原因 */
+  pty?: boolean;
 }
 
 export interface WriteStdinArgs {
@@ -618,7 +620,7 @@ const RUN_COMMAND_SCHEMA = {
   function: {
     name: "run_command",
     description:
-      "在受控环境执行命令（跑测试/构建/安装依赖）。预计超过 5 分钟的长命令（完整构建/全量测试/长脚本）用 background=true 转后台跑，不受超时限制，用 service_status 查日志、stop_service 终止。需要给进程打字交互（REPL、等 y/n 确认的 CLI、交互式调试）用 interactive=true，拿到 sessionId 后用 write_stdin 续写。删除类、不可逆命令会被闸门拦截；被拦时如实告知老板，不要换姿势绕过。",
+      "在受控环境执行命令（跑测试/构建/安装依赖）。预计超过 5 分钟的长命令（完整构建/全量测试/长脚本）用 background=true 转后台跑，不受超时限制，用 service_status 查日志、stop_service 终止。需要给进程打字交互（REPL、等 y/n 确认的 CLI、交互式调试）用 interactive=true，拿到 sessionId 后用 write_stdin 续写；交互里程序要求真终端（看 isatty、要终端尺寸/颜色）就同时给 pty=true。删除类、不可逆命令会被闸门拦截；被拦时如实告知老板，不要换姿势绕过。",
     parameters: {
       type: "object",
       required: ["command"],
@@ -628,6 +630,7 @@ const RUN_COMMAND_SCHEMA = {
         timeoutMs: { type: "number", description: "超时毫秒（可选，默认 120000，上限 300000）" },
         background: { type: "boolean", description: "后台长任务模式（可选）：转后台执行不受超时限制，返回任务 id，用 service_status 查进度与日志、stop_service 终止" },
         interactive: { type: "boolean", description: "交互会话模式（可选）：子进程常驻且 stdin 可写，返回 sessionId；后续每敲一行用 write_stdin。只用于真需要输入的场景，跑完记得 close 收尾" },
+        pty: { type: "boolean", description: "真终端（可选，仅在 interactive=true 时有意义）：程序看到 isatty=true，REPL/ssh/npm 的交互与人在终端里一致；宿主没装 node-pty 会降级为管道会话并在输出里说明原因" },
       },
     },
   },

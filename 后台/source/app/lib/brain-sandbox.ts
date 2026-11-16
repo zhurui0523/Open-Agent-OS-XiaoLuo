@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { seedUserSkills, seedOfficialMarket } from "./seed-skills";
+import { openPty, probePty, type PtyHandle } from "./pty-adapter";
 import { provisionService, readServiceInfos, recheckHealth } from "../../shared/service-provision.mjs"; // SVCB0
 
 /**
@@ -839,6 +840,7 @@ function hookProcessExitCleanup(): void {
     }
     // 交互会话同样是宿主拉起的子进程，退出时必须一并带走，否则会成孤儿占着端口/stdin
     for (const rec of sessionRegistry().values()) {
+      rec.pty?.kill?.();
       killTree(rec.pid);
     }
   };
@@ -1069,7 +1071,8 @@ interface StdinSessionRecord {
   userId: string;
   command: string;
   pid: number;
-  child: ChildProcess;
+  /** 管道会话的子进程；真 PTY 会话没有它（走 rec.pty） */
+  child?: ChildProcess;
   /** 环形缓冲（最近 MAX_SESSION_BUFFER_CHARS 字符） */
   buf: string;
   /** 累计产生的输出字符数；buf[0] 的绝对下标 = totalChars - buf.length */
@@ -1083,6 +1086,12 @@ interface StdinSessionRecord {
   /** 活动续期用的时长（沿用调用方要求的 ttlMs，不能续成默认值把短会话撑长） */
   ttlMs: number;
   expiresAt: number;
+  /** 真 PTY 句柄（null/undefined = 管道会话） */
+  pty?: PtyHandle | null;
+  /** 是否真终端：写输入、收尾、清场三条路径都按它分叉 */
+  ptyMode: boolean;
+  /** 请求了 pty 但宿主没装 node-pty 时给的降级说明 */
+  ptyNotice?: string;
 }
 
 /** 与 serviceRegistry 同套路：globalThis 锚定，dev HMR 换实例时会话不丢 */
@@ -1104,6 +1113,10 @@ export interface StdinSessionInfo {
   droppedChars?: number;
   /** 距 TTL 到期还剩多少毫秒 */
   expiresInSeconds?: number;
+  /** 是否真 PTY（isatty 为真）；缺省/undefined = 管道会话 */
+  pty?: boolean;
+  /** 请求了真终端却降级时的原因 */
+  ptyNotice?: string;
 }
 
 function appendSessionOutput(rec: StdinSessionRecord, chunk: Buffer): void {
@@ -1153,7 +1166,10 @@ function pruneSessions(userId: string): void {
   for (const [id, rec] of registry) {
     if (rec.userId !== userId) continue;
     if (rec.status === "exited" || rec.expiresAt <= now) {
-      if (rec.status !== "exited") killTree(rec.pid);
+      if (rec.status !== "exited") {
+        rec.pty?.kill?.();
+        killTree(rec.pid);
+      }
       registry.delete(id);
     }
   }
@@ -1170,18 +1186,21 @@ function toSessionInfo(rec: StdinSessionRecord, drained?: { output: string; drop
     output: d.output,
     ...(d.dropped > 0 ? { droppedChars: d.dropped } : {}),
     expiresInSeconds: Math.max(0, Math.round((rec.expiresAt - Date.now()) / 1000)),
+    ...(rec.ptyMode ? { pty: true } : {}),
+    ...(rec.ptyNotice ? { ptyNotice: rec.ptyNotice } : {}),
   };
 }
 
 /**
  * 开一个交互式 stdin 会话：子进程常驻，stdin 保持可写。
  * 用途：REPL / node 调试 / 等输入的 CLI（确认 y/n、readline 提示）。
+ * pty=true 时优先开真终端（ConPTY / openpty）；宿主没装 node-pty 就如实降级并回流原因。
  * 闸门与一次性 run_command 完全同一套（调用侧负责风险分级与审批）。
  */
 export async function startBrainStdinSession(
   userId: string,
   command: string,
-  opts?: { ttlMs?: number; cwd?: string; networkMode?: NetworkMode },
+  opts?: { ttlMs?: number; cwd?: string; networkMode?: NetworkMode; pty?: boolean },
 ): Promise<StdinSessionInfo> {
   const root = await ensureWorkspace(userId);
   const cwd = await resolveCwdWithinFence(root, opts?.cwd);
@@ -1200,9 +1219,48 @@ export async function startBrainStdinSession(
   const shellArgs = isWindows
     ? ["-NoProfile", "-EncodedCommand", toPsEncoded(sanitizeCommandForPs51(command))]
     : ["-c", command];
+  const env = minimalEnv(cwd, isWindows, networkEnvFor(opts?.networkMode ?? "open"));
+
+  // 真 PTY 优先：isatty=true 时 REPL / ssh / npm 的交互才和人在终端里一致
+  let ptyHandle: PtyHandle | null = null;
+  let ptyNotice: string | undefined;
+  if (opts?.pty) {
+    ptyHandle = await openPty(shellFile, shellArgs, { cwd, env: env as Record<string, string> });
+    if (!ptyHandle) ptyNotice = (await probePty()).reason ?? "真终端不可用，已退化为管道会话。";
+  }
+
+  if (ptyHandle) {
+    const rec: StdinSessionRecord = {
+      id: "sess-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
+      userId,
+      command,
+      pid: ptyHandle.pid,
+      buf: "",
+      totalChars: 0,
+      readCursor: 0,
+      lastOutputAt: Date.now(),
+      status: "running",
+      createdAt: Date.now(),
+      ttlMs,
+      expiresAt: Date.now() + ttlMs,
+      pty: ptyHandle,
+      ptyMode: true,
+    };
+    registry.set(rec.id, rec);
+    hookProcessExitCleanup();
+    ptyHandle.onData((chunk) => appendSessionOutput(rec, Buffer.from(chunk, "utf8")));
+    ptyHandle.onExit((code) => {
+      rec.status = "exited";
+      rec.exitCode = code;
+      rec.lastOutputAt = Date.now();
+    });
+    await waitForSessionOutput(rec, { sinceChars: 0, startedAt: Date.now(), waitMs: SESSION_START_WAIT_MS });
+    return toSessionInfo(rec, drainSessionOutput(rec));
+  }
+
   const child = spawn(shellFile, shellArgs, {
     cwd,
-    env: minimalEnv(cwd, isWindows, networkEnvFor(opts?.networkMode ?? "open")),
+    env,
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -1220,6 +1278,9 @@ export async function startBrainStdinSession(
     createdAt: Date.now(),
     ttlMs,
     expiresAt: Date.now() + ttlMs,
+    pty: null,
+    ptyMode: false,
+    ...(ptyNotice ? { ptyNotice } : {}),
   };
   registry.set(rec.id, rec);
   hookProcessExitCleanup();
@@ -1258,15 +1319,26 @@ export async function writeBrainStdinSession(
   const startedAt = Date.now();
   const sinceChars = rec.totalChars;
   if (input !== undefined && rec.status === "running") {
-    if (!rec.child.stdin?.writable) throw new Error("会话的标准输入已关闭，无法写入。请重开会话。");
     const payload = input.endsWith("\n") || input === "" ? input : input + "\n";
-    rec.child.stdin.write(payload);
+    if (rec.ptyMode) {
+      // 真终端里输入的换行就是回车；程序自己负责回显，这里不补任何装饰
+      rec.pty?.write(payload);
+    } else {
+      if (!rec.child?.stdin?.writable) throw new Error("会话的标准输入已关闭，无法写入。请重开会话。");
+      rec.child.stdin.write(payload);
+    }
   }
   // 每次活动按自身时长续期：会话不该在一次输入之间被回收，但也不能把老板要的短会话续成默认 15 分钟
   rec.expiresAt = Date.now() + rec.ttlMs;
   if (opts?.close) {
-    try { rec.child.stdin?.end(); } catch { /* 已退出 */ }
-    await waitForSessionOutput(rec, { sinceChars, startedAt, waitMs: 1_000 });
+    if (rec.ptyMode) {
+      rec.pty?.end?.();
+      await waitForSessionOutput(rec, { sinceChars, startedAt, waitMs: 1_000 });
+      rec.pty?.kill();
+    } else {
+      try { rec.child?.stdin?.end(); } catch { /* 已退出 */ }
+      await waitForSessionOutput(rec, { sinceChars, startedAt, waitMs: 1_000 });
+    }
     if (rec.status !== "exited" && rec.pid > 0) killTree(rec.pid);
     sessionRegistry().delete(rec.id);
   } else {
@@ -1312,7 +1384,10 @@ export function closeBrainStdinSessions(userId: string): number {
   let closed = 0;
   for (const [id, rec] of registry) {
     if (rec.userId !== userId) continue;
-    if (rec.status !== "exited") killTree(rec.pid);
+    if (rec.status !== "exited") {
+      rec.pty?.kill?.();
+      killTree(rec.pid);
+    }
     registry.delete(id);
     closed += 1;
   }

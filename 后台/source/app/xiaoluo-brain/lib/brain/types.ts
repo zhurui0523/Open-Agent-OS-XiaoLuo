@@ -243,6 +243,10 @@ export interface StdinSessionResult {
   droppedChars?: number;
   status: "running" | "exited";
   exitCode?: number;
+  /** 是否真 PTY（true=isatty 为真，程序看到的是终端；false=管道会话） */
+  pty?: boolean;
+  /** 降级原因（请求了 pty 但宿主没装 node-pty 时回流，别假装有终端） */
+  ptyNotice?: string;
 }
 
 /** 受控命令口：run_command 工具的宿主实现（建议接 sandbox.ts 的分级闸门） */
@@ -251,7 +255,7 @@ export interface CommandPort {
   /** 停止时杀掉在途命令子进程（桌面/服务端沙箱），让停止即时生效 */
   cancelAll?(): void;
   /** 开一个 stdin 常驻会话（write_stdin 前置；宿主不支持就不注册该工具） */
-  startSession?(command: string, opts?: { cwd?: string; ttlMs?: number }): Promise<StdinSessionResult>;
+  startSession?(command: string, opts?: { cwd?: string; ttlMs?: number; pty?: boolean }): Promise<StdinSessionResult>;
   /** 向会话写一行并取回新增输出；input 省略 = 只轮询，close=true = 收尾关会话 */
   writeSession?(sessionId: string, input?: string, opts?: { waitMs?: number; close?: boolean }): Promise<StdinSessionResult>;
   /** 列出当前存活会话（list_sessions；宿主不支持就不注册该工具） */

@@ -381,7 +381,7 @@ export function createServerPorts(opts: ServerPortsOptions): ChatAgentPorts {
         const info = await withApproval(
           { scope: "command", subject: command, action: "开一个交互式会话跑这条命令", reasons: [] },
           (approved) =>
-            openGatedSession({ userId: opts.userId, command, approved, cwd: o?.cwd, ttlMs: o?.ttlMs }),
+            openGatedSession({ userId: opts.userId, command, approved, cwd: o?.cwd, ttlMs: o?.ttlMs, pty: o?.pty }),
         );
         return toSessionResult(info);
       },
@@ -504,6 +504,8 @@ function toSessionResult(info: {
   status: "running" | "exited";
   exitCode?: number;
   droppedChars?: number;
+  pty?: boolean;
+  ptyNotice?: string;
 }): StdinSessionResult {
   return {
     sessionId: info.sessionId,
@@ -512,5 +514,7 @@ function toSessionResult(info: {
     status: info.status,
     ...(info.exitCode !== undefined ? { exitCode: info.exitCode } : {}),
     ...(info.droppedChars !== undefined ? { droppedChars: info.droppedChars } : {}),
+    ...(info.pty ? { pty: true } : {}),
+    ...(info.ptyNotice ? { ptyNotice: info.ptyNotice } : {}),
   };
 }

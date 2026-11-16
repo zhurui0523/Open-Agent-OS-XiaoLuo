@@ -152,7 +152,8 @@ test("沙箱：会话三管道全开，且退出时一并杀进程树", async ()
   // 会话不能加 -NonInteractive：加了 Read-Host 直接报错，交互就没了意义
   assert.match(sandbox, /\["-NoProfile", "-EncodedCommand", toPsEncoded\(sanitizeCommandForPs51\(command\)\)\]/);
   assert.match(sandbox, /stdio: \["pipe", "pipe", "pipe"\]/);
-  assert.match(sandbox, /for \(const rec of sessionRegistry\(\)\.values\(\)\) \{\s*\n\s*killTree\(rec\.pid\);/);
+  // 进程退出清场要把会话一起带走：真 PTY 先 kill 句柄，管道会话照旧杀进程树
+  assert.match(sandbox, /for \(const rec of sessionRegistry\(\)\.values\(\)\) \{[\s\S]{0,80}killTree\(rec\.pid\);/);
   // 丢弃必须如实计数：环形缓冲挤掉的 + 保尾切掉的都算，别让残缺输出看着像完整
   assert.match(sandbox, /dropped: dropped \+ trimmed/);
   assert.match(sandbox, /ttlMs,\n    expiresAt: Date\.now\(\) \+ ttlMs/);
