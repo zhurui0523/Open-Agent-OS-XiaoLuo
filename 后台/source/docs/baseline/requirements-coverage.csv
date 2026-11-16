@@ -37,10 +37,12 @@ all plugin nodes expose separate text and multi-media reference ports,tests/grap
 an assistant-only tail still gets a user turn,tests/anthropic-adapter-tail.test.mjs,已声明用例
 an empty-handed turn is blocked before closing instead of ending the turn,tests/brain-progress-gates.test.mjs,已声明用例
 an incompatible protocol falls back to the type default,tests/model-protocol-options.test.mjs,已声明用例
+apply_patch 上下文：三级严格度（逐字符 → 忽略行尾 → 忽略行首尾），不唯一仍然拒绝,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch 接法：工具声明已注册、执行器先全算后落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch 格式错误必须带行号报出来，而不是猜着改,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch 落地：上下文逐行匹配，只改被 - / + 标记的那一行,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch 解析：update 段落带 @@ 锚点，+/-/空格前缀各归其位,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch：*** Move to 支持改名 + 改内容一次做完（Codex 有、原来小逻故意报错）,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch：一次补丁可 update + add + delete 多个文件,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch：上下文对不上就整批不落地（不做模糊匹配，也不猜）,tests/brain-patch-and-truncation.test.mjs,已声明用例
 apply_patch：同一段上下文命中多处时用 @@ 锚点收敛，收敛不了就报不唯一,tests/brain-patch-and-truncation.test.mjs,已声明用例
@@ -338,12 +340,14 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 看门狗口径：20s 判超时，最多自动重启一次,tests/plugin-fault-isolation.test.mjs,已声明用例
 真实往返：首屏拿得到 banner，写一行拿回显，退出后带 exitCode,tests/brain-stdin-session.test.mjs,已声明用例
 真策略往返：hooks.toml 一改，闸门的裁决就跟着变,tests/brain-network-policy.test.mjs,已声明用例
+真跑：apply_patch 带 Move to 改名 + 改内容，旧文件删除、新文件落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
 真跑：session_start / user_prompt_submit 在轮首执行，permission_request 非 0 直接拒命令,tests/brain-hooks-events.test.mjs,已声明用例
 真跑：钩子命令失败只提醒不阻断（session_end 失败照样交付），且不误伤未命中的命令,tests/brain-hooks-events.test.mjs,已声明用例
 硬禁区不误伤：工作区内同名片段照常放行,tests/sandbox-policy.test.mjs,已声明用例
 硬禁区：系统目录与凭据目录即便 approved 也拒绝,tests/sandbox-policy.test.mjs,已声明用例
 空宿主也能跑通一轮：内核只靠 ports 契约,tests/brain-agent-protocol.test.mjs,已声明用例
 空白 oldText 直接拒，避免整文件被塞进空白,tests/brain-patch-and-truncation.test.mjs,已声明用例
+第 7 批：model_request 每轮一次、stop 在交付后一次；四个新事件都能被识别,tests/brain-hooks-events.test.mjs,已声明用例
 第二宿主的抓取口绕不开 SSRF 闸门：内网地址直接拒，不去问老板,tests/brain-app-server.test.mjs,已声明用例
 第二宿主的文件口按 default 建：工作区外的绝对路径拦下，拒绝文案留下台阶,tests/brain-app-server.test.mjs,已声明用例
 第二宿主的服务口：路径围栏拦得住，拒绝文案与浏览器宿主逐字一致,tests/brain-app-server.test.mjs,已声明用例

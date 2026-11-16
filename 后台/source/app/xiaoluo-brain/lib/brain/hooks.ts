@@ -15,7 +15,11 @@ export type HookEvent =
   | "session_start"
   | "session_end"
   | "user_prompt_submit"
-  | "permission_request";
+  | "permission_request"
+  | "model_request"
+  | "compact"
+  | "interrupt"
+  | "stop";
 
 export interface HookRule {
   /** 只对该工具生效（事件型钩子可不填） */
@@ -43,6 +47,10 @@ const KNOWN_EVENTS: HookEvent[] = [
   "session_end",
   "user_prompt_submit",
   "permission_request",
+  "model_request",
+  "compact",
+  "interrupt",
+  "stop",
 ];
 
 /** 事件名归一：老写法（不写 when）默认 pre */
@@ -55,6 +63,10 @@ export function normalizeEvent(value: string | undefined): HookEvent | null {
   if (raw === "session_end" || raw === "sessionend") return "session_end";
   if (raw === "user_prompt_submit" || raw === "userpromptsubmit") return "user_prompt_submit";
   if (raw === "permission_request" || raw === "permissionrequest") return "permission_request";
+  if (raw === "model_request" || raw === "modelrequest") return "model_request";
+  if (raw === "compact" || raw === "compaction" || raw === "auto_compact") return "compact";
+  if (raw === "interrupt" || raw === "interrupted" || raw === "abort") return "interrupt";
+  if (raw === "stop" || raw === "stopped") return "stop";
   return null;
 }
 

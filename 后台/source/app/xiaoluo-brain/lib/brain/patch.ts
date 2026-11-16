@@ -177,6 +177,8 @@ export interface ContextHunk {
 export interface PatchOp {
   type: "update" | "add" | "delete";
   path: string;
+  /** *** Move to: 目标路径（仅 update 支持） */
+  moveTo?: string;
   hunks: ContextHunk[];
 }
 
@@ -192,6 +194,8 @@ export interface ContextHunkOutcome {
   /** 这一 hunk 增删了多少行 */
   added?: number;
   removed?: number;
+  /** 用哪一级匹配落的地（逐字符 / 忽略行尾 / 忽略首尾） */
+  level?: MatchLevel;
   error?: string;
 }
 
@@ -265,7 +269,14 @@ export function parsePatch(text: string): PatchParseResult {
       continue;
     }
     if (/^\*\*\*\s*Move to:/.test(trimmed)) {
-      throw new Error(`第 ${i + 1} 行：暂不支持 *** Move to（改写路径请用 move_file）`);
+      const target = trimmed.replace(/^\*\*\*\s*Move to:\s*/, "").trim();
+      if (!target) throw new Error(`第 ${i + 1} 行：*** Move to 少写了目标路径`);
+      if (!current || current.type !== "update") {
+        throw new Error(`第 ${i + 1} 行：*** Move to 只能跟在 *** Update File 后面（改名 + 改内容一次做完）`);
+      }
+      if (current.moveTo) throw new Error(`第 ${i + 1} 行：*** Move to 重复了`);
+      current.moveTo = target;
+      continue;
     }
     if (!current) throw new Error(`第 ${i + 1} 行：${trimmed.slice(0, 40)} 不在任何 File 段落内`);
 
@@ -302,12 +313,26 @@ export function parsePatch(text: string): PatchParseResult {
   return { ops };
 }
 
-function matchBlock(lines: string[], want: string[], from = 0): number[] {
+/**
+ * 按行匹配，三级严格度（与 Codex seek_sequence 的前三级对齐）：
+ *   1. exact   —— 逐行逐字符（只吃掉 CRLF 的 \r）
+ *   2. trailing —— 忽略行尾空白/缩进尾巴
+ *   3. trimmed  —— 忽略行首尾空白（上下文抄错缩进也能落）
+ * 顺序试，先命中先返回；同一级命中多处仍判不唯一，不往更松一级继续找。
+ */
+function normalizeForLevel(line: string, level: MatchLevel): string {
+  const noCr = line.replace(/\r$/, "");
+  if (level === "trimmed") return noCr.trim();
+  if (level === "trailing") return noCr.replace(/[ \t]+$/, "");
+  return noCr;
+}
+
+function matchBlockAtLevel(lines: string[], want: string[], level: MatchLevel, from = 0): number[] {
   const starts: number[] = [];
   for (let i = from; i + want.length <= lines.length; i += 1) {
     let hit = true;
     for (let j = 0; j < want.length; j += 1) {
-      if (lines[i + j].replace(/\r$/, "") !== want[j]) {
+      if (normalizeForLevel(lines[i + j], level) !== normalizeForLevel(want[j], level)) {
         hit = false;
         break;
       }
@@ -315,6 +340,16 @@ function matchBlock(lines: string[], want: string[], from = 0): number[] {
     if (hit) starts.push(i);
   }
   return starts;
+}
+
+/** 找唯一命中：返回 {starts, level}；三级都没中返回空 */
+function seekContext(working: string[], want: string[]): { starts: number[]; level: MatchLevel } {
+  const levels: MatchLevel[] = ["exact", "trailing", "trimmed"];
+  for (const level of levels) {
+    const starts = matchBlockAtLevel(working, want, level);
+    if (starts.length) return { starts, level };
+  }
+  return { starts: [], level: "exact" };
 }
 
 /** 把 @@ 结构 hunk 落到源码上；全部命中才有 content */
@@ -335,7 +370,7 @@ export function applyContextHunks(source: string, hunks: ContextHunk[]): Context
     const added = hunk.lines.filter((l) => l.kind === "add").length;
     const removed = hunk.lines.filter((l) => l.kind === "remove").length;
 
-    let starts = oldLines.length ? matchBlock(working, oldLines) : [];
+    let { starts, level } = oldLines.length ? seekContext(working, oldLines) : { starts: [], level: "exact" as MatchLevel };
     if (hunk.anchor) {
       // 锚点只用来"缩小范围"，不参与匹配本身：命中多处时，取锚点在前面 40 行内出现过的那处
       const anchor = hunk.anchor.trim();
@@ -355,7 +390,7 @@ export function applyContextHunks(source: string, hunks: ContextHunk[]): Context
       outcomes.push({
         ok: false,
         error:
-          "上下文对不上（逐行比较，不做模糊匹配）：先 read_file 看实际内容，再把要改的那几行原样带成上下文行。",
+          "上下文对不上（逐字符 / 忽略行尾空白 / 忽略行首尾空白 三级都试过）：先 read_file 看实际内容，再把要改的那几行原样带成上下文行。",
       });
       failed = true;
       continue;
@@ -370,7 +405,7 @@ export function applyContextHunks(source: string, hunks: ContextHunk[]): Context
     }
     const at = starts[0];
     working = [...working.slice(0, at), ...newLines, ...working.slice(at + oldLines.length)];
-    outcomes.push({ ok: true, line: at + 1, added, removed });
+    outcomes.push({ ok: true, line: at + 1, added, removed, level });
   }
 
   if (failed) return { content: null, outcomes };

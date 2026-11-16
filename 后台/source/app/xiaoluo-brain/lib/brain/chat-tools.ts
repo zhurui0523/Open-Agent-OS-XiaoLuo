@@ -840,7 +840,7 @@ const APPLY_PATCH_SCHEMA = {
   function: {
     name: "apply_patch",
     description:
-      "结构化补丁（学 Codex apply_patch）：只传上下文行与增删行，不用把整段原文抄回来，改大文件省 token、少误伤。格式：*** Begin Patch 换行 *** Update File: 路径 换行 @@ 可选锚点（函数名/类名） 换行（' ' 上下文行 / '-' 删掉的行 / '+' 新增的行），也可以 *** Add File: 路径（内容行以 + 开头）与 *** Delete File: 路径，最后 *** End Patch。上下文逐行严格匹配，一处对不上整批不落地；同一段上下文命中多处时多带上下文或在 @@ 后面写锚点。改一处短文本仍可用 edit_file。",
+      "结构化补丁（学 Codex apply_patch）：只传上下文行与增删行，不用把整段原文抄回来，改大文件省 token、少误伤。格式：*** Begin Patch 换行 *** Update File: 路径 换行（可选 *** Move to: 新路径，改名+改内容一次做完）换行 @@ 可选锚点（函数名/类名） 换行（' ' 上下文行 / '-' 删掉的行 / '+' 新增的行），也可以 *** Add File: 路径（内容行以 + 开头）与 *** Delete File: 路径，最后 *** End Patch。上下文按三级严格度逐行匹配（逐字符 → 忽略行尾空白 → 忽略行首尾空白），一处对不上整批不落地；同一段上下文命中多处时多带上下文或在 @@ 后面写锚点。改一处短文本仍可用 edit_file。",
     parameters: {
       type: "object",
       required: ["patch"],

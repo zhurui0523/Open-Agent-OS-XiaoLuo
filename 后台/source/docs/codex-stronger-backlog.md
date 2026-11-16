@@ -46,7 +46,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 - 测试新增 7 条（解析 / 落地 / 上下文不符整批不落 / 多命中靠锚点收敛 / 多文件 / 格式错误带行号 / 工具面接线），`tests/brain-patch-and-truncation.test.mjs` 19 条全绿；基线 `requirements-coverage.csv` 相应 +7 行；
 - 本地九步全量门禁 233.9s 通过。
 
-**已知边界（没做）**：① `*** Move to:` 暂不支持（改写路径请用 `move_file`）——故意报错而不是静默忽略；② 执行器的"全算后落盘"只有源码断言覆盖，仓库里没有能实例化 `ChatAgent` 的运行时测试，端到端写入路径仍靠人工验；③ 写盘失败不回滚已写成功的文件（避免二次破坏），只如实回报。
+**已知边界（没做）**：① ~~`*** Move to:` 暂不支持~~ → **第 7 批已补**（2026-11-16：改名 + 改内容一次做完，目标被占用即拒，先落新文件再删旧文件）；上下文也已补到三级（逐字符 / 忽略行尾 / 忽略首尾）；② 执行器的"全算后落盘"已有真跑用例（move 路径），但"写盘中途失败不回滚"仍只有源码断言；③ 写盘失败不回滚已写成功的文件（避免二次破坏），只如实回报；④ 未做 Codex `seek_sequence` 的第四级"标点归一化模糊匹配"（避免把错误内容按标点差异硬落）。
 
 ### 2. hooks 事件面 — ✅ 已攻克（2026-11-16）
 
@@ -68,7 +68,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 **已知边界（没做）**：
 
 1. `session_end` 的粒度是「一轮」而不是 Codex 的「进程会话」——小逻的宿主没有显式会话结束信号，这里取"本轮答复交付完"作为会话边界，源码注释已写明差异；
-2. 没接 `model_request` / `compact` / `interrupt` / `stop` 四个事件：`compact`/`stop` 在小逻是主循环内部状态，加上去只能观测、拿不到可操作点；
+2. ~~没接 `model_request` / `compact` / `interrupt` / `stop` 四个事件~~ → **第 7 批已补**（2026-11-16）：`model_request` 每轮第一次请求前跑一次（只观测/注入提醒，不做硬闸）；`compact` 在压缩前留痕；`interrupt` 在两个中止返回路径触发；`stop` 在交付后触发。仍存的粒度差：`model_request` 是一轮一次而不是每次请求一次，`compact` 拿不到压缩前后的 token 差值；
 3. 事件型钩子只记录不回溯：`session_end` 跑完不改已交付的答复，仅留痕；
 4. `permission_request` 只挂 `run_command` 一个入口（`write_file` / `apply_patch` 的写入仍由既有只读目录锁和删除双锁管），没有做成所有工具的通用审批前置。
 
@@ -150,6 +150,39 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 **改法**：Linux 接 `landlock`（bwrap 兜底），macOS 接 `sandbox-exec` 剖面；CI 加 `ubuntu-latest` 沙箱用例。
 
 **验收**：越界读写/网络在 Linux 上真被拦，且有测试；Windows 档不回退。
+
+（本轮按老板决定不做；上面是留给有 Linux/macOS 真机时的做法，不写空壳。）
+
+---
+
+## 第 7 批：六项之外的代码级差距（沙箱除外）
+
+2026-11-16 按两边源码重扫（Codex 110 个 crate、`core/src` 144 个 `.rs`；小逻 `app/` 全量 keyword 扫描）。
+判定口径：只在 Codex 有实际实现、小逻代码里 0 命中的才算"差距"。
+
+### 已补（本轮）
+
+| # | 能力 | 补了什么 | 证据 |
+|---|---|---|---|
+| 7.1 | apply_patch 语义 | ① 支持 `*** Move to: <path>`（改名 + 改内容一次做完，目标不许被占用，先落新文件再删旧文件）；② 上下文匹配由"逐行严格相等"升级到三级（逐字符 → 忽略行尾空白 → 忽略行首尾空白），与 Codex `seek_sequence` 前三级对齐；同一级命中多处仍判不唯一，绝不往更松一级猜 | `patch.ts` / `chat-agent.ts execApplyPatch`；`tests/brain-patch-and-truncation.test.mjs` 22 条（含 1 条真跑 move） |
+| 7.2 | hooks 事件面 | 补齐 10 事件里的 `model_request` / `compact` / `interrupt` / `stop`：model_request 每轮第一次请求前跑一次（观测/注入提醒，不做硬闸）；compact 在压缩前留痕；interrupt 在两个中止返回路径触发；stop 在交付后触发 | `hooks.ts` / `chat-agent.ts`；`tests/brain-hooks-events.test.mjs` 8 条（含 1 条真跑断言 model_request/stop 各一次） |
+
+### 未补（按价值排序，仍待做）
+
+| # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
+|---|---|---|---|---|
+| 7.3 | 出站网络代理（域名策略 + 凭据注入） | `network-proxy`：75 files / 1.31MB（`mitm.rs`、`certs.rs`、`credential_broker.rs`、`aws_sigv4.rs`、`domain_matcher.rs`） | 只有命令策略里的主机白名单（管"能不能连"，不管"怎么连"） | 企业落地刚需 |
+| 7.4 | MCP elicitation / resources / 连接池 | `codex-mcp/src/elicitation.rs`、`resource_client.rs`、`connection_pool.rs`、`event_stream.rs` | `mcp-runtime.mjs` 只有 tools/list + call + OAuth | 企业 MCP 服务器大量依赖 |
+| 7.5 | 线程持久化（可检索、可治理） | `thread-store` 78 files / 1.44MB；`rollout` 含 compression / reverse_jsonl_scanner / reference_index / search | `event-log.ts`（7KB）+ `journal.ts`（8KB）+ sqlite 派生状态 | 长会话与回溯 |
+| 7.6 | skills 隐式调用识别 | `skills`：17 files / 89KB（`invocation.rs`、`mentions.rs`、`interface.rs`、`selection.rs`） | 有 skills 加载，但靠显式调用 | 体验 |
+| 7.7 | 文件索引 / 变更监听 | `app-server/src/fuzzy_file_search.rs`；`file-watcher` 56KB | `repo.ts` 只有仓库元信息 | 大仓库体验 |
+| 7.8 | code-mode（写代码在受控会话里执行） | `code-mode` 33 files / 349KB（`grpc_session.rs`、`remote_session.rs`） | `code.ts` 明确"一期不执行任何代码，代码只是文件集交付物" | 架构级，需单独评估 |
+| 7.9 | guardian 审查 / 异步打分 | `guardian-context` 48 files / 519KB | 无；只有命令审批 + 风险信号扫描 | 安全与合规 |
+| 7.10 | 多 Agent 组织（角色/身份/图/消息板） | `agent-roles` / `agent-identity` / `agent-graph-store` / `message-board` / `runtime-agent-instance` | `debate.ts`(4KB) / `collab.ts`(2KB) 只是对话协作 | 架构级 |
+| 7.11 | 凭据钥匙串 | `keyring-store` / `secrets` / `workload-identity` | 凭据走 json 文件（MCP secret 也是 mcp.json 明文） | 安全债 |
+| 7.12 | 可观测性 | `otel` / `otel-trace-websocket` | 无（只有本地 gate 日志） | 运维 |
+| 7.13 | 语音 / 实时会话 | `voice-host` / `realtime-webrtc` | 无 | 产品形态 |
+| 7.14 | 云端任务 | `cloud-tasks` / `cloud-client` / `aws-auth` | 无（远程只有 SSH 工作区） | 形态差异，可判不追 |
 
 ---
 

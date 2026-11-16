@@ -196,3 +196,39 @@ command = "deny-push"
     JSON.stringify(events.map((e) => e.kind + ":" + String(e.content).slice(0, 40))),
   );
 });
+
+test("第 7 批：model_request 每轮一次、stop 在交付后一次；四个新事件都能被识别", async () => {
+  const hooks = `
+[[hook]]
+when = "model_request"
+command = "check-model"
+
+[[hook]]
+when = "stop"
+command = "check-stop"
+
+[[hook]]
+when = "compact"
+command = "check-compact"
+`;
+  const { agent, ran } = runtimeHarness(hooks, [
+    { toolCall: { name: "run_command", arguments: { command: "echo hi" } } },
+    { content: "好了。" },
+  ]);
+  await agent.reply("随便跑一下");
+  assert.equal(ran.filter((c) => c === "check-model").length, 1, "model_request 一轮只该跑一次：" + ran.join("|"));
+  assert.equal(ran.filter((c) => c === "check-stop").length, 1, "stop 交付后该跑一次：" + ran.join("|"));
+  assert.ok(!ran.includes("check-compact"), "没触发压缩就不该跑 compact 钩子");
+
+  // 事件名归一覆盖新增四个
+  assert.equal(normalizeEvent("ModelRequest"), "model_request");
+  assert.equal(normalizeEvent("auto-compact"), "compact");
+  assert.equal(normalizeEvent("stop"), "stop");
+  assert.equal(normalizeEvent("abort"), "interrupt");
+
+  const chatAgent = await source("app/xiaoluo-brain/lib/brain/chat-agent.ts");
+  assert.match(chatAgent, /runEventHooks\("model_request"/);
+  assert.match(chatAgent, /runEventHooks\("compact"/);
+  assert.match(chatAgent, /runEventHooks\("interrupt"/);
+  assert.match(chatAgent, /runEventHooks\("stop"/);
+});

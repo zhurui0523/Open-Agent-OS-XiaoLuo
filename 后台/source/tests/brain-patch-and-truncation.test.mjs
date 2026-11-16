@@ -15,6 +15,7 @@ import test from "node:test";
 import { applyEditHunks, applyContextHunks, parsePatch } from "../app/xiaoluo-brain/lib/brain/patch.ts";
 import { truncateToolResult } from "../app/xiaoluo-brain/lib/brain/truncation.ts";
 import { DEFAULT_CHAT_AGENT_CONFIG } from "../app/xiaoluo-brain/lib/brain/agent-ports.ts";
+import { createChatAgent } from "../app/xiaoluo-brain/lib/brain/agent-host.ts";
 
 const root = new URL("../", import.meta.url);
 
@@ -239,10 +240,54 @@ test("apply_patch 格式错误必须带行号报出来，而不是猜着改", ()
     () => parsePatch("*** Begin Patch\n*** Update File: a.ts\n*** End Patch"),
     /没有任何 @@ hunk|没有任何 hunk/,
   );
+  // Move to 只能挂在 Update File 上，且不能重复
   assert.throws(
     () => parsePatch("*** Begin Patch\n*** Move to: b.ts\n*** End Patch"),
-    /Move to/,
+    /只能跟在 \*\*\* Update File/,
   );
+  assert.throws(
+    () => parsePatch("*** Begin Patch\n*** Update File: a.ts\n*** Move to: b.ts\n*** Move to: c.ts\n@@ x\n-x\n+y\n*** End Patch"),
+    /重复/,
+  );
+});
+
+test("apply_patch：*** Move to 支持改名 + 改内容一次做完（Codex 有、原来小逻故意报错）", () => {
+  const patch = `*** Begin Patch
+*** Update File: src/old.ts
+*** Move to: src/new.ts
+@@ function add
+-export function add(a, b) {
++export function addNumbers(a, b) {
+*** End Patch`;
+  const { ops } = parsePatch(patch);
+  assert.equal(ops.length, 1);
+  assert.equal(ops[0].type, "update");
+  assert.equal(ops[0].path, "src/old.ts");
+  assert.equal(ops[0].moveTo, "src/new.ts");
+  const src = ["export function add(a, b) {", "  return a + b;", "}"].join("\n");
+  const res = applyContextHunks(src, ops[0].hunks);
+  assert.equal(res.content, ["export function addNumbers(a, b) {", "  return a + b;", "}"].join("\n"));
+});
+
+test("apply_patch 上下文：三级严格度（逐字符 → 忽略行尾 → 忽略行首尾），不唯一仍然拒绝", () => {
+  const { ops } = parsePatch(PATCH_BASIC);
+  // 行尾多了一个空格：第二级应命中
+  const trailing = ["export function add(a, b) {  ", "  return a + b;   ", "}"].join("\n");
+  const r1 = applyContextHunks(trailing, ops[0].hunks);
+  assert.ok(r1.content, r1.outcomes[0].error);
+  assert.equal(r1.outcomes[0].level, "trailing");
+
+  // 缩进整体写错：第三级应命中
+  const reindented = ["export function add(a, b) {", "return a + b;", "}"].join("\n");
+  const r2 = applyContextHunks(reindented, ops[0].hunks);
+  assert.ok(r2.content, r2.outcomes[0].error);
+  assert.equal(r2.outcomes[0].level, "trimmed");
+
+  // 同一级命中两处仍然判不唯一（绝不往更松一级猜）
+  const twice = ["export function add(a, b) {", "  return a + b;", "}", "export function add(a, b) {", "  return a + b;", "}"].join("\n");
+  const r3 = applyContextHunks(twice, ops[0].hunks);
+  assert.equal(r3.content, null);
+  assert.match(r3.outcomes[0].error, /不唯一/);
 });
 
 test("apply_patch 接法：工具声明已注册、执行器先全算后落盘", async () => {
@@ -250,6 +295,8 @@ test("apply_patch 接法：工具声明已注册、执行器先全算后落盘",
   assert.match(chatTools, /const APPLY_PATCH_SCHEMA = \{/);
   assert.match(chatTools, /EDIT_FILE_SCHEMA, APPLY_PATCH_SCHEMA/);
   assert.match(chatTools, /name: "apply_patch"/);
+  // Move to 已写进工具描述，模型才知道能一次做完改名 + 改内容
+  assert.match(chatTools, /Move to: 新路径/);
 
   const chatAgent = await source("app/xiaoluo-brain/lib/brain/chat-agent.ts");
   assert.match(chatAgent, /case "apply_patch":/);
@@ -258,5 +305,69 @@ test("apply_patch 接法：工具声明已注册、执行器先全算后落盘",
   assert.match(chatAgent, /if \(failures\.length\) \{[\s\S]{0,400}全部文件都没动/);
   // 删除仍守"先看过再删"的纪律
   assert.match(chatAgent, /删除前先看一眼——本轮还没 read_file 过它/);
+  // Move to：目标不许被占用，且先落新文件再删旧文件
+  assert.match(chatAgent, /目标已存在，\*\*\* Move to 不会覆盖/);
+  assert.match(chatAgent, /移动 \$\{w\.from\} → \$\{w\.path\}/);
+});
+
+test("真跑：apply_patch 带 Move to 改名 + 改内容，旧文件删除、新文件落盘", async () => {
+  const files = new Map([["src/old.ts", ["export function add(a, b) {", "  return a + b;", "}"].join("\n")]]);
+  const deleted = [];
+  const posts = [];
+  let step = 0;
+  const patch = `*** Begin Patch
+*** Update File: src/old.ts
+*** Move to: src/new.ts
+@@ function add
+-export function add(a, b) {
++export function addNumbers(a, b) {
+*** End Patch`;
+  const ports = {
+    callLLM: async (req) => {
+      if (String(req.messages[0]?.content ?? "").includes("交付物核对员")) {
+        return { content: '{"ok": true, "gaps": []}', usage: { promptTokens: 10, completionTokens: 5 } };
+      }
+      step += 1;
+      if (step === 1) {
+        return {
+          content: "",
+          toolCalls: [{ id: "call-1", name: "apply_patch", arguments: { patch } }],
+          usage: { promptTokens: 20, completionTokens: 8 },
+          finishReason: "tool_calls",
+        };
+      }
+      return { content: "改名并改函数名完成。", usage: { promptTokens: 20, completionTokens: 8 } };
+    },
+    postUI: (kind, content, meta) => posts.push({ kind, content, meta }),
+    fs: {
+      readFile: async (path) => {
+        if (String(path).includes("hooks.toml")) return { content: "", totalLines: 0 };
+        if (!files.has(path)) throw new Error("不存在：" + path);
+        const content = files.get(path);
+        return { content, totalLines: content.split("\n").length };
+      },
+      writeFile: async (path, content) => {
+        files.set(path, content);
+      },
+      deletePath: async (path) => {
+        deleted.push(path);
+        files.delete(path);
+      },
+    },
+    command: { run: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+  };
+  const agent = createChatAgent({ ports, model: "stub-model", conversationId: "cid-apply-move" });
+  const outcome = await agent.reply("把 src/old.ts 改名为 src/new.ts，并把 add 改成 addNumbers");
+  assert.ok(outcome.steps >= 2, "至少要经历「打补丁 + 收尾」两轮");
+
+  const toolMsg = agent.serialize().messages.find((m) => m.role === "tool");
+  assert.match(String(toolMsg?.content ?? ""), /已应用/);
+  assert.match(String(toolMsg?.content ?? ""), /移动 src\/old\.ts → src\/new\.ts/);
+  assert.ok(!files.has("src/old.ts"), "旧文件应已删除");
+  assert.equal(
+    files.get("src/new.ts"),
+    ["export function addNumbers(a, b) {", "  return a + b;", "}"].join("\n"),
+  );
+  assert.deepEqual(deleted, ["src/old.ts"]);
 });
 

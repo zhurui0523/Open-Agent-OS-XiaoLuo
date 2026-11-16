@@ -132,6 +132,8 @@ export class ChatAgent {
   /** BUDGET-FIX 轮内预算计数器：压缩后按新上下文校准（回血）；usedTokens 仅作累计统计 */
   private turnTokens = 0;
   private aborted = false;
+  /** model_request 钩子一轮只跑一次（对齐 session_start 的粒度，避免每步都烧钩子额度） */
+  private modelHookFiredThisTurn = false;
   /** 本轮 LLM 请求中止句柄（轮首重建；stop() 同步 abort 在途 fetch，否则挂死时停止按钮形同虚设） */
   private turnAbort: AbortController | null = null;
   /** VISION-INJECT：截图工具暂存图片，工具结果入历史后挂 user 观察轮喂模型 */
@@ -440,6 +442,7 @@ export class ChatAgent {
     this.turnToolCalls = 0;
     this.progressGateUsed = false;
     this.truncationRetries = 0;
+    this.modelHookFiredThisTurn = false;
     if (this.planTodosTurnId !== this.turnId && this.planTodosTurnId !== this.turnId - 1) this.planTodos = [];
     this.journal.append(
       "turn_start",
@@ -472,6 +475,7 @@ export class ChatAgent {
     for (let step = 0; step < config.maxStepsPerTurn; step++) {
       if (this.aborted) {
         this.journal.append("turn_end", `第 ${step} 步被老板中止`);
+        await this.runEventHooks("interrupt", { reason: "用户中止", text: "step-" + step });
         return { usedTokens: this.usedTokens, steps: step, stopped: true };
       }
 
@@ -506,6 +510,17 @@ export class ChatAgent {
         this.messages.push({ role: "user", content: `[老板中途补充] ${this.steerQueue.shift()}` });
       }
 
+      // model_request 钩子（第 7 批）：每轮第一次模型请求前跑一次；只观测/注入提醒，不做硬闸
+      //（Codex 该事件用来在请求前补上下文，不是拦截工具；硬拒留给 permission_request）
+      if (!this.modelHookFiredThisTurn) {
+        this.modelHookFiredThisTurn = true;
+        const gate = await this.runEventHooks("model_request", {
+          reason: "before_model_request",
+          text: this.opts.model,
+        });
+        if (gate.notes) this.messages.push({ role: "system", content: "[钩子]" + gate.notes });
+      }
+
       // LLM 回合（含重试与中断保留；流式时先挂 UI 占位消息，成败都收口）
       let resp: Awaited<ReturnType<ChatAgentPorts["callLLM"]>>;
       try {
@@ -514,6 +529,7 @@ export class ChatAgent {
       } catch (err) {
         if (this.aborted) {
           this.journal.append("turn_end", "老板中止（在途 LLM 调用已掐断）");
+          await this.runEventHooks("interrupt", { reason: "用户中止（在途请求）", text: "step-" + step });
           return { usedTokens: this.usedTokens, steps: step, stopped: true };
         }
         this.journal.append("llm_error", `LLM 中断：${err instanceof Error ? err.message : String(err)}`);
@@ -621,6 +637,8 @@ export class ChatAgent {
         // session_end 钩子：小逻以「一轮」为会话边界（Codex 的事件粒度为进程会话，
         // 这里按轮收尾触发，只做观测/留痕，不回头改已经交付的答复）
         await this.runEventHooks("session_end", { text: finalContent });
+        // stop 钩子（第 7 批）：本轮彻底收尾（含交付）后的最后一个观测点，与 session_end 区分「一轮结束」和「整体停止」
+        await this.runEventHooks("stop", { text: finalContent, reason: "turn_complete" });
         return { usedTokens: this.usedTokens, steps: step + 1 };
       }
       // 有工具调用时，前置文字是过程旁白（同样入账：可见即留痕）
@@ -2105,7 +2123,7 @@ export class ChatAgent {
       return `apply_patch 未执行 —— 补丁格式不对：${message}`;
     }
 
-    const writes: Array<{ path: string; content: string; kind: "update" | "add" }> = [];
+    const writes: Array<{ path: string; content: string; kind: "update" | "add" | "move"; from?: string }> = [];
     const deletes: string[] = [];
     const failures: string[] = [];
 
@@ -2152,6 +2170,27 @@ export class ChatAgent {
         failures.push(`${op.path}：${detail}`);
         continue;
       }
+      if (op.moveTo) {
+        // 改名 + 改内容一次做完：目标不能被占用，源文件必须能删（否则宁可不动）
+        if (!ports.fs.deletePath) {
+          failures.push(`${op.path}：当前宿主没有删除能力，*** Move to 用不了（改写路径请用 move_file）`);
+          continue;
+        }
+        let targetExists = false;
+        try {
+          const probe = await ports.fs.readFile(op.moveTo, { limit: 1 });
+          targetExists = probe.content !== "" || Boolean(probe.totalLines);
+        } catch {
+          targetExists = false;
+        }
+        if (targetExists) {
+          failures.push(`${op.moveTo}：目标已存在，*** Move to 不会覆盖（先删或换个名字）`);
+          continue;
+        }
+        writes.push({ path: op.moveTo, content: result.content, kind: "move", from: op.path });
+        this.journal.append("tool_result", `apply_patch 移动 ${op.path} → ${op.moveTo}`, { tool: "apply_patch" });
+        continue;
+      }
       writes.push({ path: op.path, content: result.content, kind: "update" });
       const stats = result.outcomes.reduce(
         (acc, o) => ({ added: acc.added + (o.added ?? 0), removed: acc.removed + (o.removed ?? 0) }),
@@ -2171,11 +2210,28 @@ export class ChatAgent {
     const done: string[] = [];
     for (const w of writes) {
       await ports.fs.writeFile(w.path, w.content);
-      done.push(`${w.kind === "add" ? "新建" : "更新"} ${w.path}`);
+      if (w.kind === "move" && w.from) {
+        // 先落新文件再删旧文件：中途失败至少新内容在，旧文件还在（报出来让人决定）
+        try {
+          await ports.fs.deletePath?.(w.from);
+          done.push(`移动 ${w.from} → ${w.path}`);
+          this.readPaths.delete(w.from);
+          this.turnChangedFiles.delete(w.from);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          done.push(`已写入 ${w.path}，但旧文件 ${w.from} 没删掉（${message.slice(0, 120)}）`);
+        }
+      } else {
+        done.push(`${w.kind === "add" ? "新建" : "更新"} ${w.path}`);
+      }
       this.readPaths.add(w.path);
       this.turnChangedFiles.add(w.path);
       if (CODE_FILE_RE.test(w.path)) {
         this.dirtyCodeFiles.add(w.path);
+        this.lastVerifyResult = null;
+      }
+      if (w.from && CODE_FILE_RE.test(w.from)) {
+        this.dirtyCodeFiles.delete(w.from);
         this.lastVerifyResult = null;
       }
     }
@@ -3284,6 +3340,15 @@ export class ChatAgent {
     const msgs = this.messages;
     const threshold = this.compactThresholdTokens();
     if (!force && this.measureContext().tokens <= threshold) return false;
+    // compact 钩子（第 7 批）：压缩前给一条可配置的观测线（留痕/备份提示），不改变压缩行为
+    {
+      const before = this.measureContext().tokens;
+      const gate = await this.runEventHooks("compact", {
+        reason: force ? "overflow" : "threshold",
+        text: String(before),
+      });
+      if (gate.notes) this.messages.push({ role: "system", content: "[钩子]" + gate.notes });
+    }
     // 免 LLM 裁剪先行（学 DSH toolResultPruner）：历史里的大工具结果替换为占位符；裁剪后回预算内则省掉整次 LLM 摘要
     const pruned = this.pruneOldToolResults();
     if (pruned > 0) this.invalidateContextMeasure(`裁剪 ${pruned} 条历史大输出`);
