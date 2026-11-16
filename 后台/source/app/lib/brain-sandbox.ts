@@ -77,6 +77,12 @@ const SEED_HOOKS_TOML = [
   '# env = "GITHUB_TOKEN"',
   '# prefix = "Bearer"',
   "",
+  "# 命令审查（guardian，第 7.9 项）：默认只跑规则信号（凭据外发/管道执行远端脚本/强制推送/反取证）；",
+  "# 想再加一道模型复核就取消下一行注释（会多一次模型调用，8 秒超时按“需复核”处理）",
+  "# [guardian]",
+  "# enabled = true",
+  '# review = "model"',
+  "",
 ].join("\n");
 
 async function pathExists(file: string): Promise<boolean> {

@@ -314,6 +314,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 换宿主就收回能力面：回合跑一半不抽正在等的口，收尾后才落地,tests/brain-app-server.test.mjs,已声明用例
 授权后：三类服务端能力放行，客户端能力仍拒并说明由谁做,tests/plugin-capability.test.mjs,已声明用例
 探测：没装 node-pty 时如实报不可用（不假装有终端）,tests/brain-pty.test.mjs,已声明用例
+接线与播种：chat-agent 走 guardianCheck、种子 hooks.toml 带 guardian 说明段,tests/brain-guardian.test.mjs,已声明用例
 接线事实：SSE 解析只有一份，两种宿主共用,tests/brain-app-server.test.mjs,已声明用例
 接线事实：iframe 真调能力桥、插件台能开关授权、拒绝时带 hint,tests/plugin-capability.test.mjs,已声明用例
 接线事实：审批记忆与风险摘要只有一份，面板和宿主桥共用,tests/brain-host-bridge.test.mjs,已声明用例
@@ -335,6 +336,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 接线：宿主工厂用配置层覆盖默认档位；配置接口给出 values+sources,tests/agent-config.test.mjs,已声明用例
 接线：状态接口不吐正文，文件变更接口要 conversationId,tests/state-store.test.mjs,已声明用例
 提示文案：带命中原因和描述，便于模型判断要不要加载,tests/brain-skill-selection.test.mjs,已声明用例
+提示词与回包解析：目标/命令都要在提示里，坏回包按 review,tests/brain-guardian.test.mjs,已声明用例
 提示词：教了什么时候该开会话、什么时候不该,tests/brain-stdin-session.test.mjs,已声明用例
 插话与应答：steer 进下一轮上下文，answer 只在有挂起反问时生效,tests/brain-app-server.test.mjs,已声明用例
 搭建记录落在 .services 下：service_status 的 setups 面读得到,tests/brain-service-setup.test.mjs,已声明用例
@@ -365,6 +367,8 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 真跑：apply_patch 带 Move to 改名 + 改内容，旧文件删除、新文件落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
 真跑：session_start / user_prompt_submit 在轮首执行，permission_request 非 0 直接拒命令,tests/brain-hooks-events.test.mjs,已声明用例
 真跑：匹配技能时系统消息注入提示，换话题后旧提示不残留,tests/brain-skill-selection.test.mjs,已声明用例
+真跑：常规命令照常执行；开启模型复核后 deny 也能拦住,tests/brain-guardian.test.mjs,已声明用例
+真跑：规则命中高危时命令根本没下发，模型拿到拒绝理由,tests/brain-guardian.test.mjs,已声明用例
 真跑：钩子命令失败只提醒不阻断（session_end 失败照样交付），且不误伤未命中的命令,tests/brain-hooks-events.test.mjs,已声明用例
 硬禁区不误伤：工作区内同名片段照常放行,tests/sandbox-policy.test.mjs,已声明用例
 硬禁区：系统目录与凭据目录即便 approved 也拒绝,tests/sandbox-policy.test.mjs,已声明用例
@@ -393,6 +397,8 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 能力面谈判：宿主没声明的代跑口不注册，声明了才搬到线上,tests/brain-app-server.test.mjs,已声明用例
 行尾空白差一点也能命中（第二级）,tests/brain-patch-and-truncation.test.mjs,已声明用例
 补发不含反向工具请求：机器应答的动作重放一次，就是白跑一遍副作用,tests/brain-app-server.test.mjs,已声明用例
+裁决合成：关闭放行、规则 high 直接拒、medium 转复核、模型 deny 生效、模型失败退回复核,tests/brain-guardian.test.mjs,已声明用例
+规则信号：凭据外发 / 管道执行远端脚本 / 强制推送 / 反取证 → high；越界批删 → medium,tests/brain-guardian.test.mjs,已声明用例
 解析：[[hook]] 块 + 老写法（不写 when）默认 pre，未知事件整条丢弃,tests/brain-hooks-events.test.mjs,已声明用例
 解析：只认 `- 名字 | skill | 描述`，其它清单行忽略,tests/brain-skill-selection.test.mjs,已声明用例
 路径围栏：相对 ../../ 落点同样算越界，cwd 监狱兜不住它,tests/brain-stdin-session.test.mjs,已声明用例
@@ -403,6 +409,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 逐字符命中：包括不在行首的片段,tests/brain-patch-and-truncation.test.mjs,已声明用例
 遍历：跳过产物目录与点目录，保留 .env.example，超上限截断,tests/brain-file-index.test.mjs,已声明用例
 配置解析：egress 开关、凭据块、缺字段丢弃、写错退回关闭,tests/brain-egress-proxy.test.mjs,已声明用例
+配置解析：默认开、rules；[guardian] 可关可换模型,tests/brain-guardian.test.mjs,已声明用例
 配置面板已接到设置页：读 GET / 存 PUT，环境变量覆盖的项不可改,tests/agent-config.test.mjs,已声明用例
 重放缓冲不被碎帧挤掉：delta 只走直播，补发交还边界与卡片,tests/brain-app-server.test.mjs,已声明用例
 重试背压：429 会重试，400 不重试，网络抖动重试一次后成功,tests/mcp-oauth-enterprise.test.mjs,已声明用例

@@ -30,6 +30,7 @@ import { buildChatToolSchemas } from "./chat-tools";
 import { searchTools } from "./tool-search";
 import { applyEditHunks, applyContextHunks, parsePatch, type EditHunk } from "./patch";
 import { parseHooks, hookMatches, fillCommand, type HookRule, type HookEvent } from "./hooks";
+import { parseGuardianConfig, runGuardianReview, type GuardianVerdict } from "./guardian";
 import { truncateToolResult } from "./truncation";
 import {
   DEFAULT_CHAT_AGENT_CONFIG,
@@ -165,6 +166,8 @@ export class ChatAgent {
   private readonly readPaths = new Set<string>();
   /** 钩子缓存（学 Codex hooks 事件面）：工作区 hooks.toml 规则，轮首失效重读 */
   private hooksCache: HookRule[] | null = null;
+  /** hooks.toml 原文（[guardian] 段要独立读，规则解析器不认识它） */
+  private hooksRaw: string | null = null;
   /** PostToolUse 钩子本轮执行次数：设上限防每次写文件都拖一轮验证命令烧额度 */
   private postHookRunsThisTurn = 0;
   /** 仓库地图缓存索引（超大仓库导航不输终端对手）：root → 树行+根签名，5 分钟 TTL + mtime 失效 */
@@ -413,6 +416,7 @@ export class ChatAgent {
     this.lintRunsThisTurn = 0;
     this.postHookRunsThisTurn = 0;
     this.hooksCache = null; // 钩子缓存轮首失效：老板随时可能改 hooks.toml，每轮重读
+    this.hooksRaw = null;
     this.turnNotes = []; // goal 验收素材轮首清空
     // goal 模式注入：当前目标与验收标准随轮刷新（先清旧 [当前目标] 再按现状重推）
     this.messages = this.messages.filter((m) => !(m.role === "system" && m.content.startsWith("[当前目标]")));
@@ -2679,13 +2683,47 @@ export class ChatAgent {
   /** 读工作区 hooks.toml（轮内缓存、轮首失效；文件不存在/解析失败按无钩子处理，不阻断对话） */
   private async loadWorkspaceHooks(): Promise<void> {
     const { ports } = this.opts;
-    if (this.hooksCache !== null || !ports.fs) return;
+    if (this.hooksCache !== null) return;
+    if (!ports.fs) {
+      this.hooksRaw = "";
+      this.hooksCache = [];
+      return;
+    }
     try {
       const res = await ports.fs.readFile("hooks.toml");
-      this.hooksCache = parseHooks(res.content ?? "");
+      this.hooksRaw = res.content ?? "";
+      this.hooksCache = parseHooks(this.hooksRaw);
     } catch {
+      this.hooksRaw = "";
       this.hooksCache = [];
     }
+  }
+
+  /** Guardian 审查（第 7.9 项）：规则永远在；hooks.toml `[guardian] review = "model"` 才加模型第二意见 */
+  private async guardianCheck(command: string, cwd?: string): Promise<GuardianVerdict> {
+    await this.loadWorkspaceHooks();
+    const cfg = parseGuardianConfig(this.hooksRaw ?? "");
+    return await runGuardianReview({
+      command,
+      cwd,
+      goal: this.currentGoal?.goal,
+      config: cfg,
+      callModel: cfg.review === "model" ? (prompt: string, model?: string) => this.guardianCallModel(prompt, model) : undefined,
+    });
+  }
+
+  /** 审查模型调用：无工具、8 秒超时；失败抛错由 runGuardianReview 折成 review */
+  private async guardianCallModel(prompt: string, model?: string): Promise<string> {
+    const res = await this.opts.ports.callLLM({
+      messages: [
+        { role: "system", content: "你是命令审查员（guardian）。只输出一行 JSON，不改写命令。" },
+        { role: "user", content: prompt },
+      ],
+      tools: [],
+      model: model ?? this.opts.model,
+      signal: AbortSignal.timeout(8_000),
+    });
+    return res.content;
   }
 
   /** PreToolUse 钩子检查：工具名匹配且参数 JSON 命中 match 正则 → 拦截本次调用并回流原因 */
@@ -2904,6 +2942,27 @@ export class ChatAgent {
         );
       }
     }
+    // Guardian 审查（第 7.9 项）：规则命中高危直接拒；模型复核说 deny 也拒；
+    // review 不拦，但把理由挂到结果里，让老板与模型都看见"这一下是有争议的"。
+    const guardian = await this.guardianCheck(args.command, args.cwd);
+    if (guardian.decision === "deny") {
+      ports.postUI("status", `guardian 拒绝执行：${guardian.reason}`, {
+        tool: "run_command", target: args.command, ok: false, guardian: guardian.reason,
+      });
+      this.journal.append("tool_result", `guardian 拒绝：${guardian.reason}`, { tool: "run_command" });
+      return this.trackFailure(
+        "run_command",
+        `命令被 guardian 审查拒绝（${guardian.source}）：${guardian.reason}\n这条命令不在本轮目标覆盖范围内，且可能造成不可逆后果或泄露凭据。不要换写法绕过；确需执行就把目标与影响写清楚，请老板在 hooks.toml 里放开或人工执行。`,
+      );
+    }
+    let guardianNote = "";
+    if (guardian.decision === "review") {
+      guardianNote = `\n【guardian 需复核】${guardian.reason}`;
+      ports.postUI("status", `guardian 提示：${guardian.reason}`, {
+        tool: "run_command", target: args.command, ok: true, guardian: guardian.reason,
+      });
+      this.journal.append("tool_result", `guardian 复核提示：${guardian.reason}`, { tool: "run_command" });
+    }
     // 后台长任务（对齐 DSH background jobs）：转服务通道执行，不受命令超时限制；service_status 查日志、stop_service 清场
     if (args.background) {
       if (!ports.service) return "后台任务需要服务管理通道，当前环境未接入；请改用普通 run_command 并控制时长。";
@@ -2970,7 +3029,7 @@ export class ChatAgent {
       if (advice) this.journal.append("tool_result", `自愈诊断：${advice.diagnosis}`, { tool: "run_command" });
       return this.trackFailure(
         "run_command",
-        `命令退出码 ${result.exitCode}：\n${excerpt || "（无输出）"}${advice ? `\n[自愈诊断] ${advice.diagnosis}\n[换路指引] ${advice.hint}` : ""}${spillNote}${testNote}${netNote}`,
+        `命令退出码 ${result.exitCode}：\n${excerpt || "（无输出）"}${advice ? `\n[自愈诊断] ${advice.diagnosis}\n[换路指引] ${advice.hint}` : ""}${spillNote}${testNote}${netNote}${guardianNote}`,
       );
     }
     const ref = this.evidence.add("command", args.command, excerpt || "(exit 0)");
@@ -2979,7 +3038,7 @@ export class ChatAgent {
       ...(testReport ? { testReport } : {}),
       ...(result.spillPath ? { spillPath: result.spillPath } : {}),
     });
-    return `命令成功（exit 0，已入账 ${ref}）：\n${excerpt || "（无输出）"}${spillNote}${testNote}${netNote}`;
+    return `命令成功（exit 0，已入账 ${ref}）：\n${excerpt || "（无输出）"}${spillNote}${testNote}${netNote}${guardianNote}`;
   }
 
   /** 交互会话续写（write_stdin）：闸门在服务端按行扫，这里只回流新增输出、留痕与收尾 */
