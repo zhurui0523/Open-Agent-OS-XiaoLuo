@@ -1027,6 +1027,9 @@ export class ChatAgent {
   private async dispatchTool(call: ToolCall): Promise<string> {
     // MCP 外部工具：名字形如 mcp__<server>__<tool>，统一走 execMcpTool（不进 switch 枚举）
     if (call.name.startsWith("mcp__")) return await this.execMcpTool(call);
+    // MCP 资源（学 Codex 的内置两件套）：不进 mcp__ 命名空间，走宿主 resources 口
+    if (call.name === "list_mcp_resources") return await this.execListMcpResources(call);
+    if (call.name === "read_mcp_resource") return await this.execReadMcpResource(call);
     // PreToolUse 钩子（学 kimi-code hooks）：工作区 hooks.toml 可配拦截规则，拦下时把原因回流给模型改道
     const hookBlock = await this.checkPreToolHooks(call);
     if (hookBlock) return hookBlock;
@@ -2803,6 +2806,40 @@ export class ChatAgent {
       }
     }
     return { notes: notes.join(""), blocked: "" };
+  }
+
+  /** MCP 资源列举：宿主聚合各服务器 resources/list 结果；只读，不走审批 */
+  private async execListMcpResources(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.mcp?.listResources) return "MCP 资源通道未接入，无法列举资源。";
+    const args = (call.arguments ?? {}) as { server?: unknown };
+    try {
+      const all = await ports.mcp.listResources();
+      const filtered = args.server ? all.filter((r) => r.server === String(args.server)) : all;
+      if (!filtered.length) {
+        return args.server ? "服务器 " + String(args.server) + " 没有声明资源（或只提供模板资源）。" : "已连接的 MCP 服务器都没有声明资源。";
+      }
+      const lines = filtered.map((r) => "- [" + r.server + "] " + r.name + " <" + r.uri + ">" + (r.mimeType ? " (" + r.mimeType + ")" : "") + (r.description ? "：" + r.description : ""));
+      return "MCP 资源 " + filtered.length + " 条：\n" + lines.join("\n");
+    } catch (err) {
+      return "列举 MCP 资源失败：" + (err instanceof Error ? err.message : String(err)) + "。可先同步 MCP 服务器再试。";
+    }
+  }
+
+  /** MCP 资源读取：uri 来自列举结果；超长同样截断防上下文膨胀 */
+  private async execReadMcpResource(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.mcp?.readResource) return "MCP 资源通道未接入，无法读取资源。";
+    const args = (call.arguments ?? {}) as { uri?: unknown; server?: unknown };
+    const uri = String(args.uri ?? "").trim();
+    if (!uri) return "read_mcp_resource 需要 uri（先调 list_mcp_resources 拿真实 uri，别拼）";
+    this.journal.append("tool_result", "MCP 资源读取：" + uri, { tool: "read_mcp_resource" });
+    try {
+      const text = await ports.mcp.readResource(uri, args.server ? String(args.server) : undefined);
+      return text.length > 20000 ? text.slice(0, 20000) + "\n…（MCP 资源过长已截断）" : text;
+    } catch (err) {
+      return "读取 MCP 资源失败：" + (err instanceof Error ? err.message : String(err)) + "。uri 必须以 list_mcp_resources 的结果为准。";
+    }
   }
 
   /** MCP 外部工具调用：宿主按公开名反查 (server, rawName) 后走 tools/call；结果超长截断防上下文膨胀 */

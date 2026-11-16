@@ -7,13 +7,14 @@ import {
   BrowserWindow,
   clipboard,
   desktopCapturer,
+  dialog,
   ipcMain,
   Menu,
   session,
   shell,
 } from "electron";
 import { handleCommandPayload, handleDeployPayload, handleFsPayload, handleFetchPayload, handleServicePayload, initLocalRuntime, shutdownLocalServices, cancelAllCommands } from "./local-runtime.mjs";
-import { handleMcpPayload, initMcpRuntime, shutdownMcp } from "./mcp-runtime.mjs";
+import { handleMcpPayload, initMcpRuntime, setElicitationHandler, shutdownMcp } from "./mcp-runtime.mjs";
 import { initMcpOAuth } from "./mcp-oauth.mjs";
 import { initWebDriver, handleWebDriverPayload, shutdownWebDriver } from "./webdrive-runtime.mjs"; // WEB-DRIVE-WIRED
 import { initUia, handleUiaPayload } from "./uia-runtime.mjs"; // UIA-WIRED
@@ -153,6 +154,110 @@ app.setName(copy.appName);
 initLocalRuntime(app.getPath("userData"));
 initMcpRuntime(join(app.getPath("userData"), "brain-workspace", "workspace"));
 initMcpOAuth(join(app.getPath("userData"), "mcp-auth")); // OAuth 凭据目录（600 权限）
+
+/**
+ * MCP elicitation（学 Codex `elicitation.rs`）：服务器在工具执行中途反过来问用户。
+ *  - url 模式：确认后开系统浏览器；
+ *  - 表单模式：没有必填字段就一次确认，有必填字段给一个最小表单窗口；
+ *  - 用户关窗/拒绝 → cancel/decline，绝不替用户同意。
+ */
+function askElicitation(ctx) {
+  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined;
+  if (ctx.mode === "url") {
+    return dialog
+      .showMessageBox(parent, {
+        type: "question",
+        title: "MCP 需要你确认",
+        message: ctx.message || "MCP 服务器请求在浏览器里完成一步确认",
+        detail: ctx.url,
+        buttons: ["打开并同意", "拒绝"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      })
+      .then(async ({ response }) => {
+        if (response !== 0) return { action: "decline", reason: "老板拒绝" };
+        if (ctx.url) await shell.openExternal(ctx.url);
+        return { action: "accept" };
+      });
+  }
+  const properties = (ctx.requestedSchema && ctx.requestedSchema.properties) || {};
+  const required = Array.isArray(ctx.requestedSchema && ctx.requestedSchema.required) ? ctx.requestedSchema.required : [];
+  const fields = Object.entries(properties);
+  if (!fields.length) {
+    return dialog
+      .showMessageBox(parent, {
+        type: "question",
+        title: "MCP 需要你确认",
+        message: ctx.message || "MCP 服务器需要老板确认这一步",
+        buttons: ["同意", "拒绝"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      })
+      .then(({ response }) => (response === 0 ? { action: "accept", content: {} } : { action: "decline", reason: "老板拒绝" }));
+  }
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 520,
+      height: Math.min(680, 180 + fields.length * 66),
+      parent,
+      modal: Boolean(parent),
+      show: false,
+      title: "小逻 · MCP 需要你补充信息",
+      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
+    });
+    const channel = "xiaoluo-elicit-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      ipcMain.removeAllListeners(channel);
+      if (!win.isDestroyed()) win.destroy();
+      resolve(value);
+    };
+    ipcMain.once(channel, (_event, content) => {
+      finish(content === null || typeof content !== "object" ? { action: "decline", reason: "老板取消" } : { action: "accept", content });
+    });
+    win.on("closed", () => finish({ action: "cancel", reason: "老板关闭了表单" }));
+    const fieldHtml = fields
+      .map(([key, desc]) => {
+        const d = desc && typeof desc === "object" ? desc : {};
+        const isRequired = required.includes(key);
+        const label = (d.title || key) + (isRequired ? " *" : "");
+        const inputId = "f_" + key.replace(/[^A-Za-z0-9_-]/g, "_");
+        let control = "";
+        if (Array.isArray(d.enum)) {
+          control = "<select id=\"" + inputId + "\">" + d.enum.map((v) => "<option value=\"" + String(v) + "\">" + String(v) + "</option>").join("") + "</select>";
+        } else if (d.type === "boolean") {
+          control = "<input type=\"checkbox\" id=\"" + inputId + "\">";
+        } else if (d.type === "number" || d.type === "integer") {
+          control = "<input type=\"number\" id=\"" + inputId + "\">";
+        } else {
+          control = "<input type=\"text\" id=\"" + inputId + "\">";
+        }
+        return "<label class=\"row\" data-key=\"" + key + "\" data-type=\"" + (d.type || "string") + "\" data-enum=\"" + (Array.isArray(d.enum) ? "1" : "") + "\"><span>" + label + "</span>" + control + (d.description ? "<em>" + String(d.description) + "</em>" : "") + "</label>";
+      })
+      .join("");
+    const html =
+      "<html><meta charset=\"utf-8\"><style>body{font-family:system-ui,'Microsoft YaHei',sans-serif;padding:18px 20px;margin:0}h2{font-size:15px;margin:0 0 6px}p{font-size:13px;color:#555;margin:0 0 14px;white-space:pre-wrap}.row{display:block;margin:0 0 12px}span{display:block;font-size:13px;margin-bottom:4px}input[type=text],input[type=number],select{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #cfd3d8;border-radius:6px;font-size:13px}em{display:block;font-size:12px;color:#888;font-style:normal;margin-top:3px}footer{display:flex;gap:10px;justify-content:flex-end;margin-top:8px}button{padding:7px 16px;border-radius:6px;border:1px solid #cfd3d8;background:#fff;font-size:13px;cursor:pointer}button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}</style><body><h2>MCP 服务器请求你补充信息</h2><p>" +
+      String(ctx.message || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]) +
+      "</p><main>" +
+      fieldHtml +
+      "</main><footer><button id=\"cancel\">取消</button><button class=\"primary\" id=\"ok\">提交</button></footer><script>" +
+      "const {ipcRenderer}=require('electron');" +
+      "document.getElementById('cancel').onclick=()=>ipcRenderer.send('" + channel + "',null);" +
+      "document.getElementById('ok').onclick=()=>{const out={};let bad='';" +
+      "for(const row of document.querySelectorAll('label.row')){const key=row.getAttribute('data-key');const type=row.getAttribute('data-type');const isEnum=row.getAttribute('data-enum')==='1';const el=row.querySelector('input,select');" +
+      "if(type==='boolean'){out[key]=el.checked;continue;} if(!el.value){continue;}" +
+      "if(isEnum){out[key]=el.value;continue;} if(type==='number'||type==='integer'){const n=Number(el.value); if(!Number.isFinite(n)||(type==='integer'&&!Number.isInteger(n))){bad=key;break;} out[key]=n;continue;} out[key]=el.value;}" +
+      "if(bad){document.querySelector('p').textContent='字段 '+bad+' 不是合法数字';return;}" +
+      "ipcRenderer.send('" + channel + "',out);};</script></body></html>";
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+    win.once("ready-to-show", () => win.show());
+  });
+}
+app.whenReady().then(() => setElicitationHandler(askElicitation));
 initWebDriver(app.getPath("userData")); // WEB-DRIVE
 initUia(app.getPath("userData")); // UIA
 initSsh(app.getPath("userData")); // SSH

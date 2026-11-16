@@ -333,6 +333,7 @@ export function chatToolCapabilities(ports: ChatAgentPorts): ChatToolCapabilitie
     memoryEnabled: Boolean(ports.memory),
     deployEnabled: Boolean(ports.deployProgram),
     mcpTools: ports.mcp?.tools ?? [],
+    mcpResourcesEnabled: Boolean(ports.mcp?.listResources && ports.mcp?.readResource),
   };
 }
 

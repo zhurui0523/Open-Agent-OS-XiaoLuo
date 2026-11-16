@@ -178,7 +178,7 @@ interface XiaoLuoDesktopBridge {
   cancelCommands?: () => Promise<{ ok?: boolean }>;
   manageService: (payload: { action: "start" | "stop" | "status" | "setup" | "setups"; command?: string; ttlMs?: number; cwd?: string; id?: string; approved?: boolean; kind?: string; name?: string; port?: number; path?: string; database?: string }) => Promise<XiaoLuoDesktopServiceResult>;
   deployProgram: (payload: { name?: string; files: { path: string; content: string }[]; entryFile?: string }) => Promise<{ dir?: string; fileCount?: number; error?: string }>;
-  mcpAction: (payload: { action: string; server?: string; tool?: string; arguments?: Record<string, unknown> }) => Promise<{ servers?: { name: string; ok?: boolean; error?: string; tools?: { rawName: string; description: string; inputSchema?: Record<string, unknown> }[] }[]; ok?: boolean; text?: string; error?: string }>;
+  mcpAction: (payload: { action: string; server?: string; tool?: string; arguments?: Record<string, unknown>; uri?: string }) => Promise<{ servers?: { name: string; ok?: boolean; error?: string; tools?: { rawName: string; description: string; inputSchema?: Record<string, unknown> }[] }[]; resources?: { server?: string; uri?: string; name?: string; description?: string; mimeType?: string }[]; ok?: boolean; text?: string; error?: string; uri?: string }>;
   fetchLocal: (payload: { url: string }) => Promise<{ ok?: boolean; status?: number; contentType?: string; text?: string; error?: string }>;
   openExternal?: (payload: { url: string }) => Promise<{ ok?: boolean }>;
   browserAction?: (payload: Record<string, unknown>) => Promise<{ ok?: boolean; error?: string; dataUrl?: string; width?: number; height?: number; result?: string }>;
@@ -1535,6 +1535,27 @@ export function XiaoluoBrainPanel({
               const hit = mcpMapRef.current.get(qualified);
               if (!hit) return "MCP 工具不存在：" + qualified + "（服务器可能未连接）";
               const res = await desktop.mcpAction({ action: "call", server: hit.server, tool: hit.raw, arguments: args });
+              if (res.error) throw new Error(res.error);
+              return String(res.text ?? "");
+            },
+            // MCP resources（学 Codex resources/list + resources/read）：宿主聚合各服务器声明的资源
+            listResources: async () => {
+              const desktop = desktopRuntime();
+              if (!desktop) throw new Error("MCP 通道未接入。");
+              const res = await desktop.mcpAction({ action: "resources" });
+              if (res.error) throw new Error(res.error);
+              return (res.resources ?? []).map((r) => ({
+                server: String(r.server ?? ""),
+                uri: String(r.uri ?? ""),
+                name: String(r.name ?? ""),
+                description: r.description ? String(r.description) : undefined,
+                mimeType: r.mimeType ? String(r.mimeType) : undefined,
+              }));
+            },
+            readResource: async (uri: string, server?: string) => {
+              const desktop = desktopRuntime();
+              if (!desktop) throw new Error("MCP 通道未接入。");
+              const res = await desktop.mcpAction({ action: "resource-read", uri, server });
               if (res.error) throw new Error(res.error);
               return String(res.text ?? "");
             },

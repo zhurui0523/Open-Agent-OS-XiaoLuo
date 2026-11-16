@@ -197,12 +197,25 @@ export interface McpToolInfo {
   inputSchema?: Record<string, unknown>;
 }
 
+/** MCP 资源条目（服务器声明的 resources/list 结果 + 归属服务器） */
+export interface McpResourceInfo {
+  server: string;
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
 /** MCP 口：外部 Model Context Protocol 服务器（stdio 传输，宿主在桌面主进程托管子进程） */
 export interface McpPort {
   /** 本会话已发现的 MCP 工具（注册进工具面供模型调用） */
   tools: McpToolInfo[];
   /** 按公开名调用；宿主内部反查 (server, rawName) 映射后走 tools/call */
   callTool(qualifiedName: string, args: Record<string, unknown>): Promise<string>;
+  /** 列举各服务器声明的资源（学 Codex resources/list）；不实现则不注册 list_mcp_resources */
+  listResources?(): Promise<McpResourceInfo[]>;
+  /** 按 uri 读资源正文（resources/read）；server 用于模板资源消歧；不实现则不注册 read_mcp_resource */
+  readResource?(uri: string, server?: string): Promise<string>;
 }
 
 /** 文件系统口：read_file / list_dir / write_file / grep_files / find_files 的宿主实现 */

@@ -1254,6 +1254,8 @@ export interface ChatToolCapabilities {
   sshEnabled?: boolean;
   /** MCP 外部工具（mcp__<server>__<tool>；schema 由服务器上报，原样注册） */
   mcpTools?: McpToolInfo[];
+  /** MCP 资源（list_mcp_resources / read_mcp_resource；宿主实现了 resources 才开） */
+  mcpResourcesEnabled?: boolean;
 }
 
 /**
@@ -1463,6 +1465,39 @@ const SAVE_SKILL_SCHEMA = {
         parameters: t.inputSchema && typeof t.inputSchema === "object" ? t.inputSchema : { type: "object", properties: {} },
       },
     });
+  }
+  // MCP 资源两件套（学 Codex：list_mcp_resources / read_mcp_resource 是内核内置工具，不是服务器工具）
+  if (caps.mcpResourcesEnabled) {
+    schemas.push(
+      {
+        type: "function",
+        function: {
+          name: "list_mcp_resources",
+          description:
+            "[MCP] 列出已连接 MCP 服务器声明的资源（文档/文件/数据条目）。老板问\"这个 MCP 服务器有什么资料/资源\"时先查这里，别猜 uri。",
+          parameters: {
+            type: "object",
+            properties: { server: { type: "string", description: "可选：只看某个服务器" } },
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "read_mcp_resource",
+          description:
+            "[MCP] 按 uri 读取 MCP 资源正文。uri 必须来自 list_mcp_resources 的结果；模板资源要同时给 server。",
+          parameters: {
+            type: "object",
+            required: ["uri"],
+            properties: {
+              uri: { type: "string", description: "资源 uri（来自 list_mcp_resources）" },
+              server: { type: "string", description: "可选：资源所属服务器" },
+            },
+          },
+        },
+      },
+    );
   }
   // delegate_task（学 kimi-code collaboration 单层分治）：子循环独立上下文，只回流摘要，中间步骤不进主线
   const DELEGATE_TASK_SCHEMA = {

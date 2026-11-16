@@ -18,6 +18,7 @@ OpenAI Responses output text is extracted from output message content,tests/mode
 OpenAI Responses probe uses the Responses API request format,tests/model-adapters.test.mjs,已声明用例
 PKCE 与 state：challenge = base64url(sha256(verifier))，state 允许带附加后缀,tests/mcp-oauth.test.mjs,已声明用例
 RunningHub video providers expose their own fixed parameter choices,tests/model-protocol-options.test.mjs,已声明用例
+Schema 校验：必填、integer、enum 三条规则各自能挡住,tests/mcp-elicitation-resources.test.mjs,已声明用例
 Suno falls back to lyrics entered directly in the music node,tests/suno-prompt-routing.test.mjs,已声明用例
 Suno receives connected upstream text as clean lyrics,tests/suno-prompt-routing.test.mjs,已声明用例
 Wan 3.0 Prime is wired through the RunningHub video path,tests/model-input-constraints.test.mjs,已声明用例
@@ -79,6 +80,8 @@ does not reacquire an asynchronous job before its next poll time,tests/async-job
 duration slider stays fixed and cannot drag its canvas node,tests/duration-range-menu.test.mjs,已声明用例
 edit_file 工具声明：单处与两种入参形态都说清,tests/brain-patch-and-truncation.test.mjs,已声明用例
 edit_file 接法：翻页读全文 + 三级匹配 + 全成或全不成,tests/brain-patch-and-truncation.test.mjs,已声明用例
+elicitation：宿主同意则 accept 并把内容回给服务器，类型不对则 decline,tests/mcp-elicitation-resources.test.mjs,已声明用例
+elicitation：没有交互通道一律 decline（有副作用的确认不能默认放行）,tests/mcp-elicitation-resources.test.mjs,已声明用例
 enforces private and shared Skill scopes for administrators and users,tests/extension-lifecycle.test.mjs,已声明用例
 enforces workspace scope on extension model runtime and asset APIs,tests/server-core-contract.test.mjs,已声明用例
 ensureEgressEnv：未启用返回空、启用后复用同一代理,tests/brain-egress-proxy.test.mjs,已声明用例
@@ -171,6 +174,7 @@ rejects secrets embedded in an imported package,tests/package-import.test.mjs,�
 remote model inputs never submit authenticated in-app asset URLs,tests/model-input-constraints.test.mjs,已声明用例
 renders API connection health as lights without squeezing card content,tests/server-core-contract.test.mjs,已声明用例
 reports unavailable dependencies safely and backs off an unhealthy worker,tests/security-hardening.test.mjs,已声明用例
+resources：列举跨服务器聚合，按 uri 读回正文,tests/mcp-elicitation-resources.test.mjs,已声明用例
 restarts a local dev server whose health route works but page rendering fails,tests/server-core-contract.test.mjs,已声明用例
 result dock tabs only come from enabled sandbox-ui plugins,tests/dock-panel-tabs.test.mjs,已声明用例
 result slots reject empty upstream output and preserve usable output,tests/result-slot-flow.test.mjs,已声明用例
@@ -249,6 +253,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 会话续写也过硬禁区：把禁区命令敲进已开 shell 不算绕过,tests/sandbox-policy.test.mjs,已声明用例
 信封纪律：坏请求用协议错误码回，绝不抛出去,tests/brain-app-server.test.mjs,已声明用例
 共享策略自带用例全绿（风险分级 + 网络分级）,tests/brain-network-policy.test.mjs,已声明用例
+内核工具面：资源口在才注册两件套，并走内置分发（不进 mcp__ 命名空间）,tests/mcp-elicitation-resources.test.mjs,已声明用例
 写完 uploads/todo.html 再起静态服务：预览地址打开就是那个文件,tests/brain-service-setup.test.mjs,已声明用例
 写权限：宿主没开 write 时 canWrite=true 直接拒绝，不偷偷降级成写,tests/brain-subagent-parallel.test.mjs,已声明用例
 写盘是原子的：成功后不留 .tmp 残片，内容完整,tests/edit-residual.test.mjs,已声明用例
@@ -269,6 +274,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 只读子 Agent 不许写：write_file 被挡，不会落盘,tests/brain-subagent-parallel.test.mjs,已声明用例
 可写：宿主开权限后子 Agent 能写，且改动登记回主线程结果,tests/brain-subagent-parallel.test.mjs,已声明用例
 同一份输入在三端解析结果一致（配置治理的核心承诺）,tests/agent-config.test.mjs,已声明用例
+同步服务器：声明 elicitation 支持、列出资源；模板失败不影响主列表,tests/mcp-elicitation-resources.test.mjs,已声明用例
 命令模板：{command} {prompt} {tool} {path} 都替换，未声明的占位符原样留着（看出写错）,tests/brain-hooks-events.test.mjs,已声明用例
 回合占用：同一条线程第二轮要撞车，宿主才知道该插话,tests/brain-app-server.test.mjs,已声明用例
 回环目标始终放行：小逻自查自己的预览服务不能被策略挡死,tests/brain-network-policy.test.mjs,已声明用例

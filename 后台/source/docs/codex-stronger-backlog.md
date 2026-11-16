@@ -167,15 +167,16 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 7.1 | apply_patch 语义 | ① 支持 `*** Move to: <path>`（改名 + 改内容一次做完，目标不许被占用，先落新文件再删旧文件）；② 上下文匹配由"逐行严格相等"升级到三级（逐字符 → 忽略行尾空白 → 忽略行首尾空白），与 Codex `seek_sequence` 前三级对齐；同一级命中多处仍判不唯一，绝不往更松一级猜 | `patch.ts` / `chat-agent.ts execApplyPatch`；`tests/brain-patch-and-truncation.test.mjs` 22 条（含 1 条真跑 move） |
 | 7.2 | hooks 事件面 | 补齐 10 事件里的 `model_request` / `compact` / `interrupt` / `stop`：model_request 每轮第一次请求前跑一次（观测/注入提醒，不做硬闸）；compact 在压缩前留痕；interrupt 在两个中止返回路径触发；stop 在交付后触发 | `hooks.ts` / `chat-agent.ts`；`tests/brain-hooks-events.test.mjs` 8 条（含 1 条真跑断言 model_request/stop 各一次） |
 | 7.3 | 出站网络代理（最小版） | 新建 `app/lib/egress-proxy.ts`：本机 HTTP 代理（只监听 127.0.0.1）、域名白名单/黑名单（黑名单优先、`*.corp.com` 后缀通配、空白名单=全拒）、CONNECT 隧道放行/拒绝、明文 HTTP 转发时按目标主机注入凭据头（token 从环境变量读，不进审计）、裁决审计（有上限）。`hooks.toml` 写 `[sandbox] egress = "proxy"` 才启用；四个命令入口（run_command / 常驻服务 / git / 交互会话）统一走 `networkEnvForUser`，`egress.allow` 与 `network_allow` 共用一份，避免两处配置打架 | `egress-proxy.ts` / `brain-sandbox.ts`；`tests/brain-egress-proxy.test.mjs` 6 条（含真跑 CONNECT 隧道 + 凭据注入） |
+| 7.4 | MCP elicitation / resources / 连接池 | ① 客户端在 initialize 里声明 `elicitation` + `roots` 能力，并能应答服务器反向请求（stdio 与 streamable HTTP 两条传输都接）：`elicitation/create`（url 模式确认 / 表单模式弹窗 / 无通道默认 decline / 5 分钟超时 cancel，内容按 JSON Schema 校验必填与类型，不合格退回 decline）、`roots/list`、`ping`、未知方法 -32601；② `resources/list` + `resources/templates/list`（模板失败不影响主列表）+ `resources/read`，内核新增内置工具 `list_mcp_resources` / `read_mcp_resource`（对齐 Codex 的 `list_mcp_resources` 形状）；③ 连接池空闲 10 分钟回收（`unref` 定时器，不拖住进程） | `客户端/source/desktop/mcp-runtime.mjs`、`main.mjs`（表单窗口 + 系统对话框）、`后台/.../chat-tools.ts`、`chat-agent.ts`、`agent-ports.ts`、`types.ts`、`xiaoluo-brain-panel.tsx`；`tests/mcp-elicitation-resources.test.mjs` 6 条（假服务器真跑协议） |
 
 **7.3 已知边界**：① 没有 MITM 与证书体系，HTTPS 走 CONNECT 隧道，代理看不到明文、也不能给 HTTPS 注入凭据头（只对明文 HTTP 生效）；② 没有按进程归属统计、没有 HTTP/2 专用处理、没有 AWS SigV4 签名；③ 仍是"代理约定级"约束，raw socket / `curl --noproxy` 可绕过，进程级禁网要等内核隔离档；④ 默认关闭（不写 `egress = "proxy"` 行为与原来完全一致），因此没有做灰度开关。
+
+**7.4 已知边界**：① 没有实现 GET SSE 长连接，服务器主动推送的请求只有随 POST 响应一起回来时才接得住；② 资源订阅（resources/subscribe）与变更通知未做；③ `resources/templates/list` 只列举不展开，模板资源读取需模型显式给 server + uri；④ elicitation 表单只支持一层扁平字段（string / number / integer / boolean / enum），嵌套对象和数组要等表单引擎；⑤ 未在真实企业 MCP 服务器上跑过（假服务器覆盖协议层）。
 
 ### 未补（按价值排序，仍待做）
 
 | # | 能力 | Codex 代码证据 | 小逻现状 | 价值 |
 |---|---|---|---|---|
-| 7.4 | MCP elicitation / resources / 连接池 | `codex-mcp/src/elicitation.rs`、`resource_client.rs`、`connection_pool.rs`、`event_stream.rs` | `mcp-runtime.mjs` 只有 tools/list + call + OAuth | 企业 MCP 服务器大量依赖 |
-
 | 7.5 | 线程持久化（可检索、可治理） | `thread-store` 78 files / 1.44MB；`rollout` 含 compression / reverse_jsonl_scanner / reference_index / search | `event-log.ts`（7KB）+ `journal.ts`（8KB）+ sqlite 派生状态 | 长会话与回溯 |
 | 7.6 | skills 隐式调用识别 | `skills`：17 files / 89KB（`invocation.rs`、`mentions.rs`、`interface.rs`、`selection.rs`） | 有 skills 加载，但靠显式调用 | 体验 |
 | 7.7 | 文件索引 / 变更监听 | `app-server/src/fuzzy_file_search.rs`；`file-watcher` 56KB | `repo.ts` 只有仓库元信息 | 大仓库体验 |

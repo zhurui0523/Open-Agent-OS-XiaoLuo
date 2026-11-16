@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import * as OAUTH from "./mcp-oauth.mjs";
 
 let workspaceRoot = "";
@@ -11,6 +12,83 @@ export function initMcpRuntime(root) { workspaceRoot = root; }
 const PROTOCOL_VERSION = "2024-11-05";
 const CALL_TIMEOUT_MS = 60_000;
 const HANDSHAKE_TIMEOUT_MS = 15_000;
+const ELICIT_TIMEOUT_MS = 5 * 60_000;
+const RESOURCE_TIMEOUT_MS = 30_000;
+const IDLE_TTL_MS = 10 * 60_000;
+
+/**
+ * Elicitation（学 Codex `elicitation.rs`）：服务器在工具执行中途反过来问用户要输入。
+ * 宿主（桌面主进程）通过 setElicitationHandler 提供交互通道；没提供就一律 decline，
+ * 绝不伪造"用户同意"——这是有副作用的确认，不能默认放行。
+ */
+let elicitationHandler = null;
+export function setElicitationHandler(fn) {
+  elicitationHandler = typeof fn === "function" ? fn : null;
+}
+
+/** 按 JSON Schema 做最小校验：必填、基础类型、enum。不做嵌套对象深校验（够挡明显错误） */
+export function validateElicitContent(schema, content) {
+  const errors = [];
+  if (!schema || typeof schema !== "object") return { ok: true, errors };
+  if (schema.type && schema.type !== "object") return { ok: false, errors: ["requestedSchema 必须是 object"] };
+  const props = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+  const obj = content && typeof content === "object" && !Array.isArray(content) ? content : {};
+  for (const key of Array.isArray(schema.required) ? schema.required : []) {
+    if (!(key in obj)) errors.push("缺少必填字段：" + key);
+  }
+  for (const [key, desc] of Object.entries(props)) {
+    if (!(key in obj) || !desc || typeof desc !== "object") continue;
+    const v = obj[key];
+    if (desc.type === "string" && typeof v !== "string") errors.push(key + " 应为 string");
+    else if (desc.type === "number" && typeof v !== "number") errors.push(key + " 应为 number");
+    else if (desc.type === "integer" && !Number.isInteger(v)) errors.push(key + " 应为 integer");
+    else if (desc.type === "boolean" && typeof v !== "boolean") errors.push(key + " 应为 boolean");
+    if (Array.isArray(desc.enum) && !desc.enum.includes(v)) errors.push(key + " 不在允许取值内");
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+/** 把一次 elicitation 请求收敛成 MCP 规定的 { action, content? } */
+async function resolveElicitation(server, params) {
+  const p = params && typeof params === "object" ? params : {};
+  const mode = p.mode === "url" ? "url" : "form";
+  const ctx = {
+    server,
+    mode,
+    message: String(p.message ?? ""),
+    url: String(p.url ?? ""),
+    requestedSchema: p.requestedSchema && typeof p.requestedSchema === "object" ? p.requestedSchema : null,
+  };
+  if (!elicitationHandler) return { action: "decline", reason: "宿主没有提供 elicitation 交互通道" };
+  let timer = null;
+  const decision = await Promise.race([
+    Promise.resolve()
+      .then(() => elicitationHandler(ctx))
+      .catch((err) => ({ action: "cancel", reason: err instanceof Error ? err.message : String(err) })),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ action: "cancel", reason: "等待用户超时（" + ELICIT_TIMEOUT_MS + "ms）" }), ELICIT_TIMEOUT_MS);
+      if (typeof timer.unref === "function") timer.unref();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  const action = decision && ["accept", "decline", "cancel"].includes(decision.action) ? decision.action : "decline";
+  if (action !== "accept") {
+    return decision && decision.reason ? { action, reason: String(decision.reason) } : { action };
+  }
+  if (mode === "url") return { action: "accept" };
+  const verdict = validateElicitContent(ctx.requestedSchema, decision.content);
+  if (!verdict.ok) return { action: "decline", reason: "提交内容不符合要求：" + verdict.errors.join("；") };
+  return { action: "accept", content: decision.content && typeof decision.content === "object" ? decision.content : {} };
+}
+
+function workspaceRoots() {
+  if (!workspaceRoot) return [];
+  try {
+    return [{ uri: pathToFileURL(workspaceRoot).href, name: "工作区" }];
+  } catch {
+    return [];
+  }
+}
 
 function sanitizeName(s) {
   return String(s ?? "").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 32).replace(/^_+|_+$/g, "");
@@ -25,16 +103,25 @@ class McpConn {
     this.nextId = 1;
     this.pending = new Map(); // id -> { resolve, reject, timer }
     this.tools = [];
+    this.capabilities = {};
+    this.resources = [];
+    this.resourceTemplates = [];
+    this.resourceError = "";
+    this.lastUsed = Date.now();
     this.error = "";
   }
   start() {
     return new Promise((resolve) => {
       try {
-        this.proc = spawn(this.cfg.command, this.cfg.args ?? [], {
+        // Windows 上 npx/uvx 是 .cmd，必须过 shell；过 shell 时带空格的命令（如 "User Data" 下的 node.exe）要自己加引号
+        const useShell = process.platform === "win32";
+        const rawCommand = String(this.cfg.command ?? "");
+        const command = useShell && /\s/.test(rawCommand) && !/^".*"$/.test(rawCommand) ? '"' + rawCommand + '"' : rawCommand;
+        this.proc = spawn(command, this.cfg.args ?? [], {
           cwd: this.cfg.cwd || workspaceRoot || undefined,
           env: { ...process.env, ...(this.cfg.env ?? {}) },
           stdio: ["pipe", "pipe", "pipe"],
-          shell: process.platform === "win32", // Windows 上 npx/uvx 是 .cmd，需要 shell 解析
+          shell: useShell,
           windowsHide: true,
         });
       } catch (err) {
@@ -61,19 +148,67 @@ class McpConn {
   }
   async handshake() {
     try {
-      await this.rpc("initialize", {
+      const init = await this.rpc("initialize", {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
+        capabilities: { elicitation: {}, roots: { listChanged: false } },
         clientInfo: { name: "xiaoluo-brain", version: "1.0.0" },
       }, HANDSHAKE_TIMEOUT_MS);
+      this.capabilities = init && typeof init.capabilities === "object" ? init.capabilities : {};
       this.notify("notifications/initialized", {});
       const res = await this.rpc("tools/list", {}, HANDSHAKE_TIMEOUT_MS);
       this.tools = Array.isArray(res && res.tools) ? res.tools : [];
+      await this.loadResources(HANDSHAKE_TIMEOUT_MS);
       return null;
     } catch (err) {
       this.stop();
       return err instanceof Error ? err : new Error(String(err));
     }
+  }
+  /** 服务器声明了 resources 能力才去列：没声明的服务器调用会直接报错 */
+  async loadResources(timeoutMs) {
+    this.resources = [];
+    this.resourceTemplates = [];
+    this.resourceError = "";
+    if (!this.capabilities || !this.capabilities.resources) return;
+    try {
+      const res = await this.rpc("resources/list", {}, timeoutMs);
+      this.resources = Array.isArray(res && res.resources) ? res.resources : [];
+    } catch (err) {
+      this.resourceError = "resources/list 失败：" + (err instanceof Error ? err.message : String(err));
+    }
+    try {
+      const res = await this.rpc("resources/templates/list", {}, timeoutMs);
+      this.resourceTemplates = Array.isArray(res && res.resourceTemplates) ? res.resourceTemplates : [];
+    } catch (err) {
+      // 模板是可选能力：一个服务器没实现不该影响已列出的资源
+      this.resourceTemplates = [];
+      this.resourceError = (this.resourceError ? this.resourceError + "；" : "") + "模板列表不可用：" + (err instanceof Error ? err.message : String(err));
+    }
+  }
+  /** 回复服务器发起的请求（elicitation/create、roots/list、ping） */
+  respond(id, result, error) {
+    if (!this.proc || !this.proc.stdin.writable) return;
+    const msg = error ? { jsonrpc: "2.0", id, error } : { jsonrpc: "2.0", id, result };
+    this.proc.stdin.write(JSON.stringify(msg) + "\n");
+  }
+  handleServerRequest(msg) {
+    const id = msg.id;
+    const method = String(msg.method ?? "");
+    if (method === "elicitation/create") {
+      resolveElicitation(this.name, msg.params)
+        .then((result) => this.respond(id, result))
+        .catch((err) => this.respond(id, undefined, { code: -32603, message: err instanceof Error ? err.message : String(err) }));
+      return;
+    }
+    if (method === "roots/list") {
+      this.respond(id, { roots: workspaceRoots() });
+      return;
+    }
+    if (method === "ping") {
+      this.respond(id, {});
+      return;
+    }
+    this.respond(id, undefined, { code: -32601, message: "客户端不支持该方法：" + method });
   }
   onData(chunk) {
     this.buf += chunk.toString("utf8");
@@ -84,6 +219,11 @@ class McpConn {
       if (!line) continue;
       let msg;
       try { msg = JSON.parse(line); } catch { continue; } // 非 JSON 行（服务器日志）忽略
+      // 服务器 → 客户端的请求：不是我的 pending 回包，走反向请求通道
+      if (msg && typeof msg.method === "string" && typeof msg.id !== "undefined") {
+        this.handleServerRequest(msg);
+        continue;
+      }
       if (msg && typeof msg.id !== "undefined" && this.pending.has(msg.id)) {
         const slot = this.pending.get(msg.id);
         this.pending.delete(msg.id);
@@ -96,6 +236,7 @@ class McpConn {
   rpc(method, params, timeoutMs) {
     return new Promise((resolve, reject) => {
       if (!this.proc || !this.proc.stdin.writable) { reject(new Error("MCP 服务器未连接：" + this.name)); return; }
+      this.lastUsed = Date.now();
       const id = this.nextId++;
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -122,6 +263,17 @@ class McpConn {
 }
 
 const conns = new Map(); // name -> McpConn | HttpMcpConn
+
+/** 连接池：空闲超过 TTL 就回收，别让一堆 MCP 子进程常驻吃内存（与 Codex connection_pool 同一意图） */
+const idleSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [name, conn] of conns) {
+    if (!conn.lastUsed || now - conn.lastUsed < IDLE_TTL_MS) continue;
+    conn.stop();
+    conns.delete(name);
+  }
+}, 60_000);
+if (typeof idleSweeper.unref === "function") idleSweeper.unref();
 
 /** 按配置判断传输：有 url 且没 command → streamable HTTP；否则走既有 stdio */
 function isHttpServer(cfg) {
@@ -165,6 +317,11 @@ class HttpMcpConn {
     this.sessionId = "";
     this.nextId = 1;
     this.tools = [];
+    this.capabilities = {};
+    this.resources = [];
+    this.resourceTemplates = [];
+    this.resourceError = "";
+    this.lastUsed = Date.now();
     this.error = "";
     this.token = "";
     this.oauthCfg = null;
@@ -249,6 +406,7 @@ class HttpMcpConn {
   }
   async rpc(method, params, timeoutMs) {
     if (!this.cfg.url) throw new Error("MCP 服务器缺少 url");
+    this.lastUsed = Date.now();
     const id = this.nextId++;
     const run = async (retried) => {
       const auth = await this.auth(retried);
@@ -258,6 +416,7 @@ class HttpMcpConn {
         if (retried) throw new Error("MCP 授权被拒（401），需要重新授权");
         return { retry: true };
       }
+      this.handleServerRequests(r.messages || []);
       const found = (r.messages || []).find((m) => m && m.id === id);
       if (!found) throw new Error("MCP 响应里没有对应 id 的结果（" + method + "）");
       if (found.error) throw new Error(found.error.message || JSON.stringify(found.error));
@@ -277,16 +436,59 @@ class HttpMcpConn {
       await this.post({ jsonrpc: "2.0", method, params });
     } catch { /* 通知失败不影响主流程 */ }
   }
+  /** streamable HTTP 里服务器反向请求随 POST 的 SSE 一起回来，这里逐条应答 */
+  handleServerRequests(messages) {
+    for (const msg of Array.isArray(messages) ? messages : []) {
+      if (!msg || typeof msg.method !== "string" || typeof msg.id === "undefined") continue;
+      const method = msg.method;
+      const reply = (result, error) => {
+        const payload = error ? { jsonrpc: "2.0", id: msg.id, error } : { jsonrpc: "2.0", id: msg.id, result };
+        this.post(payload).catch(() => { /* 应答投递失败只能靠服务器超时兜底，不能让它带崩当前调用 */ });
+      };
+      if (method === "elicitation/create") {
+        resolveElicitation(this.name, msg.params)
+          .then((result) => reply(result))
+          .catch((err) => reply(undefined, { code: -32603, message: err instanceof Error ? err.message : String(err) }));
+      } else if (method === "roots/list") {
+        reply({ roots: workspaceRoots() });
+      } else if (method === "ping") {
+        reply({});
+      } else {
+        reply(undefined, { code: -32601, message: "客户端不支持该方法：" + method });
+      }
+    }
+  }
+  async loadResources(timeoutMs) {
+    this.resources = [];
+    this.resourceTemplates = [];
+    this.resourceError = "";
+    if (!this.capabilities || !this.capabilities.resources) return;
+    try {
+      const res = await this.rpc("resources/list", {}, timeoutMs);
+      this.resources = Array.isArray(res && res.resources) ? res.resources : [];
+    } catch (err) {
+      this.resourceError = "resources/list 失败：" + (err instanceof Error ? err.message : String(err));
+    }
+    try {
+      const res = await this.rpc("resources/templates/list", {}, timeoutMs);
+      this.resourceTemplates = Array.isArray(res && res.resourceTemplates) ? res.resourceTemplates : [];
+    } catch (err) {
+      this.resourceTemplates = [];
+      this.resourceError = (this.resourceError ? this.resourceError + "；" : "") + "模板列表不可用：" + (err instanceof Error ? err.message : String(err));
+    }
+  }
   async start() {
     try {
-      await this.rpc("initialize", {
+      const init = await this.rpc("initialize", {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
+        capabilities: { elicitation: {}, roots: { listChanged: false } },
         clientInfo: { name: "xiaoluo-brain", version: "1.0.0" },
       }, HANDSHAKE_TIMEOUT_MS);
+      this.capabilities = init && typeof init.capabilities === "object" ? init.capabilities : {};
       await this.notify("notifications/initialized", {});
       const res = await this.rpc("tools/list", {}, HANDSHAKE_TIMEOUT_MS);
       this.tools = Array.isArray(res && res.tools) ? res.tools : [];
+      await this.loadResources(HANDSHAKE_TIMEOUT_MS);
       this.error = "";
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
@@ -327,7 +529,18 @@ function renderMcpContent(result) {
   return parts.join("\n") || "(空结果)";
 }
 
-/** brain:mcp IPC 入口：action = servers（按 mcp.json 增量同步）| call（调用工具） */
+function renderResourceContents(result) {
+  const parts = [];
+  for (const block of (result && Array.isArray(result.contents)) ? result.contents : []) {
+    if (!block || typeof block !== "object") continue;
+    if (typeof block.text === "string") parts.push(block.text);
+    else if (typeof block.blob === "string") parts.push("[二进制资源 " + (block.mimeType || "未知类型") + "，轻量版不渲染，" + block.blob.length + " 字符 base64]");
+    else parts.push("[资源块 " + (block.mimeType || "未知类型") + "]");
+  }
+  return parts.join("\n\n") || "(空资源)";
+}
+
+/** brain:mcp IPC 入口：action = servers（按 mcp.json 增量同步）| call（调用工具）| resources | resource-read */
 export async function handleMcpPayload(payload) {
   try {
     const action = String((payload && payload.action) || "");
@@ -352,6 +565,19 @@ export async function handleMcpPayload(payload) {
           name,
           ok: !conn.error,
           error: conn.error || undefined,
+          supportsElicitation: true,
+          resources: (conn.resources ?? []).map((r) => ({
+            uri: String(r.uri ?? ""),
+            name: String(r.name ?? ""),
+            description: String(r.description ?? ""),
+            mimeType: String(r.mimeType ?? ""),
+          })),
+          resourceTemplates: (conn.resourceTemplates ?? []).map((t) => ({
+            uriTemplate: String(t.uriTemplate ?? ""),
+            name: String(t.name ?? ""),
+            description: String(t.description ?? ""),
+          })),
+          resourceError: conn.resourceError || undefined,
           tools: conn.tools.map((t) => ({
             rawName: String(t.name ?? ""),
             description: String(t.description ?? ""),
@@ -409,11 +635,43 @@ export async function handleMcpPayload(payload) {
       if (conn) { conn.stop(); conns.delete(server); }
       return { ok: true };
     }
+    if (action === "resources") {
+      const server = String(payload.server ?? "");
+      const out = [];
+      for (const [name, conn] of conns) {
+        if (server && name !== server) continue;
+        for (const r of conn.resources ?? []) {
+          out.push({
+            server: name,
+            uri: String(r.uri ?? ""),
+            name: String(r.name ?? ""),
+            description: String(r.description ?? ""),
+            mimeType: String(r.mimeType ?? ""),
+          });
+        }
+      }
+      return { resources: out };
+    }
+    if (action === "resource-read") {
+      const uri = String(payload.uri ?? "");
+      if (!uri) return { error: "需要 uri" };
+      let conn = conns.get(String(payload.server ?? ""));
+      // 没指定服务器就在已连接服务器里找声明了这条 uri 的那个（模板资源除外，必须指定 server）
+      if (!conn) {
+        for (const candidate of conns.values()) {
+          if ((candidate.resources ?? []).some((r) => String(r.uri ?? "") === uri)) { conn = candidate; break; }
+        }
+      }
+      if (!conn) return { error: "没有连接能读取该资源：" + uri + "（模板资源请指定 server，或先同步 servers）" };
+      const result = await conn.rpc("resources/read", { uri }, RESOURCE_TIMEOUT_MS);
+      return { ok: true, uri, text: renderResourceContents(result) };
+    }
     if (action === "call") {
       const server = String(payload.server ?? "");
       const tool = String(payload.tool ?? "");
       const conn = conns.get(server);
       if (!conn) return { error: "MCP 服务器未连接：" + server + "（先同步 servers）" };
+      conn.lastUsed = Date.now();
       const result = await conn.rpc("tools/call", { name: tool, arguments: payload.arguments ?? {} }, CALL_TIMEOUT_MS);
       const text = renderMcpContent(result);
       if (result && result.isError) return { ok: false, text: "MCP 工具返回错误：" + text };
