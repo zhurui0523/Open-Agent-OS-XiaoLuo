@@ -37,6 +37,9 @@ const ROOT = process.env.XIAOLUO_THREAD_EVENTS_ROOT
   ? path.resolve(process.env.XIAOLUO_THREAD_EVENTS_ROOT)
   : path.join(process.cwd(), ".data", "brain-thread");
 
+/** 线程库（thread-store）要扫同一个目录，这里导出根路径，避免两处路径漂移 */
+export const THREAD_EVENTS_ROOT = ROOT;
+
 function safePart(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }

@@ -264,6 +264,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 分支丢掉挂起的反问与中断标记：那次回合还挂在主干上，点了也石沉大海,tests/brain-conversation-fork.test.mjs,已声明用例
 分支存档能被内核吃回去：断点账、产物与历史都接得上,tests/brain-conversation-fork.test.mjs,已声明用例
 分支带上历史与断点账：接着这条线换个走法，不用重新摸底,tests/brain-conversation-fork.test.mjs,已声明用例
+列表：只扫文件尾也能拿到最后 seq 与更新时间，按新到旧排序,tests/brain-thread-store.test.mjs,已声明用例
 匹配：事件 + 工具 + 正则三重门，正则写坏不命中也不炸,tests/brain-hooks-events.test.mjs,已声明用例
 压缩用 messages_replace 覆盖：重建后是压缩后的列表，旧消息不再残留,tests/thread-event-log.test.mjs,已声明用例
 "压缩触发线改成百分比：默认 80%，配置可调且被夹在 [40,100]",tests/state-store.test.mjs,已声明用例
@@ -279,6 +280,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 回合占用：同一条线程第二轮要撞车，宿主才知道该插话,tests/brain-app-server.test.mjs,已声明用例
 回环目标始终放行：小逻自查自己的预览服务不能被策略挡死,tests/brain-network-policy.test.mjs,已声明用例
 在分支里写历史不碰主干存档：数组是复制不是引用,tests/brain-conversation-fork.test.mjs,已声明用例
+坏行：检索跳过、裁剪归档，不把整个线程判坏,tests/brain-thread-store.test.mjs,已声明用例
 域名裁决：通配、后缀、黑名单优先、空白名单等于全拒,tests/brain-egress-proxy.test.mjs,已声明用例
 外部主机在紧张策略下要走批准,tests/brain-network-policy.test.mjs,已声明用例
 多处命中判不唯一，整批不落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
@@ -291,12 +293,14 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 宿主侧客户端：AgentClient 用同一份协议跑通整轮（含审批回调）,tests/brain-app-server.test.mjs,已声明用例
 宿主答「跑不了」：把宿主给的理由原样回流，内核不替它编一句,tests/brain-app-server.test.mjs,已声明用例
 宿主答不了的要当场抛出去：没接的口不猜、不兜圈,tests/brain-host-bridge.test.mjs,已声明用例
+尾读：readTailEvents 只回最后 N 条且顺序正确,tests/brain-thread-store.test.mjs,已声明用例
 崩溃恢复：末行写了一半也能读出前面的事件，并标记 recovered,tests/thread-event-log.test.mjs,已声明用例
 工作区落点可覆盖：代码仓目录打不了 Low 标签，必须能指到用户自有目录,tests/sandbox-policy.test.mjs,已声明用例
 工具目录覆盖全部注册 schema，且新工具都在里面,tests/tool-surface.test.mjs,已声明用例
 工具面严格跟着端口注册：没接的口就不出现在 schema 里,tests/brain-agent-protocol.test.mjs,已声明用例
 工具面：write_stdin 只在宿主真有会话口时注册,tests/brain-stdin-session.test.mjs,已声明用例
 并行：tasks 一次派两个只读任务，两个子 Agent 真的同时在跑,tests/brain-subagent-parallel.test.mjs,已声明用例
+归档裁剪：保留最近 2 条，其余进 .archive，seq 不重编、后续追加仍单调,tests/brain-thread-store.test.mjs,已声明用例
 快照 diff：纯追加只写增量，压缩/改写写整份替换，元数据单独记,tests/thread-event-log.test.mjs,已声明用例
 快照事实抽取：按 tool 轮与 assistant.toolCalls 记工具账本，不吃正文长度溢出,tests/state-store.test.mjs,已声明用例
 截断保尾：2000 行以上输出仍能看到最后的报错行,tests/tool-surface.test.mjs,已声明用例
@@ -339,6 +343,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 未知配置项被丢弃并告警，不会悄悄塞进引擎,tests/agent-config.test.mjs,已声明用例
 本机落盘搬到线上：产物整包交宿主，宿主给的目录名就是模型看到的交付凭据,tests/brain-app-server.test.mjs,已声明用例
 检索不会串味：查「git 提交」不该把文件读取排第一,tests/tool-surface.test.mjs,已声明用例
+检索：跨会话命中并给摘要；空 query 不返回整库,tests/brain-thread-store.test.mjs,已声明用例
 模型硬调用未接入的会话工具：回流明确出口而不是挂死,tests/brain-agent-protocol.test.mjs,已声明用例
 沙箱：会话三管道全开，且退出时一并杀进程树,tests/brain-stdin-session.test.mjs,已声明用例
 没人应答不挂等：宿主没连着事件流时当场回绝，不把模型吊在 60 秒超时上,tests/brain-app-server.test.mjs,已声明用例
