@@ -254,16 +254,18 @@ export async function resolveOAuthConfig(server, cfg, { fetchImpl = fetch, redir
     const redirect = redirectUri || "http://127.0.0.1:" + (base.redirectPort || 33333) + "/auth/callback";
     const registered = await registerClient({ registrationEndpoint: reg, redirectUri: redirect, clientName }, fetchImpl);
     const cache = await readClientCache();
-    cache[server] = { ...registered, tokenEndpoint: base.tokenEndpoint };
+    cache[server + "@" + redirect] = { ...registered, redirectUri: redirect, tokenEndpoint: base.tokenEndpoint };
     await writeClientCache(cache);
     return { ...base, clientId: registered.clientId };
   }
   if (!cfg || !cfg.url) throw new Error("MCP 服务器既没有 oauth 配置也没有 url，无法发现授权");
   const discovered = await discoverAuthorizationServer({ resourceUrl: cfg.url, resourceMetadataUrl, fetchImpl });
   const cache = await readClientCache();
-  const cached = cache[server];
   const redirect = redirectUri || "http://127.0.0.1:33333/auth/callback";
-  let clientId = cached && cached.clientId ? String(cached.clientId) : "";
+  // 注册出来的 client 被授权服务器绑定在注册时的 redirect_uri 上；回调端口每次可能不同，
+  // 所以按 server+回调地址分别缓存，对不上就重新注册（否则真实服务器会拒授权）
+  const cacheKey = server + "@" + redirect;
+  let clientId = cache[cacheKey] && cache[cacheKey].clientId ? String(cache[cacheKey].clientId) : "";
   if (!clientId) {
     const registered = await registerClient({
       registrationEndpoint: discovered.registrationEndpoint,
@@ -271,7 +273,7 @@ export async function resolveOAuthConfig(server, cfg, { fetchImpl = fetch, redir
       clientName,
     }, fetchImpl);
     clientId = registered.clientId;
-    cache[server] = { clientId, ...(registered.clientSecret ? { clientSecret: registered.clientSecret } : {}) };
+    cache[cacheKey] = { clientId, redirectUri: redirect, ...(registered.clientSecret ? { clientSecret: registered.clientSecret } : {}) };
     await writeClientCache(cache);
   }
   return {
