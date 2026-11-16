@@ -367,7 +367,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 注册面：list_sessions 只在宿主实现 listSessions 时出现,tests/subagent-sessions.test.mjs,已声明用例
 注册面：宿主给了子 Agent 口才注册 dispatch_subagent；不给就不注册,tests/subagent-sessions.test.mjs,已声明用例
 状态库可写可查：同一会话覆盖写不重复记账，查询拿得到消息数与 token,tests/state-store.test.mjs,已声明用例
-环境主密钥：XIAOLUO_VAULT_KEY 优先，清缓存后仍能解；文件权限 0600（POSIX）,tests/brain-credential-vault.test.mjs,已声明用例
+环境主密钥：XIAOLUO_VAULT_KEY 优先，清缓存后仍能解；无 env 时 key 文件 0600（POSIX）,tests/brain-credential-vault.test.mjs,已声明用例
 省略 input 就是轮询：没有新输出时返回空串而不是报错,tests/brain-stdin-session.test.mjs,已声明用例
 看门狗口径：20s 判超时，最多自动重启一次,tests/plugin-fault-isolation.test.mjs,已声明用例
 真实往返：首屏拿得到 banner，写一行拿回显，退出后带 exitCode,tests/brain-stdin-session.test.mjs,已声明用例

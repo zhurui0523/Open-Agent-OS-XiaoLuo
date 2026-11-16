@@ -69,19 +69,24 @@ test("换名贴密文 / 篡改数据都会解密失败（AAD 绑定 + GCM 校验
   await assert.rejects(() => V.getSecret(dir, "A_TOKEN"), /解密失败/);
 });
 
-test("环境主密钥：XIAOLUO_VAULT_KEY 优先，清缓存后仍能解；文件权限 0600（POSIX）", async () => {
+test("环境主密钥：XIAOLUO_VAULT_KEY 优先，清缓存后仍能解；无 env 时 key 文件 0600（POSIX）", async () => {
   const dir = freshDir();
   process.env.XIAOLUO_VAULT_KEY = "test-master-key-please-rotate";
   V.resetVaultKeyCacheForTests();
   await V.setSecret(dir, "KEY1", "value-one");
   V.resetVaultKeyCacheForTests();
   assert.equal(await V.getSecret(dir, "KEY1"), "value-one");
+  delete process.env.XIAOLUO_VAULT_KEY;
+  V.resetVaultKeyCacheForTests();
 
+  // 没有 env 时才生成 key 文件：验证权限收紧
+  const dir2 = freshDir();
+  await V.setSecret(dir2, "KEY2", "value-two");
+  assert.equal(await V.getSecret(dir2, "KEY2"), "value-two");
   if (process.platform !== "win32") {
-    const st = await fs.stat(join(dir, "vault.key"));
+    const st = await fs.stat(join(dir2, "vault.key"));
     assert.equal(st.mode & 0o777, 0o600);
   }
-  delete process.env.XIAOLUO_VAULT_KEY;
   V.resetVaultKeyCacheForTests();
 });
 
