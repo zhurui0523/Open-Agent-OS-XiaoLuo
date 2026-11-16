@@ -363,8 +363,8 @@ export function createServerPorts(opts: ServerPortsOptions): ChatAgentPorts {
       },
     },
 
-    /** 子 Agent 口（P1-5）：子线程仍跑在本进程，只读工具面，写权限归主线程 */
-    subagent: { maxDepth: 1 },
+    /** 子 Agent 口（第 4 项）：允许并行只读调研；写权限显式开（写仍走同一个沙箱 fs 口与路径围栏） */
+    subagent: { maxDepth: 1, write: true },
 
     command: {
       async run(command, o): Promise<CommandResult> {

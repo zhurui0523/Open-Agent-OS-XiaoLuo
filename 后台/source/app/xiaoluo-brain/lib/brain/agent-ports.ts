@@ -263,7 +263,11 @@ export interface ChatAgentPorts {
   fs?: FileSystemPort;
 
   /** 子 Agent 口（dispatch_subagent；宿主给这个键才注册，子 Agent 自己不带，防递归） */
-  subagent?: { maxDepth?: number };
+  subagent?: {
+    maxDepth?: number;
+    /** 允许子 Agent 写文件（默认只读；宿主显式开才生效） */
+    write?: boolean;
+  };
 
   /** MCP 口（mcp__<server>__<tool> 外部工具；不实现则不注册） */
   mcp?: McpPort;

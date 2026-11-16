@@ -242,6 +242,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 信封纪律：坏请求用协议错误码回，绝不抛出去,tests/brain-app-server.test.mjs,已声明用例
 共享策略自带用例全绿（风险分级 + 网络分级）,tests/brain-network-policy.test.mjs,已声明用例
 写完 uploads/todo.html 再起静态服务：预览地址打开就是那个文件,tests/brain-service-setup.test.mjs,已声明用例
+写权限：宿主没开 write 时 canWrite=true 直接拒绝，不偷偷降级成写,tests/brain-subagent-parallel.test.mjs,已声明用例
 写盘是原子的：成功后不留 .tmp 残片，内容完整,tests/edit-residual.test.mjs,已声明用例
 凭据落盘：写读清一致，刷新提前量 30 秒,tests/mcp-oauth.test.mjs,已声明用例
 分叉：服务端生成分支 id，还给宿主快照，主干不受影响,tests/brain-app-server.test.mjs,已声明用例
@@ -257,6 +258,8 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 反向通道全表打通：八个口逐个调，宿主回执原样回到内核手里,tests/brain-host-bridge.test.mjs,已声明用例
 只填 url 也能授权：自动发现授权服务器 + 动态注册客户端 + 回调换 token,tests/mcp-oauth.test.mjs,已声明用例
 只读 carve-out：.git 目录不能被写、删、移动，但能读,tests/edit-residual.test.mjs,已声明用例
+只读子 Agent 不许写：write_file 被挡，不会落盘,tests/brain-subagent-parallel.test.mjs,已声明用例
+可写：宿主开权限后子 Agent 能写，且改动登记回主线程结果,tests/brain-subagent-parallel.test.mjs,已声明用例
 同一份输入在三端解析结果一致（配置治理的核心承诺）,tests/agent-config.test.mjs,已声明用例
 命令模板：{command} {prompt} {tool} {path} 都替换，未声明的占位符原样留着（看出写错）,tests/brain-hooks-events.test.mjs,已声明用例
 回合占用：同一条线程第二轮要撞车，宿主才知道该插话,tests/brain-app-server.test.mjs,已声明用例
@@ -278,6 +281,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 工具目录覆盖全部注册 schema，且新工具都在里面,tests/tool-surface.test.mjs,已声明用例
 工具面严格跟着端口注册：没接的口就不出现在 schema 里,tests/brain-agent-protocol.test.mjs,已声明用例
 工具面：write_stdin 只在宿主真有会话口时注册,tests/brain-stdin-session.test.mjs,已声明用例
+并行：tasks 一次派两个只读任务，两个子 Agent 真的同时在跑,tests/brain-subagent-parallel.test.mjs,已声明用例
 快照 diff：纯追加只写增量，压缩/改写写整份替换，元数据单独记,tests/thread-event-log.test.mjs,已声明用例
 快照事实抽取：按 tool 轮与 assistant.toolCalls 记工具账本，不吃正文长度溢出,tests/state-store.test.mjs,已声明用例
 截断保尾：2000 行以上输出仍能看到最后的报错行,tests/tool-surface.test.mjs,已声明用例

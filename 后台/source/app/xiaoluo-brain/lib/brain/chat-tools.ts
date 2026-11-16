@@ -1325,13 +1325,18 @@ const SUBAGENT_SCHEMA = {  type: "function",
   function: {
     name: "dispatch_subagent",
     description:
-      "派出一个只读研究子 Agent：给它一句明确任务，它自己读文件/搜代码，返回结论（含文件与行号）。适合「需要翻很多文件才能回答、又不想把全文塞进本线程」的调研；子 Agent 只读，不能改文件、不能跑命令。结果会回填到本线程，你据此继续动手。",
+      "派出研究子 Agent：给它一句明确任务，它自己读文件/搜代码，返回结论（含文件与行号）。适合「需要翻很多文件才能回答、又不想把全文塞进本线程」的调研。单个任务用 task；多件互不依赖的调研用 tasks（最多 3 个，并行跑、结果合并回流）。canWrite=true 才允许它小范围改文件（宿主开启写权限时生效，且它必须自己先读过再写）；并行批次只支持只读任务。",
     parameters: {
       type: "object",
-      required: ["task"],
       properties: {
         task: { type: "string", description: "要它查清什么。写清范围与要回答的问题，别写「看看这个项目」" },
-        maxSteps: { type: "number", description: "它的步数上限（默认 12，最多 20）" },
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description: "并行派多个只读任务（2–3 个，互不依赖）；与 task 二选一，都给了按 tasks 处理",
+        },
+        maxSteps: { type: "number", description: "每个子 Agent 的步数上限（默认 12，最多 20）" },
+        canWrite: { type: "boolean", description: "允许子 Agent 写文件（默认 false，纯研究）；只有宿主开了子 Agent 写权限才生效" },
       },
     },
   },

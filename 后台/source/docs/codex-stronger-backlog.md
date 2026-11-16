@@ -12,7 +12,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | 1 | 结构化补丁语义 | `apply_patch` 223 处引用；`@@` 上下文 hunk 格式 | `edit_file` 多 hunk + 三级容错；**已补 `apply_patch`**：`@@` 上下文锚点 + 一次 update/add/delete 多文件 | ✅ 已攻克（2026-11-16） | 低–中 | 已交付，见下 |
 | 2 | 生命周期 hooks 事件面 | 独立 `hooks` crate：`engine/{discovery,dispatcher,command_runner}`、`events/permission_request`、`config_rules` | 原有 PreToolUse + Post 验收 + 技能 `verify`；**已补** `session_start` / `session_end` / `user_prompt_submit` / `permission_request` 四个事件 + 外部命令 runner + 解析/匹配抽成 `hooks.ts` | ✅ 已攻克（2026-11-16） | 低 | 已交付，见下 |
 | 3 | 终端 PTY 完整交互 | 独立 crate `utils/pty`（跨平台 portable-pty） | 原为管道会话（isatty=false）；**已补** `pty-adapter`：node-pty 惰性加载 + ConPTY/openpty + 装不上时如实降级并回流原因 | ✅ 已攻克（真机端到端待验） | 中 | 见下方边界 |
-| 4 | 子 Agent 可写 / 并行 | `spawn_agent` 27 处引用，可写、可并行 | `dispatch_subagent` 只读、单层、12 步 / 6 分钟 / 结论回填 | 真差距 | 大（要接沙箱 + 审批 + 并发治理） | 价值高但风险最高，必须排在有沙箱兜底之后 |
+| 4 | 子 Agent 可写 / 并行 | `spawn_agent` 27 处引用，可写、可并行 | 原只读、单任务；**已补** `tasks` 并行只读（最多 3）+ `canWrite`（宿主显式开写权限，写任务串行），改动登记回主线程 | ✅ 已攻克（并行仅只读） | 中 | 见下方边界 |
 | 5 | MCP 企业级认证 | `rmcp-client` 里 `client_credentials` 4 处、`token_exchange` 12 处、重试退避 | 公开客户端 + PKCE + 30s 提前刷新 + 401 换 token | 深度 | 中（要先有能验的 IdP） | 等你手里有企业 IdP 再动，否则只能写空壳 |
 | 6 | POSIX 内核级沙箱 | `landlock` 191 处、seatbelt | 只有 Windows MIC-low；POSIX / AppContainer 未开工 | 真差距，最贵 | 大（要 Linux/macOS 真机 + CI 矩阵） | 放最后；没有跨平台真机验等于没做 |
 
@@ -94,15 +94,28 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 3. 没有做终端尺寸协商（cols/rows 固定 120x30）与 ANSI 颜色归一：输出按 utf8 原样回流，带颜色的 CLI 会给模型一串转义码；
 4. 未接真 PTY 的窗口 resize（`terminal_resize`），交互里按列宽换行的 TUI 仍可能错行。
 
-### 4. 子 Agent 可写 / 并行
+### 4. 子 Agent 可写 / 并行 — ✅ 已攻克（2026-11-16，并行限只读）
 
 **Codex**：`spawn_agent` 可指定写权限、可并行派多个。
 
-**小逻现状**：`dispatch_subagent` 只读、单层（子 Agent 不带该口，防递归）、12 步 / 6 分钟。
+**小逻原来**：`dispatch_subagent` 只读、单任务、12 步 / 6 分钟、结论回填；子 Agent 的 `writeFile` 直接抛"只读"。
 
-**改法**：分批——先"并行只读"（多任务同轮派发、结果聚合），再"可写但限工作区 + 每次写要审批"，最后才谈递归深度。
+**落地结果（2026-11-16）**：
 
-**验收**：并行 3 个只读任务总耗时 < 串行；可写档必须过审批闸门，且越界写被拒。
+- 工具面（`chat-tools.ts`）：`dispatch_subagent` 增 `tasks`（2–3 个互不依赖的只读任务，并行跑、结论合并）与 `canWrite`（默认 false）；`required` 去掉，`task` / `tasks` 二选一；
+- 执行器（`chat-agent.ts`）：`execDispatchSubagent` 拆出 `runSubagentTask(task, maxSteps, canWrite)`；并行批次用 `Promise.all`，**并行只放只读**，写任务一律串行（多个子 Agent 同时落盘会互相踩，改动也无法归属）；单个任务失败/超时都转成可读文字，不把异常抛给主循环；
+- 写权限：`ports.subagent.write === true` 才允许；没开时 `canWrite=true` 直接拒绝，不偷偷降级成写。可写子 Agent 的 `writeFile` 走同一个沙箱 fs 口（路径围栏照旧），且**改动登记回主线程**：写入 `turnChangedFiles`、结论里附 `【子 Agent 改过的文件】`，交付前主线程自己核对；
+- 子 Agent 仍守 read-before-write（它自己的 `readPaths` 管），且不带 `command` / `subagent` 口（防递归与越权执行）；
+- `server-ports.ts` 显式声明 `subagent: { maxDepth: 1, write: true }`（写权限由宿主开关决定，默认只读能力仍保留）；
+- 顺手修掉一个真 bug：子 Agent 的 6 分钟超时定时器没清，跑完还要为 timer 吊着进程不退（`clearTimeout` 放 `finally`）；
+- 测试 4 条（真跑）：并行 2 任务且第二个在第一个收口前就启动（真并行）/ 宿主没开写权限时拒绝且零落盘 / 开权限后子 Agent 读→写成功且改动回流 / 只读档下写请求被挡在 fs 口外面，`tests/brain-subagent-parallel.test.mjs` 全绿。
+
+**已知边界（没做 / 没验）**：
+
+1. **并行只支持只读任务**：`canWrite + tasks` 会退化成串行执行；Codex 里多写 Agent 并行的冲突治理（文件锁 / 冲突合并）没有做；
+2. 子 Agent 深度仍是 1（子 Agent 不带 `subagent` 口），递归派发没开；
+3. 子 Agent 不能跑命令（`command` 口仍不传），需要执行的环节留主线程；
+4. 并行批次没有总预算闸：3 个子 Agent 各自 12 步 / 6 分钟，token 全计回父线程，极端情况一轮能烧掉父线程大半预算（只在 config 里做了单子 Agent 的 budget 上限，没有做批次求和上限）。
 
 ### 5. MCP 企业级认证
 

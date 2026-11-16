@@ -1865,26 +1865,75 @@ export class ChatAgent {
   }
 
   /**
-   * 子 Agent 最小闭环（P1-5）：父线程派一个**只读**研究子线程，结论回填本线程。
-   * 只读是刻意的：子 Agent 改文件会把"谁改的、改了哪些"这账搅乱，
-   * 写盘仍归主线程（有 read-before-write、脏文件登记、验证闸门）。
+   * 子 Agent（第 4 项追平 Codex 的 spawn_agent）：支持并行只读调研，宿主开权限时可写。
+   * 并行只放只读：多个写子 Agent 同时落盘会互相踩，改动也没法归属；
+   * 要写就串行跑（一次一个，改完再下一个），且改动登记回主线程的"本轮改动"。
    */
   private async execDispatchSubagent(call: ToolCall): Promise<string> {
-    const { ports, config } = this.opts;
-    const args = call.arguments as unknown as { task?: unknown; maxSteps?: unknown };
+    const { ports } = this.opts;
+    const args = call.arguments as unknown as { task?: unknown; tasks?: unknown; maxSteps?: unknown; canWrite?: unknown };
     const task = String(args?.task ?? "").trim();
-    if (!task) return "dispatch_subagent 需要 task：一句话说清要它查什么。";
+    const rawTasks = Array.isArray(args?.tasks)
+      ? args.tasks.map((t) => String(t ?? "").trim()).filter(Boolean)
+      : [];
     const depth = ports.subagent?.maxDepth ?? 1;
     if (depth <= 0) return "当前宿主不允许再派子 Agent。";
+    const wantWrite = args?.canWrite === true;
+    if (wantWrite && ports.subagent?.write !== true) {
+      return "宿主没开子 Agent 写权限：这一批只能做只读调研。要改文件请回主线程自己改（read-before-write 与验证闸门都在主线程）。";
+    }
+    if (!task && rawTasks.length === 0) return "dispatch_subagent 需要 task 或 tasks：一句话说清要它查什么。";
     const maxSteps = Math.min(20, Math.max(3, Math.trunc(Number(args?.maxSteps) || 12)));
+    const tasks = rawTasks.length ? rawTasks.slice(0, 3) : [task];
+    if (rawTasks.length > 3) {
+      this.journal.append("tool_result", `dispatch_subagent 任务超上限，只跑前 3 个（给了 ${rawTasks.length} 个）`, { tool: "dispatch_subagent" });
+    }
 
+    const readonly = !wantWrite;
+    const parallel = tasks.length > 1 && readonly;
+    const startedAt = Date.now();
+    let results: Array<{ text: string; writes: string[]; steps: number }> = [];
+    if (parallel) {
+      results = await Promise.all(tasks.map((t) => this.runSubagentTask(t, maxSteps, false)));
+    } else {
+      for (const t of tasks) results.push(await this.runSubagentTask(t, maxSteps, !readonly));
+    }
+
+    const allWrites = [...new Set(results.flatMap((r) => r.writes))];
+    for (const p of allWrites) this.turnChangedFiles.add(p);
+    const steps = results.reduce((n, r) => n + r.steps, 0);
+    this.journal.append(
+      "tool_result",
+      `dispatch_subagent ${tasks.length} 个${parallel ? "并行" : "串行"}任务 → ${steps} 步 / ${Math.round((Date.now() - startedAt) / 1000)}s${allWrites.length ? `，改 ${allWrites.length} 文件` : ""}`,
+      { tool: "dispatch_subagent" },
+    );
+    this.opts.ports.postUI("status", `子 Agent 已回填（${tasks.length} 个任务 / ${steps} 步）`, { tool: "dispatch_subagent", ok: true });
+
+    const blocks = results.map((r, i) => `### 子 Agent ${i + 1}：${tasks[i].slice(0, 60)}\n${r.text}`).join("\n\n");
+    const writeNote = allWrites.length
+      ? `\n\n【子 Agent 改过的文件】${allWrites.join("、")}（已计入本轮改动；交付前自己核对这些文件的内容与验证结果）`
+      : "";
+    return `【子 Agent 结论${tasks.length > 1 ? `（${tasks.length} 个任务）` : ""}】\n${blocks}${writeNote}`.slice(0, 8000);
+  }
+
+  /** 跑一个子 Agent 任务：只读或（宿主允许时）可写；失败/超时都转成可读结论，不抛给主循环 */
+  private async runSubagentTask(
+    task: string,
+    maxSteps: number,
+    canWrite: boolean,
+  ): Promise<{ text: string; writes: string[]; steps: number }> {
+    const { ports, config } = this.opts;
     const captured: string[] = [];
+    const writes: string[] = [];
+
     const childFs = ports.fs
       ? {
           listDir: ports.fs.listDir.bind(ports.fs),
           readFile: ports.fs.readFile.bind(ports.fs),
-          writeFile: async () => {
-            throw new Error("子 Agent 只读：要改文件请回到主线程用 edit_file。");
+          writeFile: async (path: string, content: string) => {
+            if (!canWrite) throw new Error("子 Agent 只读：要改文件请回到主线程用 edit_file。");
+            await ports.fs!.writeFile(path, content);
+            if (!writes.includes(path)) writes.push(path);
           },
           ...(ports.fs.grep ? { grep: ports.fs.grep.bind(ports.fs) } : {}),
           ...(ports.fs.find ? { find: ports.fs.find.bind(ports.fs) } : {}),
@@ -1904,9 +1953,11 @@ export class ChatAgent {
       model: this.opts.model,
       conversationId: this.opts.conversationId + ":sub-" + (this.subagentSeq += 1),
       systemPrompt:
-        "你是父线程派出的只读研究子 Agent。用文件工具把任务查清，然后只输出结论，不寒暄、不反问、不描述过程。\n" +
+        (canWrite
+          ? "你是父线程派出的子 Agent，可以小范围改文件（write_file）。只改任务明确要求的位置，每处改动前必须先 read_file 看清上下文，改完说明改了什么。\n"
+          : "你是父线程派出的只读研究子 Agent。用文件工具把任务查清，然后只输出结论。\n") +
         "要求：1) 结论先写答案；2) 每条事实带 文件路径:行号；3) 没查到的直接说没查到，不要猜；4) 全文不超过 600 字。\n" +
-        "你不能写文件、不能跑命令——需要动手的部分留给父线程。",
+        (canWrite ? "不能跑命令；需要执行的部分留给父线程。" : "你不能写文件、不能跑命令——需要动手的部分留给父线程。"),
       config: {
         ...config,
         maxStepsPerTurn: maxSteps,
@@ -1921,37 +1972,43 @@ export class ChatAgent {
       ports: childPorts,
     });
 
-    const startedAt = Date.now();
     let outcome: Awaited<ReturnType<ChatAgent["reply"]>> | null = null;
+    // 超时定时器必须收掉：否则子 Agent 一跑完，进程还要为一个 6 分钟的 timer 吊着不退
+    let timer: ReturnType<typeof setTimeout> | null = null;
     try {
       outcome = await Promise.race([
         child.reply(task),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 6 * 60_000)),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 6 * 60_000);
+        }),
       ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.journal.append("tool_result", `dispatch_subagent 失败：${message.slice(0, 160)}`, { tool: "dispatch_subagent" });
-      return `子 Agent 执行失败：${message}。可以直接在主线程里自己查。`;
+      return { text: `子 Agent 执行失败：${message}。可以直接在主线程里自己做。`, writes, steps: 0 };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
     if (!outcome) {
       this.journal.append("tool_result", "dispatch_subagent 超时（6 分钟）", { tool: "dispatch_subagent" });
-      return "子 Agent 超时未回（6 分钟）。别重派同一个任务：缩小范围，或直接自己用 grep_files / read_file 查。";
+      return {
+        text: "子 Agent 超时未回（6 分钟）。别重派同一个任务：缩小范围，或直接自己用 grep_files / read_file 查。",
+        writes,
+        steps: 0,
+      };
     }
 
     this.usedTokens += outcome.usedTokens;
     this.turnTokens += outcome.usedTokens;
     const digest = captured.join("\n\n").trim();
-    this.journal.append(
-      "tool_result",
-      `dispatch_subagent「${task.slice(0, 60)}」→ ${outcome.steps} 步 / ${Math.round((Date.now() - startedAt) / 1000)}s`,
-      { tool: "dispatch_subagent" },
-    );
-    this.opts.ports.postUI("status", `子 Agent 已回填（${outcome.steps} 步）`, { tool: "dispatch_subagent", ok: true });
-
     if (!digest) {
-      return `子 Agent 跑完 ${outcome.steps} 步但没有给出结论（可能步数用尽）。把任务拆小一点再派，或自己查。`;
+      return {
+        text: `子 Agent 跑完 ${outcome.steps} 步但没有给出结论（可能步数用尽）。把任务拆小一点再派，或自己查。`,
+        writes,
+        steps: outcome.steps,
+      };
     }
-    return `【子 Agent 结论】\n${digest.slice(0, 4000)}`;
+    return { text: digest.slice(0, 4000), writes, steps: outcome.steps };
   }
 
   /** 任务清单（todo/plan 可见化）：模型主动规划多步任务，进度以清单卡片实时回流面板 */
