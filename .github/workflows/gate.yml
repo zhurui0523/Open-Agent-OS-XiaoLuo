@@ -27,7 +27,7 @@ jobs:
       - run: node scripts/gate.mjs
       # 失败时把门禁日志尾部贴到 job summary：Actions 原始日志要登录才能看，summary 公开可读
       - if: always()
-        name: 把门禁日志尾部写进 job summary
+        name: 把门禁日志尾部写进 job summary 与注解
         shell: bash
         working-directory: 后台/source
         run: |
@@ -37,6 +37,11 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             tail -n 150 "$f" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            # 注解走 API 可匿名读，日志本体不行——把失败行挤进一条 error 注解
+            report=$(grep -aE "✗|失败|Error|error:|not ok|AssertionError|覆盖率低于|不一致" "$f" | tail -n 25 | tr '\n' '~' | cut -c1-60000)
+            if [ -n "$report" ]; then
+              echo "::error::门禁失败摘要：$report"
+            fi
           done
       # upload-artifact 的 path 相对的是仓库根，不会被 defaults.run.working-directory 影响
       - if: always()
