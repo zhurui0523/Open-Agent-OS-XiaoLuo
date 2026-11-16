@@ -29,6 +29,7 @@
 import { buildChatToolSchemas } from "./chat-tools";
 import { searchTools } from "./tool-search";
 import { applyEditHunks, applyContextHunks, parsePatch, type EditHunk } from "./patch";
+import { parseHooks, hookMatches, fillCommand, type HookRule, type HookEvent } from "./hooks";
 import { truncateToolResult } from "./truncation";
 import {
   DEFAULT_CHAT_AGENT_CONFIG,
@@ -159,8 +160,8 @@ export class ChatAgent {
   private readonly repeatToolSigs = new Map<string, number>();
   /** 读后写纪律（DSH 铁律）：本会话 read_file 读过的路径；覆盖已存在文件前必须先读过 */
   private readonly readPaths = new Set<string>();
-  /** 钩子缓存（学 kimi-code hooks）：工作区 hooks.toml 规则（Pre 拦截 + Post 强制验收），轮首失效重读 */
-  private hooksCache: Array<{ tool?: string; match?: string; message?: string; when?: string; command?: string }> | null = null;
+  /** 钩子缓存（学 Codex hooks 事件面）：工作区 hooks.toml 规则，轮首失效重读 */
+  private hooksCache: HookRule[] | null = null;
   /** PostToolUse 钩子本轮执行次数：设上限防每次写文件都拖一轮验证命令烧额度 */
   private postHookRunsThisTurn = 0;
   /** 仓库地图缓存索引（超大仓库导航不输终端对手）：root → 树行+根签名，5 分钟 TTL + mtime 失效 */
@@ -445,6 +446,22 @@ export class ChatAgent {
       `我：${text.split("\n\n【附件】")[0].slice(0, 80)}`,
     );
 
+    // 事件钩子（第 2 项）：会话首轮跑 session_start，每轮跑 user_prompt_submit；
+    // 命令非 0 只作为提醒注入，不阻断对话（Codex 里这两个事件同样不是硬闸）
+    {
+      const before = this.postHookRunsThisTurn;
+      const notes: string[] = [];
+      if (this.turnId === 1) {
+        const started = await this.runEventHooks("session_start", { text, path: "" });
+        if (started.notes) notes.push(started.notes);
+      }
+      const submitted = await this.runEventHooks("user_prompt_submit", { text });
+      if (submitted.notes) notes.push(submitted.notes);
+      const spent = this.postHookRunsThisTurn - before;
+      if (notes.length) this.messages.push({ role: "system", content: "[钩子]" + notes.join("") });
+      if (spent) this.journal.append("tool_result", `事件钩子执行 ${spent} 次（session_start / user_prompt_submit）`);
+    }
+
     // 证据账本有新增时注入上下文（#rN 编号供小逻引用）
     this.injectEvidenceIfNeeded();
 
@@ -601,6 +618,9 @@ export class ChatAgent {
         await this.checkGoalProgress(finalContent);
         // 记忆流水线：本轮真实用到的记忆记 usage + 自动抽取新事实（脱敏+去重）
         await this.memoryPipeline(text, finalContent);
+        // session_end 钩子：小逻以「一轮」为会话边界（Codex 的事件粒度为进程会话，
+        // 这里按轮收尾触发，只做观测/留痕，不回头改已经交付的答复）
+        await this.runEventHooks("session_end", { text: finalContent });
         return { usedTokens: this.usedTokens, steps: step + 1 };
       }
       // 有工具调用时，前置文字是过程旁白（同样入账：可见即留痕）
@@ -2520,7 +2540,7 @@ export class ChatAgent {
     if (this.hooksCache !== null || !ports.fs) return;
     try {
       const res = await ports.fs.readFile("hooks.toml");
-      this.hooksCache = this.parseHooksToml(res.content ?? "");
+      this.hooksCache = parseHooks(res.content ?? "");
     } catch {
       this.hooksCache = [];
     }
@@ -2532,13 +2552,7 @@ export class ChatAgent {
     if (!this.hooksCache || this.hooksCache.length === 0) return "";
     const argsJson = JSON.stringify(call.arguments ?? {});
     for (const h of this.hooksCache) {
-      if (h.when === "post") continue; // PostToolUse 钩子不参与前置拦截
-      if (h.tool && h.tool !== call.name) continue;
-      if (h.match) {
-        let re: RegExp;
-        try { re = new RegExp(h.match, "i"); } catch { continue; }
-        if (!re.test(argsJson)) continue;
-      }
+      if (!hookMatches(h, "pre", { tool: call.name, argsJson })) continue;
       const reason = h.message || "命中工作区 hooks.toml 拦截规则";
       this.journal.append("tool_result", call.name + " 被 PreToolUse 钩子拦截：" + reason, { tool: call.name });
       this.opts.ports.postUI("status", "钩子拦截 " + call.name + "：" + reason, { tool: call.name, ok: false });
@@ -2564,13 +2578,8 @@ export class ChatAgent {
     const pathArg = String(((call.arguments ?? {}) as Record<string, unknown>).path ?? "");
     const notes: string[] = [];
     for (const h of this.hooksCache ?? []) {
-      if (h.when !== "post" || !h.command) continue;
-      if (h.tool && h.tool !== call.name) continue;
-      if (h.match) {
-        let re: RegExp;
-        try { re = new RegExp(h.match, "i"); } catch { continue; }
-        if (!re.test(argsJson)) continue;
-      }
+      if (!hookMatches(h, "post", { tool: call.name, argsJson })) continue;
+      if (!h.command) continue;
       if (this.postHookRunsThisTurn >= 6) {
         notes.push("\n【后置验收】本轮验证额度已用尽（6 次），剩余钩子跳过。");
         break;
@@ -2629,36 +2638,58 @@ export class ChatAgent {
     return notes.join("");
   }
 
-  /** hooks.toml 极简解析（子集：[[hook]] 块 + key = "value"；零依赖，坏行跳过） */
-  private parseHooksToml(raw: string): Array<{ tool?: string; match?: string; message?: string; when?: string; command?: string }> {
-    const hooks: Array<{ tool?: string; match?: string; message?: string; when?: string; command?: string }> = [];
-    const unescape = (s: string): string => {
-      let out = "";
-      for (let i = 0; i < s.length; i++) {
-        if (s[i] === "\\" && i + 1 < s.length) { out += s[i + 1]; i++; }
-        else out += s[i];
+  /**
+   * 事件型钩子（第 2 项）：session_start / session_end / user_prompt_submit / permission_request。
+   * 只有声明了 command 的规则才真跑；走既有命令通道（命令闸门与四档审批照旧），
+   * 单条 60 秒、本轮与 Post 验收共享 6 次额度。
+   * permission_request 命令退出码非 0 = 拒绝这次命令（对齐 Codex 的 permission hook 语义）。
+   */
+  private async runEventHooks(
+    event: HookEvent,
+    payload: { tool?: string; text?: string; path?: string; reason?: string; argsJson?: string },
+  ): Promise<{ notes: string; blocked: string }> {
+    const { ports } = this.opts;
+    if (!ports.command) return { notes: "", blocked: "" };
+    await this.loadWorkspaceHooks();
+    const rules = this.hooksCache ?? [];
+    const notes: string[] = [];
+    for (const h of rules) {
+      if (!h.command) continue;
+      if (!hookMatches(h, event, { tool: payload.tool, argsJson: payload.argsJson, text: payload.text })) continue;
+      if (this.postHookRunsThisTurn >= 6) {
+        notes.push(`\n【钩子 ${event}】本轮额度已用尽（6 次），剩余规则跳过。`);
+        break;
       }
-      return out;
-    };
-    let cur: { tool?: string; match?: string; message?: string; when?: string; command?: string } | null = null;
-    const flush = () => {
-      if (cur && (cur.tool || cur.match)) hooks.push(cur);
-      cur = null;
-    };
-    for (const rawLine of raw.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith("#")) continue;
-      if (line === "[[hook]]") { flush(); cur = {}; continue; }
-      if (line.startsWith("[")) { flush(); continue; }
-      if (!cur) continue;
-      const m = /^(\w+)\s*=\s*"(.*)"\s*(?:#.*)?$/.exec(line);
-      if (!m) continue;
-      const key = m[1];
-      const val = unescape(m[2]);
-      if (key === "tool" || key === "match" || key === "message" || key === "when" || key === "command") cur[key] = val;
+      this.postHookRunsThisTurn += 1;
+      const cmd = fillCommand(h.command, {
+        command: payload.text,
+        prompt: payload.text,
+        tool: payload.tool,
+        path: payload.path,
+        reason: payload.reason,
+      });
+      ports.postUI("status", `钩子 ${event}：${cmd}`, { tool: payload.tool ?? event, ok: true });
+      try {
+        const res = await ports.command.run(cmd, { timeoutMs: 60_000 });
+        const out = [res.stdout.trim(), res.stderr.trim()].filter(Boolean).join("\n");
+        if (res.exitCode === 0) {
+          this.journal.append("tool_result", `钩子 ${event} 通过：${cmd}`, { tool: payload.tool ?? event });
+          continue;
+        }
+        const reason = (h.message || `钩子 ${event} 命令 exit ${res.exitCode}`) + (out ? `：${out.slice(0, 500)}` : "");
+        this.journal.append("tool_result", `钩子 ${event} 未通过：${cmd}（exit ${res.exitCode}）`, { tool: payload.tool ?? event });
+        if (event === "permission_request") return { notes: notes.join(""), blocked: reason };
+        notes.push(`\n【钩子 ${event}】✗ ${cmd} 报错（exit ${res.exitCode}）：${out.slice(0, 800)}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.journal.append("tool_result", `钩子 ${event} 无法执行：${message.slice(0, 120)}`, { tool: payload.tool ?? event });
+        if (event === "permission_request") {
+          return { notes: notes.join(""), blocked: `钩子 permission_request 无法执行：${message}` };
+        }
+        notes.push(`\n【钩子 ${event}】命令无法执行（${message}）`);
+      }
     }
-    flush();
-    return hooks;
+    return { notes: notes.join(""), blocked: "" };
   }
 
   /** MCP 外部工具调用：宿主按公开名反查 (server, rawName) 后走 tools/call；结果超长截断防上下文膨胀 */
@@ -2681,6 +2712,22 @@ export class ChatAgent {
     const { ports } = this.opts;
     if (!ports.command) return "当前环境未接入命令执行通道。";
     const args = call.arguments as unknown as RunCommandArgs;
+    // permission_request 钩子（第 2 项）：在命令真正下发前给老板一条可配置的否决线，
+    // 规则命令退出码非 0 = 拒绝执行（与 Codex 的 permission hook 一致）；宿主侧四档审批照旧。
+    {
+      const verdict = await this.runEventHooks("permission_request", {
+        tool: "run_command",
+        text: args.command,
+        argsJson: JSON.stringify(args),
+      });
+      if (verdict.blocked) {
+        ports.postUI("status", "命令被 permission_request 钩子拒绝", { tool: "run_command", ok: false, detail: verdict.blocked.slice(0, 200) });
+        return this.trackFailure(
+          "run_command",
+          `命令被工作区 hooks.toml 的 permission_request 钩子拒绝：${verdict.blocked}。别绕道换写法硬跑；确需执行就说明理由请老板改 hooks.toml。`,
+        );
+      }
+    }
     // 后台长任务（对齐 DSH background jobs）：转服务通道执行，不受命令超时限制；service_status 查日志、stop_service 清场
     if (args.background) {
       if (!ports.service) return "后台任务需要服务管理通道，当前环境未接入；请改用普通 run_command 并控制时长。";

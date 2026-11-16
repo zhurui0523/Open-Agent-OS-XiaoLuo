@@ -10,7 +10,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 | # | 维度 | Codex 证据 | 小逻现状 | 差距性质 | 成本 | 建议 |
 |---|---|---|---|---|---|---|
 | 1 | 结构化补丁语义 | `apply_patch` 223 处引用；`@@` 上下文 hunk 格式 | `edit_file` 多 hunk + 三级容错；**已补 `apply_patch`**：`@@` 上下文锚点 + 一次 update/add/delete 多文件 | ✅ 已攻克（2026-11-16） | 低–中 | 已交付，见下 |
-| 2 | 生命周期 hooks 事件面 | 独立 `hooks` crate：`engine/{discovery,dispatcher,command_runner}`、`events/permission_request`、`config_rules` | 已有 `hooks.toml` 的 PreToolUse 拦截 + Post 验收 + 技能 `verify`（`chat-agent.ts:992/2402`），但只有这两个点，没有 session 生命周期、权限请求、外部命令 runner | 事件面窄 | 低（2–3 小时/类事件） | 性价比最高的"扩张力"，但先做 1 |
+| 2 | 生命周期 hooks 事件面 | 独立 `hooks` crate：`engine/{discovery,dispatcher,command_runner}`、`events/permission_request`、`config_rules` | 原有 PreToolUse + Post 验收 + 技能 `verify`；**已补** `session_start` / `session_end` / `user_prompt_submit` / `permission_request` 四个事件 + 外部命令 runner + 解析/匹配抽成 `hooks.ts` | ✅ 已攻克（2026-11-16） | 低 | 已交付，见下 |
 | 3 | 终端 PTY 完整交互 | 独立 crate `utils/pty`（跨平台 portable-pty） | 只有 `list_sessions` + 保尾输出 + TTL，**逐行回显未对齐** | 真差距 | 中（跨平台依赖 + 流式回显） | 交互式命令（npm 提问、ssh、REPL）必需 |
 | 4 | 子 Agent 可写 / 并行 | `spawn_agent` 27 处引用，可写、可并行 | `dispatch_subagent` 只读、单层、12 步 / 6 分钟 / 结论回填 | 真差距 | 大（要接沙箱 + 审批 + 并发治理） | 价值高但风险最高，必须排在有沙箱兜底之后 |
 | 5 | MCP 企业级认证 | `rmcp-client` 里 `client_credentials` 4 处、`token_exchange` 12 处、重试退避 | 公开客户端 + PKCE + 30s 提前刷新 + 401 换 token | 深度 | 中（要先有能验的 IdP） | 等你手里有企业 IdP 再动，否则只能写空壳 |
@@ -48,15 +48,29 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 **已知边界（没做）**：① `*** Move to:` 暂不支持（改写路径请用 `move_file`）——故意报错而不是静默忽略；② 执行器的"全算后落盘"只有源码断言覆盖，仓库里没有能实例化 `ChatAgent` 的运行时测试，端到端写入路径仍靠人工验；③ 写盘失败不回滚已写成功的文件（避免二次破坏），只如实回报。
 
-### 2. hooks 事件面
+### 2. hooks 事件面 — ✅ 已攻克（2026-11-16）
 
-**Codex**：`hooks` 是独立 crate，事件至少覆盖 session 起止、tool 前后、**权限请求**；带 discovery（从配置发现规则）与 command runner（跑外部脚本）。
+**Codex**：`hooks` 是独立 crate，`events/` 下 12 个文件，事件全集为 `session_start` / `session_end` / `user_prompt_submit` / `pre_tool_use` / `post_tool_use` / `permission_request` / `model_request` / `compact` / `interrupt` / `stop`；带 discovery（从配置发现规则）与 command runner（跑外部脚本）。
 
-**小逻现状**：`hooks.toml` 已在用，但只有 PreToolUse 拦截与 Post 验收，规则是内部结构，没有"跑外部命令"这一层。
+**小逻原来**：`hooks.toml` 已在用，但只有 PreToolUse 拦截与 Post 验收两个点；规则解析埋在 `chat-agent.ts` 的私有方法 `parseHooksToml` 里，不可测、也不方便加事件。
 
-**改法**：按需加事件（`session_start` / `session_end` / `permission_request`），并允许 hook 声明 `command`（走已有命令闸门 + 审批档），超时/失败按"不阻断"处理并留痕。
+**改法**：取 Codex 事件面里最值钱、又不需要宿主配合的四个（`session_start` / `session_end` / `user_prompt_submit` / `permission_request`），规则可声明 `command` 走既有命令通道与四档审批。
 
-**验收**：`hooks.toml` 三事件各有测试；拦下时原因回流模型；外部命令 hook 走四档审批。
+**落地结果（2026-11-16）**：
+
+- 新建 `lib/brain/hooks.ts`：`HookEvent` / `HookRule` 类型 + `parseHooks()` / `normalizeEvent()` / `hookMatches()` / `fillCommand()`；解析器仍是零依赖子集（`[[hook]]` + `key = "value"`），坏行跳过；
+- **未知事件名整条丢弃**，不静默降级成 `pre`（否则一个拼错的观测钩子会变成拦截器，工具全被挡）；
+- `chat-agent.ts` 增加 `runEventHooks(event, payload)`：只有声明了 `command` 的规则才真跑，走 `ports.command.run`（命令闸门与四档审批照旧），单条 60 秒、与 Post 验收共享本轮 6 次额度；
+- 事件接线：`session_start` 只在会话首轮（`turnId === 1`）跑一次；`user_prompt_submit` 每轮跑，输出以 `[钩子]` system 消息注入模型上下文；`session_end` 在轮末 `memoryPipeline` 之后跑；`permission_request` 插在 `execRunCommand` 解析完参数、三支分派之前，**命令退出码非 0 即拒绝执行**（`trackFailure` 回流，禁止换写法绕道）；
+- 模板变量：`{command}` / `{prompt}` / `{tool}` / `{path}` / `{reason}`；没传的占位符原样保留，便于一眼看出命令写错；
+- 测试新增 7 条（解析含未知事件丢弃 / 事件名归一 / 三重门匹配与坏正则 / 模板替换 / 接线断言 + 旧解析器已删 / **真跑：轮首两事件执行 + `permission_request` 非 0 拦下命令且模型收到拒绝回流** / **真跑：钩子失败只提醒不阻断，未命中的命令照常执行**），`tests/brain-hooks-events.test.mjs` 全绿（真跑那两条用 `createChatAgent` + 桩端口，不是源码正则）；基线 `requirements-coverage.csv` 相应增行。
+
+**已知边界（没做）**：
+
+1. `session_end` 的粒度是「一轮」而不是 Codex 的「进程会话」——小逻的宿主没有显式会话结束信号，这里取"本轮答复交付完"作为会话边界，源码注释已写明差异；
+2. 没接 `model_request` / `compact` / `interrupt` / `stop` 四个事件：`compact`/`stop` 在小逻是主循环内部状态，加上去只能观测、拿不到可操作点；
+3. 事件型钩子只记录不回溯：`session_end` 跑完不改已交付的答复，仅留痕；
+4. `permission_request` 只挂 `run_command` 一个入口（`write_file` / `apply_patch` 的写入仍由既有只读目录锁和删除双锁管），没有做成所有工具的通用审批前置。
 
 ### 3. 终端 PTY
 

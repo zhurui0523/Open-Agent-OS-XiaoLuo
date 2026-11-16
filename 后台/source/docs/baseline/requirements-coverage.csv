@@ -232,6 +232,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 中止：turn/interrupt 掐断在途模型调用，线程回到空闲还能再跑,tests/brain-app-server.test.mjs,已声明用例
 主循环软收尾：最后一步有提醒，步数到顶补一次只写总结的回合,tests/edit-residual.test.mjs,已声明用例
 主机白名单：hooks.toml 里 network_allow 命中的放行，未命中的仍要走批准,tests/sandbox-policy.test.mjs,已声明用例
+事件名归一：大小写、驼峰、横线写法都认，乱写返回 null,tests/brain-hooks-events.test.mjs,已声明用例
 事件流 append-only：seq 单调、跨批次接续、读回顺序一致,tests/thread-event-log.test.mjs,已声明用例
 云元数据地址：批准也不放行,tests/brain-network-policy.test.mjs,已声明用例
 会话清单：无会话时给下一步动作，有会话时带退出码与剩余 TTL,tests/subagent-sessions.test.mjs,已声明用例
@@ -247,6 +248,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 分支丢掉挂起的反问与中断标记：那次回合还挂在主干上，点了也石沉大海,tests/brain-conversation-fork.test.mjs,已声明用例
 分支存档能被内核吃回去：断点账、产物与历史都接得上,tests/brain-conversation-fork.test.mjs,已声明用例
 分支带上历史与断点账：接着这条线换个走法，不用重新摸底,tests/brain-conversation-fork.test.mjs,已声明用例
+匹配：事件 + 工具 + 正则三重门，正则写坏不命中也不炸,tests/brain-hooks-events.test.mjs,已声明用例
 压缩用 messages_replace 覆盖：重建后是压缩后的列表，旧消息不再残留,tests/thread-event-log.test.mjs,已声明用例
 "压缩触发线改成百分比：默认 80%，配置可调且被夹在 [40,100]",tests/state-store.test.mjs,已声明用例
 反向工具走线：event/tool-request 交端口与方法，tool/decide 的返回值就是模型看到的工具结果,tests/brain-app-server.test.mjs,已声明用例
@@ -254,6 +256,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 只填 url 也能授权：自动发现授权服务器 + 动态注册客户端 + 回调换 token,tests/mcp-oauth.test.mjs,已声明用例
 只读 carve-out：.git 目录不能被写、删、移动，但能读,tests/edit-residual.test.mjs,已声明用例
 同一份输入在三端解析结果一致（配置治理的核心承诺）,tests/agent-config.test.mjs,已声明用例
+命令模板：{command} {prompt} {tool} {path} 都替换，未声明的占位符原样留着（看出写错）,tests/brain-hooks-events.test.mjs,已声明用例
 回合占用：同一条线程第二轮要撞车，宿主才知道该插话,tests/brain-app-server.test.mjs,已声明用例
 回环目标始终放行：小逻自查自己的预览服务不能被策略挡死,tests/brain-network-policy.test.mjs,已声明用例
 在分支里写历史不碰主干存档：数组是复制不是引用,tests/brain-conversation-fork.test.mjs,已声明用例
@@ -294,6 +297,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 接线：move_file / delete_file 注册受宿主能力管，删除有双重锁,tests/edit-residual.test.mjs,已声明用例
 接线：两个新工具都注册进 schema，且 dispatch 有对应分支,tests/tool-surface.test.mjs,已声明用例
 接线：压缩闸门用 compactThresholdTokens，且轮末会主动压一次,tests/state-store.test.mjs,已声明用例
+接线：四个新事件都在 chat-agent 里落地，旧私有解析器已删除,tests/brain-hooks-events.test.mjs,已声明用例
 接线：存档 PUT 会记账，且记账失败不拖垮存档；状态接口只回派生状态,tests/state-store.test.mjs,已声明用例
 接线：宿主工厂用配置层覆盖默认档位；配置接口给出 values+sources,tests/agent-config.test.mjs,已声明用例
 接线：状态接口不吐正文，文件变更接口要 conversationId,tests/state-store.test.mjs,已声明用例
@@ -322,6 +326,8 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 看门狗口径：20s 判超时，最多自动重启一次,tests/plugin-fault-isolation.test.mjs,已声明用例
 真实往返：首屏拿得到 banner，写一行拿回显，退出后带 exitCode,tests/brain-stdin-session.test.mjs,已声明用例
 真策略往返：hooks.toml 一改，闸门的裁决就跟着变,tests/brain-network-policy.test.mjs,已声明用例
+真跑：session_start / user_prompt_submit 在轮首执行，permission_request 非 0 直接拒命令,tests/brain-hooks-events.test.mjs,已声明用例
+真跑：钩子命令失败只提醒不阻断（session_end 失败照样交付），且不误伤未命中的命令,tests/brain-hooks-events.test.mjs,已声明用例
 硬禁区不误伤：工作区内同名片段照常放行,tests/sandbox-policy.test.mjs,已声明用例
 硬禁区：系统目录与凭据目录即便 approved 也拒绝,tests/sandbox-policy.test.mjs,已声明用例
 空宿主也能跑通一轮：内核只靠 ports 契约,tests/brain-agent-protocol.test.mjs,已声明用例
@@ -347,6 +353,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 能力面谈判：宿主没声明的代跑口不注册，声明了才搬到线上,tests/brain-app-server.test.mjs,已声明用例
 行尾空白差一点也能命中（第二级）,tests/brain-patch-and-truncation.test.mjs,已声明用例
 补发不含反向工具请求：机器应答的动作重放一次，就是白跑一遍副作用,tests/brain-app-server.test.mjs,已声明用例
+解析：[[hook]] 块 + 老写法（不写 when）默认 pre，未知事件整条丢弃,tests/brain-hooks-events.test.mjs,已声明用例
 路径围栏：相对 ../../ 落点同样算越界，cwd 监狱兜不住它,tests/brain-stdin-session.test.mjs,已声明用例
 路由接线：先追加事件再写快照；半份快照读路径改走事件流重建,tests/thread-event-log.test.mjs,已声明用例
 输出被长度上限掐断时真续跑，且换的是拆分策略不是原样重试,tests/brain-agent-protocol.test.mjs,已声明用例
