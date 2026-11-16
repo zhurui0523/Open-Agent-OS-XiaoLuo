@@ -47,6 +47,11 @@ p*-test-*.log
 # 部署归档（每份 6–16MB，历史版本没必要进仓库）
 后台/*.tar.gz
 
+# 桌面端 standalone 内嵌的 node 运行时（88.5MB 二进制，超 GitHub 推荐上限）
+# 由打包/下载步骤提供，不进版本库；standalone 其余源码与资源照常入库
+客户端/source/desktop/standalone/runtime/node.exe
+客户端/source/desktop/standalone/runtime/*.dll
+
 # 系统与编辑器
 .DS_Store
 Thumbs.db
