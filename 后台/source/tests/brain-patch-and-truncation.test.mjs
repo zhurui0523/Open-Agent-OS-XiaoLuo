@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { applyEditHunks } from "../app/xiaoluo-brain/lib/brain/patch.ts";
+import { applyEditHunks, applyContextHunks, parsePatch } from "../app/xiaoluo-brain/lib/brain/patch.ts";
 import { truncateToolResult } from "../app/xiaoluo-brain/lib/brain/truncation.ts";
 import { DEFAULT_CHAT_AGENT_CONFIG } from "../app/xiaoluo-brain/lib/brain/agent-ports.ts";
 
@@ -103,7 +103,7 @@ test("空白 oldText 直接拒，避免整文件被塞进空白", () => {
 test("edit_file 接法：翻页读全文 + 三级匹配 + 全成或全不成", async () => {
   const chatAgent = await source("app/xiaoluo-brain/lib/brain/chat-agent.ts");
 
-  assert.match(chatAgent, /import \{ applyEditHunks, type EditHunk \} from "\.\/patch"/);
+  assert.match(chatAgent, /import \{ applyEditHunks, applyContextHunks, parsePatch, type EditHunk \} from "\.\/patch"/);
   assert.match(chatAgent, /import \{ truncateToolResult \} from "\.\/truncation"/);
   // 以前只读前 2000 行，后半段代码永远定位不到
   assert.doesNotMatch(chatAgent, /readFile\(args\.path, \{ offset: 1, limit: 2000 \}\)/);
@@ -138,3 +138,125 @@ test("edit_file 工具声明：单处与两种入参形态都说清", async () =
   assert.match(schema[0], /hunks: \{[\s\S]*?type: "array"/);
   assert.match(schema[0], /全部命中才写盘/);
 });
+
+// ---------- 第 1 项：结构化补丁 apply_patch（@@ 上下文锚点） ----------
+
+const PATCH_BASIC = `*** Begin Patch
+*** Update File: src/a.ts
+@@ function add
+ export function add(a, b) {
+-  return a + b;
++  return a + b; // sum
+ }
+*** End Patch`;
+
+test("apply_patch 解析：update 段落带 @@ 锚点，+/-/空格前缀各归其位", () => {
+  const { ops } = parsePatch(PATCH_BASIC);
+  assert.equal(ops.length, 1);
+  assert.equal(ops[0].type, "update");
+  assert.equal(ops[0].path, "src/a.ts");
+  const hunk = ops[0].hunks[0];
+  assert.equal(hunk.anchor, "function add");
+  assert.deepEqual(
+    hunk.lines.map((l) => l.kind),
+    ["context", "remove", "add", "context"],
+  );
+});
+
+test("apply_patch 落地：上下文逐行匹配，只改被 - / + 标记的那一行", () => {
+  const src = ["export function add(a, b) {", "  return a + b;", "}", ""].join("\n");
+  const { ops } = parsePatch(PATCH_BASIC);
+  const res = applyContextHunks(src, ops[0].hunks);
+  assert.equal(res.content, ["export function add(a, b) {", "  return a + b; // sum", "}", ""].join("\n"));
+  assert.equal(res.outcomes[0].line, 1);
+  assert.equal(res.outcomes[0].added, 1);
+  assert.equal(res.outcomes[0].removed, 1);
+});
+
+test("apply_patch：上下文对不上就整批不落地（不做模糊匹配，也不猜）", () => {
+  const src = ["export function add(a, b) {", "  return a - b;", "}"].join("\n");
+  const { ops } = parsePatch(PATCH_BASIC);
+  const res = applyContextHunks(src, ops[0].hunks);
+  assert.equal(res.content, null);
+  assert.match(res.outcomes[0].error, /上下文对不上/);
+});
+
+test("apply_patch：同一段上下文命中多处时用 @@ 锚点收敛，收敛不了就报不唯一", () => {
+  const src = [
+    "function a() {",
+    "  const x = 1;",
+    "}",
+    "function b() {",
+    "  const x = 1;",
+    "}",
+  ].join("\n");
+  const patch = `*** Begin Patch
+*** Update File: src/a.ts
+@@ function b
+-  const x = 1;
++  const x = 2;
+*** End Patch`;
+  const { ops } = parsePatch(patch);
+  const res = applyContextHunks(src, ops[0].hunks);
+  assert.ok(res.content, res.outcomes[0].error);
+  assert.match(res.content, /function b\(\) \{\n  const x = 2;\n\}/);
+
+  // 没有锚点、同一行又在两处出现：必须报不唯一，绝不能改错那个
+  const noAnchor = `*** Begin Patch
+*** Update File: src/a.ts
+-  const x = 1;
++  const x = 2;
+*** End Patch`;
+  const ambiguous = applyContextHunks(src, parsePatch(noAnchor).ops[0].hunks);
+  assert.equal(ambiguous.content, null);
+  assert.match(ambiguous.outcomes[0].error, /不唯一/);
+});
+
+test("apply_patch：一次补丁可 update + add + delete 多个文件", () => {
+  const patch = `*** Begin Patch
+*** Update File: src/a.ts
+@@ anchor
+ keep
+-remove me
++added
+*** Add File: src/new.ts
++export const fresh = 1;
++export const more = 2;
+*** Delete File: src/old.ts
+*** End Patch`;
+  const { ops } = parsePatch(patch);
+  assert.deepEqual(
+    ops.map((o) => `${o.type}:${o.path}`),
+    ["update:src/a.ts", "add:src/new.ts", "delete:src/old.ts"],
+  );
+  assert.equal(ops[1].hunks[0].lines.filter((l) => l.kind === "add").length, 2);
+});
+
+test("apply_patch 格式错误必须带行号报出来，而不是猜着改", () => {
+  assert.throws(() => parsePatch("*** Update File: a.ts\n x\n"), /Begin Patch/);
+  assert.throws(() => parsePatch("*** Begin Patch\n*** Update File: a.ts\n@@ y\nx\n*** End Patch"), /第 4 行/);
+  assert.throws(
+    () => parsePatch("*** Begin Patch\n*** Update File: a.ts\n*** End Patch"),
+    /没有任何 @@ hunk|没有任何 hunk/,
+  );
+  assert.throws(
+    () => parsePatch("*** Begin Patch\n*** Move to: b.ts\n*** End Patch"),
+    /Move to/,
+  );
+});
+
+test("apply_patch 接法：工具声明已注册、执行器先全算后落盘", async () => {
+  const chatTools = await source("app/xiaoluo-brain/lib/brain/chat-tools.ts");
+  assert.match(chatTools, /const APPLY_PATCH_SCHEMA = \{/);
+  assert.match(chatTools, /EDIT_FILE_SCHEMA, APPLY_PATCH_SCHEMA/);
+  assert.match(chatTools, /name: "apply_patch"/);
+
+  const chatAgent = await source("app/xiaoluo-brain/lib/brain/chat-agent.ts");
+  assert.match(chatAgent, /case "apply_patch":/);
+  assert.match(chatAgent, /private async execApplyPatch\(call: ToolCall\)/);
+  // 全部文件都算完才写盘：只要一处锚不上就整批不动
+  assert.match(chatAgent, /if \(failures\.length\) \{[\s\S]{0,400}全部文件都没动/);
+  // 删除仍守"先看过再删"的纪律
+  assert.match(chatAgent, /删除前先看一眼——本轮还没 read_file 过它/);
+});
+

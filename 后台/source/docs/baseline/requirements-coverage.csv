@@ -37,6 +37,13 @@ all plugin nodes expose separate text and multi-media reference ports,tests/grap
 an assistant-only tail still gets a user turn,tests/anthropic-adapter-tail.test.mjs,已声明用例
 an empty-handed turn is blocked before closing instead of ending the turn,tests/brain-progress-gates.test.mjs,已声明用例
 an incompatible protocol falls back to the type default,tests/model-protocol-options.test.mjs,已声明用例
+apply_patch 接法：工具声明已注册、执行器先全算后落盘,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch 格式错误必须带行号报出来，而不是猜着改,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch 落地：上下文逐行匹配，只改被 - / + 标记的那一行,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch 解析：update 段落带 @@ 锚点，+/-/空格前缀各归其位,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch：一次补丁可 update + add + delete 多个文件,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch：上下文对不上就整批不落地（不做模糊匹配，也不猜）,tests/brain-patch-and-truncation.test.mjs,已声明用例
+apply_patch：同一段上下文命中多处时用 @@ 锚点收敛，收敛不了就报不唯一,tests/brain-patch-and-truncation.test.mjs,已声明用例
 archive import falls back to source inspection when Manifest is absent,tests/package-import.test.mjs,已声明用例
 asset writes enforce the workspace owner's assigned storage,tests/admin-storage-quota.test.mjs,已声明用例
 audio models show the RunningHub music provider,tests/model-protocol-options.test.mjs,已声明用例

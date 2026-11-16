@@ -28,7 +28,7 @@
 
 import { buildChatToolSchemas } from "./chat-tools";
 import { searchTools } from "./tool-search";
-import { applyEditHunks, type EditHunk } from "./patch";
+import { applyEditHunks, applyContextHunks, parsePatch, type EditHunk } from "./patch";
 import { truncateToolResult } from "./truncation";
 import {
   DEFAULT_CHAT_AGENT_CONFIG,
@@ -1087,6 +1087,8 @@ export class ChatAgent {
         return await this.execTodoWrite(call);
       case "edit_file":
         return await this.execEditFile(call);
+      case "apply_patch":
+        return await this.execApplyPatch(call);
       case "load_skill":
         return await this.execLoadSkill(call);
       case "save_skill":
@@ -2004,6 +2006,119 @@ export class ChatAgent {
     const lintNote = await this.autoTypeCheck(args.path);
     const hookNote = await this.runPostToolHooks(call);
     return `已修改 ${args.path}（${hunks.length} 处，共 ${oldChars} → ${newChars} 字符）。` + looseNote + lintNote + hookNote;
+  }
+
+  /**
+   * 结构化补丁（第 1 项追平）：@@ 上下文锚点 + 一次 update/add/delete 多文件。
+   * 先全部算出来再落盘：只要有一个文件锚不上，整批不动（和 edit_file 的纪律一致）。
+   */
+  private async execApplyPatch(call: ToolCall): Promise<string> {
+    const { ports } = this.opts;
+    if (!ports.fs) return "当前环境未接入文件通道。";
+    const args = call.arguments as unknown as { patch?: unknown };
+    const text = typeof args?.patch === "string" ? args.patch.trim() : "";
+    if (!text) return "apply_patch 需要 patch：传 *** Begin Patch … *** End Patch 全文（不要包代码围栏）。";
+
+    let ops;
+    try {
+      ops = parsePatch(text).ops;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.journal.append("tool_result", `apply_patch 解析失败：${message.slice(0, 160)}`, { tool: "apply_patch" });
+      return `apply_patch 未执行 —— 补丁格式不对：${message}`;
+    }
+
+    const writes: Array<{ path: string; content: string; kind: "update" | "add" }> = [];
+    const deletes: string[] = [];
+    const failures: string[] = [];
+
+    for (const op of ops) {
+      if (op.type === "delete") {
+        if (!ports.fs.deletePath) {
+          failures.push(`${op.path}：当前宿主没有删除能力，*** Delete File 用不了`);
+          continue;
+        }
+        if (!this.readPaths.has(op.path)) {
+          failures.push(`${op.path}：删除前先看一眼——本轮还没 read_file 过它`);
+          continue;
+        }
+        deletes.push(op.path);
+        continue;
+      }
+      if (op.type === "add") {
+        let exists = false;
+        try {
+          const probe = await ports.fs.readFile(op.path, { limit: 1 });
+          exists = probe.content !== "" || Boolean(probe.totalLines);
+        } catch {
+          exists = false; // 读不到 = 不存在，属新建
+        }
+        if (exists) {
+          failures.push(`${op.path}：文件已存在，*** Add File 只能新建（改已有文件用 Update）`);
+          continue;
+        }
+        const content = op.hunks.flatMap((h) => h.lines.filter((l) => l.kind === "add").map((l) => l.text)).join("\n");
+        writes.push({ path: op.path, content, kind: "add" });
+        continue;
+      }
+      const source = await this.readWholeFile(op.path);
+      if (source === null) {
+        failures.push(`${op.path}：读不到全文（不存在 / 二进制 / 太大），先 read_file 或改用 edit_file 定点改`);
+        continue;
+      }
+      const result = applyContextHunks(source, op.hunks);
+      if (result.content === null) {
+        const detail = result.outcomes
+          .map((o, i) => (o.ok ? null : `第 ${i + 1} 段：${o.error ?? ""}`))
+          .filter((s): s is string => Boolean(s))
+          .join(" ");
+        failures.push(`${op.path}：${detail}`);
+        continue;
+      }
+      writes.push({ path: op.path, content: result.content, kind: "update" });
+      const stats = result.outcomes.reduce(
+        (acc, o) => ({ added: acc.added + (o.added ?? 0), removed: acc.removed + (o.removed ?? 0) }),
+        { added: 0, removed: 0 },
+      );
+      this.journal.append("tool_result", `apply_patch ${op.path}（${op.hunks.length} 段，+${stats.added}/-${stats.removed}）`, {
+        tool: "apply_patch",
+      });
+    }
+
+    if (failures.length) {
+      ports.postUI("status", "补丁未应用", { tool: "apply_patch", ok: false, detail: failures[0].slice(0, 200) });
+      return `apply_patch 未应用 —— 全部文件都没动：\n${failures.map((f) => "· " + f).join("\n")}`;
+    }
+
+    // 落盘：先写、后删；写失败就把已写成功的如实报出来（不回滚：避免二次破坏）
+    const done: string[] = [];
+    for (const w of writes) {
+      await ports.fs.writeFile(w.path, w.content);
+      done.push(`${w.kind === "add" ? "新建" : "更新"} ${w.path}`);
+      this.readPaths.add(w.path);
+      this.turnChangedFiles.add(w.path);
+      if (CODE_FILE_RE.test(w.path)) {
+        this.dirtyCodeFiles.add(w.path);
+        this.lastVerifyResult = null;
+      }
+    }
+    for (const path of deletes) {
+      try {
+        await ports.fs.deletePath?.(path);
+        done.push(`删除 ${path}`);
+        this.readPaths.delete(path);
+        this.turnChangedFiles.delete(path);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${path}：删除失败 ${message}`);
+      }
+    }
+
+    ports.postUI("status", `补丁已应用（${done.length} 个文件）`, { tool: "apply_patch", ok: true, detail: done.join("、") });
+    const firstCode = writes.find((w) => CODE_FILE_RE.test(w.path));
+    const lintNote = firstCode ? await this.autoTypeCheck(firstCode.path) : "";
+    const hookNote = await this.runPostToolHooks(call);
+    return `apply_patch 已应用：${done.join("；")}。` + lintNote + hookNote;
   }
 
   /**

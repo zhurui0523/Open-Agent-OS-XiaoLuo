@@ -61,7 +61,8 @@ export type ChatToolName =
   | "web_operate" //    外部浏览器：按 CSS 选择器 click/type/scroll/key
   | "web_eval" //       外部浏览器：页面上下文执行 JS 取值
   | "web_record" //     外部浏览器：录制演示转技能（start/stop/save/list/delete） // RECORD-TS
-  | "web_replay"; //    外部浏览器：回放已录技能（按名或内联 steps） // RECORD-TS
+  | "web_replay" //    外部浏览器：回放已录技能（按名或内联 steps） // RECORD-TS
+  | "apply_patch"; //   结构化补丁：@@ 上下文锚点，一次调用可 update/add/delete 多文件 // PATCH-TS
 
 // ---------- 工具参数 ----------
 
@@ -368,6 +369,11 @@ export interface EditFileArgs {
   newText?: string;
   /** 多处编辑：一次传完，全部命中才写盘（有一处对不上就整批不改） */
   hunks?: EditHunkArg[];
+}
+
+export interface ApplyPatchArgs {
+  /** Codex 式补丁文本：*** Begin Patch / *** Update File / @@ / ' ' '+' '-' / *** End Patch */
+  patch: string;
 }
 
 export interface LoadSkillArgs {
@@ -821,6 +827,22 @@ const EDIT_FILE_SCHEMA = {
             },
           },
         },
+      },
+    },
+  },
+};
+
+const APPLY_PATCH_SCHEMA = {
+  type: "function",
+  function: {
+    name: "apply_patch",
+    description:
+      "结构化补丁（学 Codex apply_patch）：只传上下文行与增删行，不用把整段原文抄回来，改大文件省 token、少误伤。格式：*** Begin Patch 换行 *** Update File: 路径 换行 @@ 可选锚点（函数名/类名） 换行（' ' 上下文行 / '-' 删掉的行 / '+' 新增的行），也可以 *** Add File: 路径（内容行以 + 开头）与 *** Delete File: 路径，最后 *** End Patch。上下文逐行严格匹配，一处对不上整批不落地；同一段上下文命中多处时多带上下文或在 @@ 后面写锚点。改一处短文本仍可用 edit_file。",
+    parameters: {
+      type: "object",
+      required: ["patch"],
+      properties: {
+        patch: { type: "string", description: "完整补丁文本（含 *** Begin Patch / *** End Patch，不要包代码围栏）" },
       },
     },
   },
@@ -1346,7 +1368,7 @@ export function buildChatToolSchemas(caps: ChatToolCapabilities): unknown[] {
   if (caps.memoryEnabled) schemas.push(ADD_MEMORY_SCHEMA);
   if (caps.deployEnabled) schemas.push(DEPLOY_PROGRAM_SCHEMA);
   if (caps.webSearchEnabled) schemas.push(WEB_SEARCH_SCHEMA);
-  if (caps.fsEnabled) schemas.push(READ_FILE_SCHEMA, LIST_DIR_SCHEMA, WRITE_FILE_SCHEMA, GREP_FILES_SCHEMA, FIND_FILES_SCHEMA, PACKAGE_PROGRAM_SCHEMA, EDIT_FILE_SCHEMA);
+  if (caps.fsEnabled) schemas.push(READ_FILE_SCHEMA, LIST_DIR_SCHEMA, WRITE_FILE_SCHEMA, GREP_FILES_SCHEMA, FIND_FILES_SCHEMA, PACKAGE_PROGRAM_SCHEMA, EDIT_FILE_SCHEMA, APPLY_PATCH_SCHEMA);
   if (caps.fsOpsEnabled) schemas.push(MOVE_FILE_SCHEMA, DELETE_FILE_SCHEMA);
   if (caps.subagentEnabled) schemas.push(SUBAGENT_SCHEMA);
   schemas.push(QUERY_LEDGER_SCHEMA, TODO_WRITE_SCHEMA, LOCATE_LOCAL_SERVICE_SCHEMA, TOOL_SEARCH_SCHEMA, CONTEXT_METER_SCHEMA);

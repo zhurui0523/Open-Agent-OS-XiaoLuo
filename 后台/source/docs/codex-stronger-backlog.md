@@ -9,7 +9,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 | # | 维度 | Codex 证据 | 小逻现状 | 差距性质 | 成本 | 建议 |
 |---|---|---|---|---|---|---|
-| 1 | 结构化补丁语义 | `apply_patch` 223 处引用；`@@` 上下文 hunk 格式 | `edit_file` 已有多 hunk + 三级容错（`patch.ts`），但只有"整串替换"，没有 `@@` 上下文 diff，也不能在同一个调用里 add/delete 文件 | 实现深度（不是没有） | 低–中（1 天，纯函数 + 快照） | **先做**：改大文件省 token、少误伤，收益立刻体现在每次编辑 |
+| 1 | 结构化补丁语义 | `apply_patch` 223 处引用；`@@` 上下文 hunk 格式 | `edit_file` 多 hunk + 三级容错；**已补 `apply_patch`**：`@@` 上下文锚点 + 一次 update/add/delete 多文件 | ✅ 已攻克（2026-11-16） | 低–中 | 已交付，见下 |
 | 2 | 生命周期 hooks 事件面 | 独立 `hooks` crate：`engine/{discovery,dispatcher,command_runner}`、`events/permission_request`、`config_rules` | 已有 `hooks.toml` 的 PreToolUse 拦截 + Post 验收 + 技能 `verify`（`chat-agent.ts:992/2402`），但只有这两个点，没有 session 生命周期、权限请求、外部命令 runner | 事件面窄 | 低（2–3 小时/类事件） | 性价比最高的"扩张力"，但先做 1 |
 | 3 | 终端 PTY 完整交互 | 独立 crate `utils/pty`（跨平台 portable-pty） | 只有 `list_sessions` + 保尾输出 + TTL，**逐行回显未对齐** | 真差距 | 中（跨平台依赖 + 流式回显） | 交互式命令（npm 提问、ssh、REPL）必需 |
 | 4 | 子 Agent 可写 / 并行 | `spawn_agent` 27 处引用，可写、可并行 | `dispatch_subagent` 只读、单层、12 步 / 6 分钟 / 结论回填 | 真差距 | 大（要接沙箱 + 审批 + 并发治理） | 价值高但风险最高，必须排在有沙箱兜底之后 |
@@ -20,7 +20,7 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 
 ## 逐项：差在哪、怎么改、怎么验收
 
-### 1. 结构化补丁语义（建议先做）
+### 1. 结构化补丁语义 — ✅ 已攻克（2026-11-16）
 
 **Codex 怎么做的**：`apply_patch` 用 `*** Begin Patch` + `*** Update File` + `@@` 上下文行描述改动，只传"上下文 + 增删行"。大文件只发几十行，不用整份回传；上下文对不上就整体拒绝，不会误改到别处。
 
@@ -36,6 +36,17 @@ Codex 侧证据：`codex-rs`（commit `69231e1`，本机路径见文末）。小
 4. 快照测试补 `@@` 命中 / 上下文不符 / 多文件批处理 / 半途失败整批回滚 四类用例。
 
 **验收**：`tests/patch.test.mjs` 新增用例全绿；快照新增 `apply_patch` 四例；门禁九步通过；`tool-search` 中文"打补丁/按上下文改"能命中。
+
+**落地结果（2026-11-16）**：
+
+- `patch.ts` 新增 `parsePatch()` 与 `applyContextHunks()`：`@@` 锚点只用来收敛候选位置，匹配本身逐行严格相等，不做模糊匹配；
+- 新工具 `apply_patch`（`chat-tools.ts` 的 `APPLY_PATCH_SCHEMA`，`caps.fsEnabled` 时注册），支持一次 `Update File` / `Add File` / `Delete File`；
+- 执行器 `execApplyPatch`（`chat-agent.ts`）：**先把所有文件算完再落盘**，只要一处锚不上就整批不动；删除仍守"本轮先 read_file 过才允许删"；写完自动 tsc 检查 + Post hook；
+- `tool-search` 同义词补 `打补丁 / 上下文补丁 / 锚点 / 按行改` → `apply_patch`；
+- 测试新增 7 条（解析 / 落地 / 上下文不符整批不落 / 多命中靠锚点收敛 / 多文件 / 格式错误带行号 / 工具面接线），`tests/brain-patch-and-truncation.test.mjs` 19 条全绿；基线 `requirements-coverage.csv` 相应 +7 行；
+- 本地九步全量门禁 233.9s 通过。
+
+**已知边界（没做）**：① `*** Move to:` 暂不支持（改写路径请用 `move_file`）——故意报错而不是静默忽略；② 执行器的"全算后落盘"只有源码断言覆盖，仓库里没有能实例化 `ChatAgent` 的运行时测试，端到端写入路径仍靠人工验；③ 写盘失败不回滚已写成功的文件（避免二次破坏），只如实回报。
 
 ### 2. hooks 事件面
 

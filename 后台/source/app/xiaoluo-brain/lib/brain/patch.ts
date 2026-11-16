@@ -143,3 +143,237 @@ export function applyEditHunks(source: string, hunks: EditHunk[]): PatchResult {
   }
   return { content: outcomes.some((o) => !o.ok) ? null : text, outcomes };
 }
+
+// ---------- 结构化补丁（学 Codex apply_patch：@@ 上下文锚点 + 一次多文件） ----------
+//
+// 与 edit_file 的分工：edit_file 传 oldText/newText 整串，短文本、单点替换更省；
+// apply_patch 只传「上下文行 + 增删行」，改大文件不用抄回原文，一调用可 update/add/delete 多文件。
+// 格式（缩进外的 ' ' / '+' / '-' 前缀是语义，不是装饰）：
+//   *** Begin Patch
+//   *** Update File: src/a.ts
+//   @@ 可选锚点文本（如函数名）
+//    上下文行
+//   -删掉的行
+//   +新增的行
+//   *** Add File: src/b.ts
+//   +新文件内容
+//   *** Delete File: src/c.ts
+//   *** End Patch
+// 规矩不变：一处锚不上就整批不落地，绝不留改了一半的文件。
+
+type PatchLineKind = "context" | "add" | "remove";
+
+export interface PatchLine {
+  kind: PatchLineKind;
+  text: string;
+}
+
+export interface ContextHunk {
+  /** @@ 后面的锚点文本（可选）：命中多处时用它缩小范围 */
+  anchor?: string;
+  lines: PatchLine[];
+}
+
+export interface PatchOp {
+  type: "update" | "add" | "delete";
+  path: string;
+  hunks: ContextHunk[];
+}
+
+export interface PatchParseResult {
+  ops: PatchOp[];
+  error?: string;
+}
+
+export interface ContextHunkOutcome {
+  ok: boolean;
+  /** 落地处起始行（1 起） */
+  line?: number;
+  /** 这一 hunk 增删了多少行 */
+  added?: number;
+  removed?: number;
+  error?: string;
+}
+
+export interface ContextPatchResult {
+  /** 全部 hunk 命中才有新内容 */
+  content: string | null;
+  outcomes: ContextHunkOutcome[];
+}
+
+/** 解析补丁文本；任何格式问题都带行号报出来，不猜 */
+export function parsePatch(text: string): PatchParseResult {
+  const raw = String(text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = raw.split("\n");
+  const ops: PatchOp[] = [];
+  let current: PatchOp | null = null;
+  let hunk: ContextHunk | null = null;
+  let sawBegin = false;
+  let sawEnd = false;
+
+  const closeHunk = () => {
+    if (!hunk) return;
+    if (current && hunk.lines.length) current.hunks.push(hunk);
+    hunk = null;
+  };
+  const closeOp = () => {
+    closeHunk();
+    if (!current) return;
+    if (current.type === "update" && !current.hunks.length) {
+      const path = current.path;
+      current = null;
+      throw new Error(`*** Update File: ${path} 下面没有任何 @@ hunk`);
+    }
+    ops.push(current);
+    current = null;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed && !current && !sawBegin) continue; // 前后的空行不算内容
+    if (trimmed === "*** Begin Patch") {
+      if (sawBegin) throw new Error(`第 ${i + 1} 行：*** Begin Patch 重复了`);
+      sawBegin = true;
+      continue;
+    }
+    if (trimmed === "*** End Patch") {
+      closeOp();
+      sawEnd = true;
+      continue;
+    }
+    if (/^\*\*\*\s*Update File:/.test(trimmed)) {
+      closeOp();
+      const path = trimmed.replace(/^\*\*\*\s*Update File:\s*/, "").trim();
+      if (!path) throw new Error(`第 ${i + 1} 行：*** Update File 少写了路径`);
+      current = { type: "update", path, hunks: [] };
+      continue;
+    }
+    if (/^\*\*\*\s*Add File:/.test(trimmed)) {
+      closeOp();
+      const path = trimmed.replace(/^\*\*\*\s*Add File:\s*/, "").trim();
+      if (!path) throw new Error(`第 ${i + 1} 行：*** Add File 少写了路径`);
+      current = { type: "add", path, hunks: [] };
+      hunk = { lines: [] };
+      continue;
+    }
+    if (/^\*\*\*\s*Delete File:/.test(trimmed)) {
+      closeOp();
+      const path = trimmed.replace(/^\*\*\*\s*Delete File:\s*/, "").trim();
+      if (!path) throw new Error(`第 ${i + 1} 行：*** Delete File 少写了路径`);
+      current = { type: "delete", path, hunks: [] };
+      continue;
+    }
+    if (/^\*\*\*\s*Move to:/.test(trimmed)) {
+      throw new Error(`第 ${i + 1} 行：暂不支持 *** Move to（改写路径请用 move_file）`);
+    }
+    if (!current) throw new Error(`第 ${i + 1} 行：${trimmed.slice(0, 40)} 不在任何 File 段落内`);
+
+    if (current.type === "delete") {
+      throw new Error(`第 ${i + 1} 行：*** Delete File 后面不应有内容`);
+    }
+    if (current.type === "update" && trimmed.startsWith("@@")) {
+      closeHunk();
+      hunk = { anchor: trimmed.replace(/^@@\s*/, ""), lines: [] };
+      continue;
+    }
+    if (current.type === "add") {
+      if (!line.startsWith("+")) throw new Error(`第 ${i + 1} 行：Add File 的内容行必须以 + 开头`);
+      hunk!.lines.push({ kind: "add", text: line.slice(1) });
+      continue;
+    }
+    // update 段落里的三种前缀；空行按上下文空行处理（Codex 允许）
+    if (!hunk) hunk = { lines: [] };
+    if (line.startsWith("+")) hunk.lines.push({ kind: "add", text: line.slice(1) });
+    else if (line.startsWith("-")) hunk.lines.push({ kind: "remove", text: line.slice(1) });
+    else if (line.startsWith(" ")) hunk.lines.push({ kind: "context", text: line.slice(1) });
+    else if (trimmed === "") hunk.lines.push({ kind: "context", text: "" });
+    else {
+      throw new Error(`第 ${i + 1} 行：update 段落里的行必须以 ' ' / '+' / '-' 开头（原文：${trimmed.slice(0, 40)}）`);
+    }
+  }
+
+  if (!sawBegin) throw new Error("补丁缺少 *** Begin Patch 开头");
+  if (!sawEnd) throw new Error("补丁缺少 *** End Patch 结尾");
+  if (!ops.length) throw new Error("补丁里没有任何 File 段落");
+  for (const op of ops) {
+    if (op.type === "update" && !op.hunks.length) throw new Error(`*** Update File: ${op.path} 下面没有任何 hunk`);
+  }
+  return { ops };
+}
+
+function matchBlock(lines: string[], want: string[], from = 0): number[] {
+  const starts: number[] = [];
+  for (let i = from; i + want.length <= lines.length; i += 1) {
+    let hit = true;
+    for (let j = 0; j < want.length; j += 1) {
+      if (lines[i + j].replace(/\r$/, "") !== want[j]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) starts.push(i);
+  }
+  return starts;
+}
+
+/** 把 @@ 结构 hunk 落到源码上；全部命中才有 content */
+export function applyContextHunks(source: string, hunks: ContextHunk[]): ContextPatchResult {
+  const lines = source === "" ? [] : source.split("\n");
+  const outcomes: ContextHunkOutcome[] = [];
+  let working = lines.slice();
+  let failed = false;
+
+  for (const hunk of hunks) {
+    if (!hunk.lines.some((l) => l.kind !== "context")) {
+      outcomes.push({ ok: false, error: "这个 hunk 只有上下文行，没有 + / - 改动" });
+      failed = true;
+      continue;
+    }
+    const oldLines = hunk.lines.filter((l) => l.kind !== "add").map((l) => l.text);
+    const newLines = hunk.lines.filter((l) => l.kind !== "remove").map((l) => l.text);
+    const added = hunk.lines.filter((l) => l.kind === "add").length;
+    const removed = hunk.lines.filter((l) => l.kind === "remove").length;
+
+    let starts = oldLines.length ? matchBlock(working, oldLines) : [];
+    if (hunk.anchor) {
+      // 锚点只用来"缩小范围"，不参与匹配本身：命中多处时，取锚点在前面 40 行内出现过的那处
+      const anchor = hunk.anchor.trim();
+      if (anchor && starts.length > 1) {
+        const narrowed = starts.filter((start) => {
+          const from = Math.max(0, start - 40);
+          for (let i = from; i < start; i += 1) {
+            if (working[i].includes(anchor)) return true;
+          }
+          return working[start]?.includes(anchor) ?? false;
+        });
+        starts = narrowed;
+      }
+    }
+
+    if (!starts.length) {
+      outcomes.push({
+        ok: false,
+        error:
+          "上下文对不上（逐行比较，不做模糊匹配）：先 read_file 看实际内容，再把要改的那几行原样带成上下文行。",
+      });
+      failed = true;
+      continue;
+    }
+    if (starts.length > 1) {
+      outcomes.push({
+        ok: false,
+        error: `这段上下文命中 ${starts.length} 处（不唯一）：多带几行上下文，或在 @@ 后面写锚点（如函数名/类名）。`,
+      });
+      failed = true;
+      continue;
+    }
+    const at = starts[0];
+    working = [...working.slice(0, at), ...newLines, ...working.slice(at + oldLines.length)];
+    outcomes.push({ ok: true, line: at + 1, added, removed });
+  }
+
+  if (failed) return { content: null, outcomes };
+  return { content: working.join("\n"), outcomes };
+}
+
