@@ -7,8 +7,7 @@ export type ModelEndpointKind =
   | "gemini-generate-content"
   | "custom";
 
-export function modelEndpointKind(raw: string): ModelEndpointKind {
-  let pathname: string;
+export function modelEndpointKind(raw: string): ModelEndpointKind {  let pathname: string;
   try {
     pathname = new URL(raw).pathname.replace(/\/+$/, "").toLowerCase();
   } catch {
@@ -23,6 +22,13 @@ export function modelEndpointKind(raw: string): ModelEndpointKind {
     return "gemini-generate-content";
   }
   return "custom";
+}
+
+/** 对话可用端点：仅 OpenAI chat/completions 与 Anthropic messages（其余是生成/专用端点） */
+export function isChatEndpointKind(raw: string): boolean {
+  if (!raw?.trim()) return true; // 未填端点按默认 chat 兼容处理
+  const kind = modelEndpointKind(raw);
+  return kind === "chat-completions" || kind === "messages";
 }
 
 export function resolveModelApiEndpoint(

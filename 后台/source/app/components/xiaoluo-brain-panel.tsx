@@ -53,7 +53,9 @@ import {
   Check,
   Quote,
 } from "lucide-react";
-import type { ModelConnection } from "../types";
+import type { ModelConnection, ModelInputConstraints } from "../types";
+import { modelSupportsVision } from "../lib/model-vision";
+import { isChatEndpointKind } from "../lib/model-endpoints";
 import { MarkdownLite } from "../xiaoluo-brain/components/chat/markdown-lite";
 import { useChatAgent } from "../xiaoluo-brain/hooks/use-chat-agent";
 import type {
@@ -118,16 +120,10 @@ type XiaoLuoDesktopFsResult = {
   error?: string;
 };
 /** 桌面端主进程桥（preload.cjs 经 contextBridge 暴露；浏览器环境为 undefined） */
-/** 视觉能力启发式：登记处 modalities 含 image/vision 优先采信，否则按模型族判定 */
-function modelLikelyVision(modelId: string, modalities?: string[]): boolean {
-  if ((modalities ?? []).some((mm) => /image|vision|video/.test(mm))) return true;
-  const id = (modelId || '').toLowerCase();
-  if (/(vl|vision|visual|video|multimodal|qvq)/.test(id)) return true;
-  if (/(gpt-4o|gpt-5|chatgpt-4o|claude|gemini|doubao-vision|ernie-4o|step-v|kimi-vision)/.test(id)) return true;
-  if (/qwen.*max/.test(id)) return true;
-  return false;
+/** 对话可用的模型连接：只认 OpenAI 兼容 chat/completions 与 Anthropic messages，图片/视频生成端点不混进来 */
+function isChatModelConnection(model: ModelConnection): boolean {
+  return isChatEndpointKind(model.baseUrl ?? "");
 }
-
 /** 内嵌浏览器面板矩形（取最大可见 iframe，窗口内容坐标）；无则整窗 */
 function browserPanelRect(): { x: number; y: number; width: number; height: number } | undefined {
   const frames = Array.from(document.querySelectorAll('iframe'));
@@ -825,7 +821,7 @@ export function XiaoluoBrainPanel({
   const brainModels = useMemo(
     () =>
       models
-        .filter((m) => m.enabled !== false && m.modalities.includes("text"))
+        .filter((m) => m.enabled !== false && m.modalities.includes("text") && isChatModelConnection(m))
         .sort((a, b) => {
           const health =
             Number(b.state === "healthy") - Number(a.state === "healthy");
@@ -1043,7 +1039,11 @@ export function XiaoluoBrainPanel({
       /** 网页抓取：走服务端 /api/v2/brain/browse（SSRF 防护在服务端） */
       vision: desktop?.browserAction
         ? {
-            modelVision: modelLikelyVision(effectiveModel?.id ?? '', (effectiveModel as { modalities?: string[] } | undefined)?.modalities),
+            modelVision: modelSupportsVision({
+              modelId: effectiveModel?.id ?? "",
+              modalities: (effectiveModel as { modalities?: string[] } | undefined)?.modalities,
+              inputConstraints: (effectiveModel as { inputConstraints?: ModelInputConstraints } | undefined)?.inputConstraints,
+            }),
             capture: async (region: 'browser' | 'window') => {
               const rect = region === 'browser' ? browserPanelRect() : undefined;
               const res = await desktop.browserAction!({ action: 'screenshot', ...(rect ? { rect } : {}) });

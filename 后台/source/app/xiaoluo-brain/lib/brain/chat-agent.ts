@@ -1244,7 +1244,11 @@ export class ChatAgent {
     if (!ports.desktop) return '当前环境未接入整桌控制口（桌面客户端内才可用）';
     const shot = await ports.desktop.capture();
     if (ports.vision?.modelVision === false) {
-      return '整桌截图已拿到但当前模型无视觉能力，图片未入上下文；请切换视觉模型后再用 desktop_screenshot。';
+      return (
+        '整桌截图已拿到，但当前模型（' +
+        this.opts.model +
+        '）不支持图片输入，图片没有进上下文。请在模型连接里选「OpenAI 兼容 / Anthropic 兼容」且能收图片的对话模型（图片/视频生成端点不能用于对话），切换后重新截一张。'
+      );
     }
     this.pendingVisionImages.push({ mimeType: 'image/png', dataUrl: shot.dataUrl });
     this.visionCheckedThisTurn = true; // VISION-GATE 记账：本轮已自己看过画面

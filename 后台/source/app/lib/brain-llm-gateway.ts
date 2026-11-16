@@ -151,7 +151,9 @@ export async function resolveBrainModelConnection(userId: string, canvasId: stri
   if (endpoint !== "chat-completions" && endpoint !== "messages") {
     throw new BrainGatewayError(
       400,
-      "智能创作暂不支持该类型模型连接（需要 OpenAI 兼容或 Anthropic 文本模型）",
+      "这个模型连接不是对话模型（端点类型：" +
+        endpoint +
+        "）：小逻只能接 OpenAI chat/completions 或 Anthropic messages 兼容的对话模型，图片/视频生成连接不能用于聊天。请在设置里换一个对话模型。",
     );
   }
   let credential = await resolveCredential(row);

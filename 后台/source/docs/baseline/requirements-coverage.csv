@@ -346,6 +346,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 接线：存档 PUT 会记账，且记账失败不拖垮存档；状态接口只回派生状态,tests/state-store.test.mjs,已声明用例
 接线：宿主工厂用配置层覆盖默认档位；配置接口给出 values+sources,tests/agent-config.test.mjs,已声明用例
 接线：状态接口不吐正文，文件变更接口要 conversationId,tests/state-store.test.mjs,已声明用例
+接线：面板过滤生成端点、用统一视觉判定；网关错误文案不再甩「智能创作」,tests/brain-vision-routing.test.mjs,已声明用例
 提示文案：带命中原因和描述，便于模型判断要不要加载,tests/brain-skill-selection.test.mjs,已声明用例
 提示词与回包解析：目标/命令都要在提示里，坏回包按 review,tests/brain-guardian.test.mjs,已声明用例
 提示词：教了什么时候该开会话、什么时候不该,tests/brain-stdin-session.test.mjs,已声明用例
@@ -390,6 +391,7 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 硬禁区：系统目录与凭据目录即便 approved 也拒绝,tests/sandbox-policy.test.mjs,已声明用例
 空宿主也能跑通一轮：内核只靠 ports 契约,tests/brain-agent-protocol.test.mjs,已声明用例
 空白 oldText 直接拒，避免整文件被塞进空白,tests/brain-patch-and-truncation.test.mjs,已声明用例
+端点判定：聊天只认 chat/completions 与 messages，图片/视频生成端点被挡,tests/brain-vision-routing.test.mjs,已声明用例
 第 7 批：model_request 每轮一次、stop 在交付后一次；四个新事件都能被识别,tests/brain-hooks-events.test.mjs,已声明用例
 第二宿主的抓取口绕不开 SSRF 闸门：内网地址直接拒，不去问老板,tests/brain-app-server.test.mjs,已声明用例
 第二宿主的文件口按 default 建：工作区外的绝对路径拦下，拒绝文案留下台阶,tests/brain-app-server.test.mjs,已声明用例
@@ -417,6 +419,8 @@ video models show the supported RunningHub providers,tests/model-protocol-option
 补发不含反向工具请求：机器应答的动作重放一次，就是白跑一遍副作用,tests/brain-app-server.test.mjs,已声明用例
 裁决合成：关闭放行、规则 high 直接拒、medium 转复核、模型 deny 生效、模型失败退回复核,tests/brain-guardian.test.mjs,已声明用例
 规则信号：凭据外发 / 管道执行远端脚本 / 强制推送 / 反取证 → high；越界批删 → medium,tests/brain-guardian.test.mjs,已声明用例
+视觉判定：没有约束时按 modalities 与模型族名兜底,tests/brain-vision-routing.test.mjs,已声明用例
+视觉判定：登记处 image 上限优先于名字（0 = 明确否定，>0 = 明确肯定）,tests/brain-vision-routing.test.mjs,已声明用例
 角色解析：显式优先；审查/实现/调研按措辞落位,tests/brain-agent-org.test.mjs,已声明用例
 解析：[[hook]] 块 + 老写法（不写 when）默认 pre，未知事件整条丢弃,tests/brain-hooks-events.test.mjs,已声明用例
 解析：只认 `- 名字 | skill | 描述`，其它清单行忽略,tests/brain-skill-selection.test.mjs,已声明用例
