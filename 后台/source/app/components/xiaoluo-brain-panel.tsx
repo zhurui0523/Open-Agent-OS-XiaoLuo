@@ -287,6 +287,7 @@ export interface BrainPanelHandle {
 
 /** 宿主附件最小形（面板不依赖画布 ChatAttachment 全量类型） */
 export interface ChatAttachmentRef {
+  id?: string;
   name: string;
   kind: string;
   uri: string;
@@ -906,38 +907,58 @@ export function XiaoluoBrainPanel({
     return data;
   }
 
-  /** ArrayBuffer → base64（分块防栈溢出；附件物化写盘用） */
-  function bufToB64(buf: ArrayBuffer): string {
-    const bytes = new Uint8Array(buf);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  /** 附件落盘只认服务端 fs 口：read_file/run_command 不在 hostTools 里，两个宿主都由
+   *  服务端端口代跑，Agent 的工作区永远是服务端那份；桌面本地工作区是另一个根，
+   *  走 brainFs 的桌面优先分支会把附件写进 Agent 看不见的目录（2026-11-16 事故）。
+   *  2026-11-17 起改为服务端 ingest：直接从 Asset Kernel 取字节，不再让浏览器二次抓内容 URL。 */
+
+  /** 从附件引用解析 Asset Kernel 的 assetId（uri 或 contentUrl 两种形状） */
+  function attachmentAssetId(a: ChatAttachmentRef): string {
+    if (a.id) return a.id;
+    const uriMatch = /^asset:\/\/workspace\/([^@?]+)/.exec((a.uri ?? "").trim());
+    if (uriMatch) return decodeURIComponent(uriMatch[1]);
+    try {
+      const url = new URL(a.previewUrl ?? "", window.location.origin);
+      return url.searchParams.get("assetId") ?? "";
+    } catch {
+      return "";
     }
-    return btoa(bin);
   }
 
-  /** 附件物化：内容 URL 抓取 → base64 落工作区 uploads/，Agent 用 read_file/脚本自取；失败降级为 URL 引用不阻断发送 */
+  /** 附件物化：服务端直接从 Asset Kernel 取字节落工作区 uploads/，不依赖浏览器再抓一次内容 URL */
   async function materializeAttachments(list: ChatAttachmentRef[]): Promise<string> {
     const lines: string[] = [];
-    const ts = Date.now().toString(36);
+    let failed = 0;
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      const url = resolveAssetContentUrl(a.previewUrl ?? a.uri);
-      const safeName = (a.name || "file").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60);
-      const rel = `uploads/${ts}-${i + 1}-${safeName}`;
+      const assetId = attachmentAssetId(a);
       try {
-        const r = await fetch(url);
-        if (!r.ok) throw new Error("抓取失败 " + r.status);
-        const buf = await r.arrayBuffer();
-        if (buf.byteLength > 4 * 1024 * 1024) throw new Error("超过 4MB 上限");
-        await brainFs("write", rel, bufToB64(buf), { encoding: "base64" });
-        lines.push(`${i + 1}. ${a.name}（${a.kind}）→ 工作区文件 ${rel}`);
+        if (!assetId) throw new Error("附件缺少 assetId");
+        const resp = await fetch("/api/v2/brain/fs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "ingest", assetId, name: a.name, mode: permissionMode }),
+        });
+        const data = (await resp.json().catch(() => ({}))) as {
+          ok?: boolean;
+          path?: string;
+          size?: number;
+          error?: string;
+        };
+        if (!resp.ok || !data.ok || !data.path) {
+          throw new Error(data.error ?? `落盘失败 (${resp.status})`);
+        }
+        lines.push(`${i + 1}. ${a.name}（${a.kind}）→ 工作区文件 ${data.path}（${data.size ?? 0} 字节）`);
       } catch (err) {
-        lines.push(`${i + 1}. ${a.name}（${a.kind}）落盘失败（${err instanceof Error ? err.message : String(err)}），内容地址：${url}`);
+        failed += 1;
+        lines.push(`${i + 1}. ${a.name}（${a.kind}）落盘失败（${err instanceof Error ? err.message : String(err)}），内容地址：${resolveAssetContentUrl(a.previewUrl ?? a.uri)}`);
       }
     }
+    const header = failed
+      ? `\n\n【附件】（${list.length - failed}/${list.length} 落盘到工作区 uploads/，失败项见各行，别声称已落盘）\n`
+      : "\n\n【附件】（已落盘到工作区 uploads/）\n";
     return (
-      "\n\n【附件】（已落盘到工作区 uploads/）\n" +
+      header +
       lines.join("\n") +
       "\n（文本类直接 read_file；xlsx/pdf 等二进制自己写解析脚本用 run_command 跑，别声称读不了。）"
     );
@@ -1698,17 +1719,24 @@ export function XiaoluoBrainPanel({
             url: resolveAssetContentUrl(a.previewUrl ?? a.uri),
             name: a.name,
           }));
-          // 图片附件：抓内容 → base64 dataUrl 随消息直传模型（模型可直接看图；失败降级为路径）
+          // 图片附件：服务端从 Asset Kernel 取字节 → dataUrl 随消息直传模型（不依赖浏览器二次抓内容 URL）
           const imageParts: Array<{ mimeType: string; dataUrl: string }> = [];
           for (const a of (attachments ?? []).filter((x) => x.kind === "image").slice(0, 3)) {
+            const assetId = attachmentAssetId(a);
+            if (!assetId) continue;
             try {
-              const r = await fetch(resolveAssetContentUrl(a.previewUrl ?? a.uri));
-              if (!r.ok) continue;
-              const buf = await r.arrayBuffer();
-              if (buf.byteLength > 2 * 1024 * 1024) continue;
-              const mime = (r.headers.get("content-type") ?? "").split(";")[0] || "image/png";
-              imageParts.push({ mimeType: mime, dataUrl: `data:${mime};base64,${bufToB64(buf)}` });
-            } catch { /* 抓取失败：附件已落盘，模型可走文件路径 */ }
+              const resp = await fetch("/api/v2/brain/fs", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ action: "asset-data", assetId, mode: permissionMode }),
+              });
+              const data = (await resp.json().catch(() => ({}))) as { dataUrl?: string; mimeType?: string };
+              if (!resp.ok || !data.dataUrl) continue;
+              imageParts.push({
+                mimeType: data.mimeType || "image/png",
+                dataUrl: data.dataUrl,
+              });
+            } catch { /* 取图失败：附件已落盘，模型可走文件路径 */ }
           }
           if (busy) {
             // QUEUE-TURN：执行中不打断，进等待队列，当前轮结束后按序自动作为新回合派发

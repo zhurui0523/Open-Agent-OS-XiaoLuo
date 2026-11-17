@@ -137,6 +137,9 @@ test("工具注册与接线：有索引才注册 fuzzy_find_files；四处接线
   const route = await read("api/v2/brain/fs/route.ts");
   assert.match(route, /action === "fuzzy"/);
   assert.match(route, /fuzzyFindSandboxFiles/);
+  assert.match(route, /action === "ingest"/, "附件要能由服务端直接落盘");
+  assert.match(route, /action === "asset-data"/, "图片要能由服务端直接回 dataUrl");
+  assert.match(route, /assetId/, "ingest 按 assetId 取字节");
   const sandbox = await read("lib/brain-sandbox.ts");
   assert.match(sandbox, /export async function fuzzyFindSandboxFiles/);
   const panel = await read("components/xiaoluo-brain-panel.tsx");

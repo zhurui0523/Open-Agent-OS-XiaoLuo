@@ -253,3 +253,31 @@ test("接线事实：闸门读数一路走到 thread 声明里，能力面才敢
   assert.match(hookSource, /hostFace\(a, gate\)/, "面孔没把闸门读数算进去：老板开了开关，三口回不来");
   assert.match(hookSource, /threadFork\(\{[\s\S]{0,360}hostDecl\(a, await probeHostGate\(a\)\)/, "分叉出去的分支按旧读数声明");
 });
+
+/**
+ * 附件必须落进 Agent 工具真读的那份工作区：read_file/run_command 不在 hostTools 里，
+ * 两个宿主都由服务端端口代跑；物化若走 brainFs 的桌面优先分支，桌面宿主会写进
+ * AppData 本地根，Agent 在服务端工作区里找不到，只能满盘找原件（2026-11-16 事故）。
+ */
+test("接线事实：附件物化只认服务端 fs 口，头措辞跟着真实落盘结果", async () => {
+  const [panelSource, bridgeSource] = await Promise.all([
+    readFile(new URL("../app/components/xiaoluo-brain-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/xiaoluo-brain/lib/brain/host-bridge.ts", import.meta.url), "utf8"),
+  ]);
+  // fs/command 不是宿主代跑口：Agent 的工作区永远是服务端那份
+  assert.doesNotMatch(bridgeSource, /ports\.push\("fs"\)|ports\.push\("command"\)/);
+  const materialize = panelSource.slice(
+    panelSource.indexOf("async function materializeAttachments"),
+    panelSource.indexOf("const adapters = useMemo"),
+  );
+  assert.match(materialize, /action: "ingest"/);
+  assert.match(materialize, /assetId/, "物化要把 assetId 交给服务端");
+  assert.doesNotMatch(materialize, /fetch\(resolveAssetContentUrl/, "物化又让浏览器二次抓内容 URL");
+  assert.doesNotMatch(materialize, /brainFs\(/, "物化还在走桌面优先的 brainFs");
+  assert.match(panelSource, /action: "ingest", assetId/);
+  assert.match(panelSource, /action: "asset-data"/, "图片也要由服务端取字节，不能再让浏览器抓内容 URL");
+  assert.doesNotMatch(materialize, /desktopRuntime\(\)/, "落盘口又绕回桌面本地工作区");
+  // 落盘失败就不能声称「已落盘」
+  assert.match(materialize, /failed \+= 1/);
+  assert.match(materialize, /落盘到工作区 uploads\/，失败项见各行/);
+});
